@@ -848,5 +848,7 @@ module.exports = {
   startExecutionRun,
   markTaskWaiting,
   addEvidence,
-  completeRun
+  completeRun,
+  completeManualCodexHandoff,
+  recoverAbandonedBrainRuns
 };
