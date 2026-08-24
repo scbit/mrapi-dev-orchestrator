@@ -1,50 +1,59 @@
 const { chromium } = require('playwright-core');
 
-async function waitForAssistantCompletion(page, previousCount, timeoutMs) {
-  const selector = '[data-message-author-role="assistant"]';
+async function getLastAssistantText(page) {
+  const messages = page.locator('[data-message-author-role="assistant"]');
+  const count = await messages.count();
+  if (!count) return '';
+  return (await messages.nth(count - 1).innerText()).trim();
+}
 
-  await page.waitForFunction(
-    ({ selector, previousCount }) =>
-      document.querySelectorAll(selector).length > previousCount,
-    { selector, previousCount },
-    { timeout: timeoutMs }
-  );
+async function isAssistantGenerating(page) {
+  return await page.locator('[data-testid="stop-button"]').count() > 0;
+}
 
+async function waitForAssistantCompletion(page, previousText, timeoutMs) {
   const started = Date.now();
+  let detectedText = '';
   let lastText = '';
-  let unchangedFor = 0;
+  let stableSince = 0;
 
+  console.log('[BRAIN WEB] waiting for assistant response');
+
+  // First detect a genuinely new/changed assistant response.
   while (Date.now() - started < timeoutMs) {
-    const messages = page.locator(selector);
-    const count = await messages.count();
-    const text = count
-      ? (await messages.nth(count - 1).innerText()).trim()
-      : '';
+    const text = await getLastAssistantText(page);
 
-    const stopButtons = page.locator(
-      'button[aria-label*="Stop"], button[data-testid="stop-button"]'
-    );
-    const stopVisible = await stopButtons.count()
-      ? await stopButtons.first().isVisible().catch(() => false)
-      : false;
-
-    if (text && text === lastText) {
-      unchangedFor += 1;
-    } else {
+    if (text && text !== previousText) {
+      detectedText = text;
       lastText = text;
-      unchangedFor = 0;
+      stableSince = Date.now();
+      console.log('[BRAIN WEB] assistant response detected');
+      break;
     }
 
-    // ChatGPT UI changes frequently. Accept completion when:
-    // 1) we have assistant text,
-    // 2) the stop-generating control is gone,
-    // 3) text has been unchanged for at least 2 polling cycles.
-    if (text && !stopVisible && unchangedFor >= 2) {
-      await page.waitForTimeout(1500);
-      return text;
+    await page.waitForTimeout(750);
+  }
+
+  if (!detectedText) {
+    throw new Error('CHATGPT_RESPONSE_NOT_DETECTED');
+  }
+
+  // Then wait until generation stops and the response text briefly settles.
+  while (Date.now() - started < timeoutMs) {
+    const text = await getLastAssistantText(page);
+
+    if (text && text !== lastText) {
+      lastText = text;
+      stableSince = Date.now();
     }
 
-    await page.waitForTimeout(1000);
+    const unchangedFor = (Date.now() - stableSince) / 1000;
+    if (lastText && unchangedFor >= 2 && !(await isAssistantGenerating(page))) {
+      console.log('[BRAIN WEB] assistant response stable');
+      return lastText;
+    }
+
+    await page.waitForTimeout(750);
   }
 
   throw new Error('CHATGPT_RESPONSE_TIMEOUT');
@@ -73,9 +82,7 @@ async function runChatGPTWeb({ cfg, run, prompt, onProgress }) {
     const input = page.locator('#prompt-textarea').first();
     await input.waitFor({ state: 'visible', timeout: 60000 });
 
-    const previousCount = await page
-      .locator('[data-message-author-role="assistant"]')
-      .count();
+    const previousText = await getLastAssistantText(page);
 
     if (onProgress) await onProgress(20, 'Sending mission to W01 Brain');
 
@@ -83,11 +90,13 @@ async function runChatGPTWeb({ cfg, run, prompt, onProgress }) {
     await input.fill(prompt);
     await input.press('Enter');
 
+    console.log('[BRAIN WEB] prompt sent');
+
     if (onProgress) await onProgress(35, 'Waiting for W01 Brain plan');
 
     const outputText = await waitForAssistantCompletion(
       page,
-      previousCount,
+      previousText,
       cfg.brainTimeoutMs
     );
 

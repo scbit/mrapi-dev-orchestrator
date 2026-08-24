@@ -1,9 +1,16 @@
-OVERLAY PACKAGE v0.3.2-alpha.2
+OVERLAY v0.3.2-alpha.3
 
-1. Stop the Brain Adapter with Ctrl+C.
-2. Copy this overlay over the CURRENT repository.
+Fix:
+- Do not detect a new ChatGPT response by assistant-message count.
+- Detect actual change in the latest assistant text.
+- Consider response complete after 4 seconds of text stability.
+- Add visible Brain Web debug logs.
+
+Steps:
+1. Stop Brain Adapter (Ctrl+C, then S).
+2. Overlay this ZIP on the current repository.
 3. Run:
-   node --test test/brain-adapter.test.js
+   node --test test/brain-adapter-response-detection.test.js
    node --test
 4. Commit + push only if tests pass.
-5. HUMAN MANUAL DEPLOY — DO NOT DEPLOY FROM CODEX.
+5. HUMAN MANUAL DEPLOY.
