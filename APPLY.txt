@@ -1,0 +1,14 @@
+OVERLAY PACKAGE
+
+Copy the contents of this ZIP over the CURRENT mrapi-dev-orchestrator repository.
+
+Do not delete unrelated current files.
+
+Then locally run:
+  node --test test/brain-adapter.test.js
+  node --test
+
+Commit + push only after tests pass.
+
+DEPLOY:
+  HUMAN MANUAL DEPLOY — DO NOT DEPLOY FROM CODEX.

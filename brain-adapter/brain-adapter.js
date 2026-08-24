@@ -1,0 +1,84 @@
+const { cfg } = require('./lib/config');
+const { createApi } = require('./lib/api');
+const { brainPrompt } = require('./lib/prompts');
+const { runChatGPTWeb } = require('./adapters/chatgpt-web');
+
+if (!cfg.baseUrl) throw new Error('MRAPI_BASE_URL is required.');
+if (!cfg.secret) throw new Error('MRAPI_RUNNER_SECRET is required.');
+
+const api = createApi(cfg);
+let stopping = false;
+
+async function processRun(run) {
+  console.log('[BRAIN] claimed', run.id, run.worker_id);
+
+  try {
+    const brain = await runChatGPTWeb({
+      cfg,
+      run,
+      prompt: brainPrompt(run, cfg),
+      onProgress: (progress_percent, message) =>
+        api.request(`/api/brain/runs/${encodeURIComponent(run.id)}/progress`, {
+          progress_percent,
+          message
+        })
+    });
+
+    await api.request(`/api/brain/runs/${encodeURIComponent(run.id)}/complete`, {
+      output_text: brain.outputText,
+      objective: run.objective || '',
+      worker_id: run.worker_id,
+      task_spec: {
+        title: run.objective || 'Execution task',
+        objective: run.objective || '',
+        instructions: brain.outputText
+      },
+      execution_constraints: {
+        no_gcp: true,
+        no_cloud_run: true,
+        no_deploy: true,
+        deployment: 'HUMAN_MANUAL_DEPLOY'
+      },
+      brain_chat_url: brain.chatUrl
+    });
+
+    console.log('[BRAIN] COMPLETE', run.id);
+  } catch (error) {
+    console.error('[BRAIN ERROR]', run.id, error.message);
+
+    try {
+      await api.request(`/api/brain/runs/${encodeURIComponent(run.id)}/release`, {
+        message: `Brain Adapter released after error: ${error.message}`
+      });
+    } catch (releaseError) {
+      console.error('[BRAIN RELEASE ERROR]', releaseError.message);
+    }
+  }
+}
+
+async function loop() {
+  console.log('[BRAIN] adapter', cfg.brainAdapterId, cfg.workerIds);
+  console.log('[BRAIN] W01 chat', cfg.brainChatUrlW01 || '(missing)');
+  console.log('[BRAIN] repo context', cfg.repoPath);
+
+  while (!stopping) {
+    const claim = await api.request('/api/brain/next-run', {
+      brain_adapter_id: cfg.brainAdapterId,
+      worker_ids: cfg.workerIds
+    });
+
+    if (claim?.run) {
+      await processRun(claim.run);
+    } else {
+      await new Promise((resolve) => setTimeout(resolve, cfg.pollMs));
+    }
+  }
+}
+
+process.on('SIGINT', () => { stopping = true; });
+process.on('SIGTERM', () => { stopping = true; });
+
+loop().catch((error) => {
+  console.error('[BRAIN FATAL]', error);
+  process.exit(1);
+});

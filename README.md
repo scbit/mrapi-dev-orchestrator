@@ -1,90 +1,40 @@
-# MRAPI DEV ORCHESTRATOR — v0.3.1-alpha.5
+# MRAPI DEV — Brain Adapter v0.3.2 overlay
 
-## Real Shadow flow
+This ZIP is an **overlay** for the current GitHub version after Codex implemented real
+`BRAIN_RUN → TASK → EXECUTION_RUN` separation.
 
-This version matches the actual tools available on Shadow.
+## Architecture
 
 ```text
-Mission READY
-→ Dispatch
-→ Task QUEUED
-→ Shadow claims
+MRAPI DEV
 → BRAIN_RUN
-→ ChatGPT Web W01 generates plan
-→ Brain plan stored as evidence
-→ Task WAITING / WAITING_FOR_CODEX
-→ Human opens Codex inside ChatGPT desktop app
-→ Codex executes locally on repo
-→ Manual completion is reported to MRAPI DEV
-→ EXECUTION_RUN recorded
-→ RESULT / EVIDENCE
-→ Worker IDLE
+→ Brain Adapter (separate process)
+→ ChatGPT Web W01
+→ BRAIN_OUTPUT
+→ TASK QUEUED
+→ Shadow Runner
+→ EXECUTION_RUN
+→ manual Codex app
 ```
 
-There is **no fake Codex CLI integration**.
+The Shadow Runner remains execution-only.
 
-## Why hybrid
+## Files added/changed
 
-On Shadow, Codex is available inside the ChatGPT desktop app, not as a local CLI command.
-Therefore the Runner automates the Brain phase and creates a structured handoff for Codex.
+- `src/app.js` — mounts `/api/brain`
+- `src/routes/brain.routes.js` — Brain Run claim/progress/complete/release API
+- `brain-adapter/` — separate local Brain process for Shadow
 
-## Security
-
-Shadow has no GCP credentials.
-Codex has no GCP credentials.
-Cloud Run deploy remains human/manual.
-
-## Cloud Run
-
-Same variables as v0.3:
-
-- `GOOGLE_CLOUD_PROJECT=ia-sentire-customs-broker`
-- `FIRESTORE_DATABASE=mrapi-dev`
-- `EVIDENCE_BUCKET=mrapi-dev-evidence`
-- `DEFAULT_TENANT_ID=tenant_facundo_group`
-- `BOOTSTRAP_ON_START=true`
-- `NODE_ENV=production`
-- `RUNNER_SHARED_SECRET=<secret>`
-
-Do not set `PORT`.
-
-## Runner
-
-Install:
+## Install on Shadow
 
 ```powershell
-cd C:\Users\Shadow\Documents\GitHub\mrapi-dev-orchestrator\runner
+cd C:\Users\Shadow\Documents\GitHub\mrapi-dev-orchestrator\brain-adapter
 npm.cmd install
 ```
 
-Configure W01 chat URL and start:
+## Important
 
-```powershell
-npm.cmd start
-```
-
-When a W01 task is dispatched, the Runner opens the dedicated W01 ChatGPT Web chat, runs the Brain phase and then leaves the task in `WAITING_FOR_CODEX`.
-
-## Next milestone
-
-Add a small Control Room action to copy the Brain handoff and report Codex completion from the UI.
-
-## v0.3.1-alpha.5
-
-On Runner startup, stale BRAIN_RUN attempts owned by the same executor are marked FAILED with `RUNNER_RESTARTED_OR_ABANDONED`, their Task is safely returned to `QUEUED`, and history is preserved.
-
-## v0.3.1-alpha.5
-
-Fix: abandoned Brain Run recovery no longer requires a Firestore composite index. Tenant isolation remains enforced and run filtering happens in application code.
-
-## v0.3.1-alpha.5
-
-Fixes the recovery 500 caused by calling an undefined `ts()` helper. All new orchestration paths now use the existing `timestamp()` helper.
-
-## v0.3.1-alpha.5
-
-Fixes the Runner startup 500 by exporting `recoverAbandonedBrainRuns` and `completeManualCodexHandoff` from the orchestration service.
-
-## v0.3.1-alpha.5
-
-Fixes Runner recovery 500: runner routes now explicitly import `recoverAbandonedBrainRuns` and `completeManualCodexHandoff`. The waiting route also persists the Codex handoff payload.
+- Uses the existing runner shared secret only for MVP authentication.
+- No GCP credentials are stored on Shadow.
+- No automatic Cloud Run deploy.
+- One worker still maps to one dedicated ChatGPT chat.
