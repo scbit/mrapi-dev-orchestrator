@@ -11,6 +11,25 @@ async function isAssistantGenerating(page) {
   return await page.locator('[data-testid="stop-button"]').count() > 0;
 }
 
+async function isChatGPTLoginPage(page) {
+  const url = page.url();
+  if (/chatgpt\.com\/(auth\/login|login|auth)/i.test(url)) return true;
+  const loginControls = page.locator('a[href*="/auth/login"], button:has-text("Log in"), button:has-text("Sign up")');
+  if (await loginControls.count() > 0) return true;
+  if (typeof page.getByText === 'function') {
+    return await page.getByText(/Log in to ChatGPT|Sign up to ChatGPT/i).count() > 0;
+  }
+  return false;
+}
+
+async function assertLoggedIn(page) {
+  if (await isChatGPTLoginPage(page)) {
+    const error = new Error('CHATGPT_LOGIN_REQUIRED');
+    error.waiting = true;
+    throw error;
+  }
+}
+
 async function waitForAssistantCompletion(page, previousText, timeoutMs) {
   const started = Date.now();
   let detectedText = '';
@@ -21,6 +40,7 @@ async function waitForAssistantCompletion(page, previousText, timeoutMs) {
 
   // First detect a genuinely new/changed assistant response.
   while (Date.now() - started < timeoutMs) {
+    await assertLoggedIn(page);
     const text = await getLastAssistantText(page);
 
     if (text && text !== previousText) {
@@ -40,6 +60,7 @@ async function waitForAssistantCompletion(page, previousText, timeoutMs) {
 
   // Then wait until generation stops and the response text briefly settles.
   while (Date.now() - started < timeoutMs) {
+    await assertLoggedIn(page);
     const text = await getLastAssistantText(page);
 
     if (text && text !== lastText) {
@@ -81,9 +102,11 @@ async function runChatGPTWeb({ cfg, run, prompt, onProgress }) {
       waitUntil: 'domcontentloaded',
       timeout: 60000
     });
+    await assertLoggedIn(page);
 
     const input = page.locator('#prompt-textarea').first();
     await input.waitFor({ state: 'visible', timeout: 60000 });
+    await assertLoggedIn(page);
 
     const previousText = await getLastAssistantText(page);
 
@@ -114,4 +137,4 @@ async function runChatGPTWeb({ cfg, run, prompt, onProgress }) {
   }
 }
 
-module.exports = { runChatGPTWeb };
+module.exports = { runChatGPTWeb, isChatGPTLoginPage };

@@ -1,5 +1,6 @@
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
 
 function csv(value, fallback = '') {
   return String(value || fallback)
@@ -20,11 +21,11 @@ const brainChatUrls = {
 };
 
 const chromeProfileNames = {
-  W01: 'chrome-w01',
-  W02: 'chrome-w02',
-  W03: 'chrome-w03',
-  W04: 'chrome-w04',
-  W05: 'chrome-w05'
+  W01: 'W01',
+  W02: 'W02',
+  W03: 'W03',
+  W04: 'W04',
+  W05: 'W05'
 };
 
 function chatUrlForWorker(workerId) {
@@ -36,7 +37,9 @@ function chatUrlForWorker(workerId) {
 
 function chromeUserDataDirForWorker(workerId) {
   const id = String(workerId || defaultWorkerId || 'W01').toUpperCase();
-  return path.join(os.homedir(), 'AppData', 'Local', 'MRAPI', chromeProfileNames[id] || `chrome-${id.toLowerCase()}`);
+  const profileDir = path.join(__dirname, '..', 'chrome-profiles', chromeProfileNames[id] || id);
+  fs.mkdirSync(profileDir, { recursive: true });
+  return profileDir;
 }
 
 const cfg = {
@@ -58,8 +61,7 @@ const cfg = {
   brainChatUrlW03: brainChatUrls.W03,
   brainChatUrlW04: brainChatUrls.W04,
   brainChatUrlW05: brainChatUrls.W05,
-  chromeUserDataDir: process.env.MRAPI_CHROME_PROFILE_DIR ||
-    chromeUserDataDirForWorker(defaultWorkerId),
+  chromeUserDataDir: chromeUserDataDirForWorker(defaultWorkerId),
   chromeUserDataDirForWorker,
   chromeChannel: process.env.MRAPI_CHROME_CHANNEL || 'chrome',
   brainTimeoutMs: Math.max(

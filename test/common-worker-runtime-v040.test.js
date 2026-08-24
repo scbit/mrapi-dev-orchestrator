@@ -30,11 +30,11 @@ test('runtime supports worker-specific chat bindings', () => {
 
 test('five independent Chrome profiles are defined', () => {
   assert.deepEqual(chromeProfileNames, {
-    W01: 'chrome-w01',
-    W02: 'chrome-w02',
-    W03: 'chrome-w03',
-    W04: 'chrome-w04',
-    W05: 'chrome-w05'
+    W01: 'W01',
+    W02: 'W02',
+    W03: 'W03',
+    W04: 'W04',
+    W05: 'W05'
   });
 });
 

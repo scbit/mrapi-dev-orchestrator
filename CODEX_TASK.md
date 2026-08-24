@@ -1,187 +1,114 @@
-# MRAPI DEV v0.4.0.6 — Completion Event Undefined Fix
+# MRAPI DEV v0.4.0.7 — W04 Persistent ChatGPT Profile
 
 ## OBJECTIVE
-Fix the exact post-Codex completion failure now observed in production.
+Make W04 use its own persistent Chrome profile for ChatGPT Web so the human logs in once and the session survives restarts.
 
-Observed runtime:
+## CONTEXT
+Current W04 runtime shows:
+[BRAIN] adapter brain_shadow_chatgpt_w04_01 [ 'W04' ]
+[BRAIN] W01 chat (missing)
+[BRAIN] claimed ... W04
+[BRAIN WEB] prompt sent
+[BRAIN WEB] assistant response detected
+[BRAIN] COMPLETE ...
 
-```text
-[CODEX STDOUT] Success.
-...
-[SHADOW TASK ERROR] 500 INTERNAL_SERVER_ERROR
-[SHADOW COMPLETE ERROR] 409 RUN_NOT_ACTIVE
-```
+Configured:
+MRAPI_W04_CHAT_URL=https://chatgpt.com/c/6a8c60e3-46ec-83e9-97c4-c9834b4c6b24
 
-## CONFIRMED ROOT CAUSE
+Expected W04 persistent Chrome profile does not currently exist.
 
-In `completeRun()` the Execution Run transaction successfully completes the Run/Task/Mission and builds:
-
-```js
-result = {
-  success: missionCancelled ? false : success,
-  cancelled: missionCancelled || undefined,
-  mission_id: run.mission_id,
-  task_id: run.task_id,
-  run_id: runId,
-  result_id: resultRef.id
-};
-```
-
-Immediately after the transaction:
-
-```js
-await emitEvent(db, tenantId, result.success ? 'RUN_COMPLETED' : 'RUN_FAILED', result, ...)
-```
-
-When `missionCancelled === false`, `result.cancelled` becomes `undefined`.
-
-Firestore rejects the Event payload because it contains `undefined`.
-
-Therefore:
-1. transaction can already have committed Run as COMPLETED;
-2. `emitEvent()` throws 500 afterward;
-3. Runner thinks Task failed and calls `/complete` again;
-4. second call correctly returns `409 RUN_NOT_ACTIVE`.
-
-This explains the exact log sequence.
-
-## ARCHITECTURE
-Preserve:
-- ChatGPT Web = Brain
-- Codex = Executor
-- Shadow = Host
-- MRAPI DEV = source of truth
-- W01-W05 common Executor
-- existing Mission/Task/Run history
-- tenant isolation
-- W01-only Git permissions
+## FILES / AREAS
+- brain-adapter/brain-adapter.js
+- brain-adapter/lib/*
+- brain-adapter/adapters/*
+- brain-adapter/start-brain-w04.ps1 or equivalent
+- shadow-autostart/* only if needed
+- .gitignore
+- tests
 
 ## IMPLEMENTATION
+1. Create deterministic worker-specific persistent Chrome profiles:
+   W01 -> brain-adapter/chrome-profiles/W01
+   W02 -> brain-adapter/chrome-profiles/W02
+   W03 -> brain-adapter/chrome-profiles/W03
+   W04 -> brain-adapter/chrome-profiles/W04
+   W05 -> brain-adapter/chrome-profiles/W05
 
-### 1. Never return undefined in completion result
-Replace:
+2. Auto-create profile directory if missing. Never use temp/incognito/shared profile.
 
-```js
-cancelled: missionCancelled || undefined
-```
+3. W04 must use only MRAPI_W04_CHAT_URL. No fallback to W01.
 
-with an explicit boolean:
+4. Fix misleading hardcoded W01 log. For W04 startup print:
+   [BRAIN] W04 chat <url>
+   [BRAIN] W04 profile <path>
 
-```js
-cancelled: missionCancelled === true
-```
+5. Add browser profile directory to .gitignore.
 
-or omit the property entirely when false, but explicit boolean is preferred.
+6. Add:
+   brain-adapter/setup-w04-chatgpt-profile.ps1
 
-### 2. Make Event payloads Firestore-safe
-`emitEvent()` is a central persistence boundary.
+   It must:
+   - resolve installed Chrome
+   - create/open W04 persistent profile
+   - open MRAPI_W04_CHAT_URL
+   - leave Chrome visible
+   - tell human to log in once if needed
+   - never request/store credentials
+   - use the same profile path as runtime
 
-Add a small explicit sanitizer for Event payloads that recursively converts/removes `undefined` values before Firestore write.
+7. Detect logged-out/login ChatGPT page. Do not treat it as successful Brain response. Surface CHATGPT_LOGIN_REQUIRED / WAITING.
 
-Preferred behavior:
-- object property `undefined` -> `null` or omitted consistently
-- arrays containing `undefined` -> `null`
-- preserve Date / Firestore Timestamp / primitives
-- do not stringify arbitrary objects
-- do not mutate original payload
+8. Preserve:
+   - ChatGPT Web = Brain
+   - Codex = Executor
+   - Shadow = Host
+   - 1 WORKER = 1 CHAT
+   - W01-W05 isolation
+   - no GCP/deploy
 
-This is defense-in-depth. Callers should still normalize their own contracts.
-
-Do NOT globally enable `ignoreUndefinedProperties`.
-
-### 3. Audit completion/event result objects
-Inspect completion-related paths for other patterns like:
-- `foo: condition || undefined`
-- optional ids/fields copied into Event payloads
-- result payloads later persisted into Firestore
-
-At minimum cover:
-- `completeRun`
-- `completeBrainRun`
-- `completeManualCodexHandoff`
-- retry/cancel events
-- Task claimed/completed events
-
-Normalize optional values to `null`/boolean where appropriate.
-
-### 4. Completion API idempotency safety
-Do NOT broadly redesign completion semantics.
-
-However, for this exact already-committed case, improve Runner behavior:
-
-If Runner receives `409 RUN_NOT_ACTIVE` after it already sent a completion request, log a concise message indicating the Run may already be terminal and do not attempt another completion loop.
-
-Do not create a duplicate Result.
-Do not reopen a completed Run.
-
-If existing API can safely return terminal state on a repeated complete request without mutation, that is acceptable, but avoid a large redesign in this patch.
-
-### 5. Current production Mission
-Do not delete or recreate the Mission automatically.
-
-Because the transaction likely committed before `emitEvent()` failed, inspect normal UI state after deploy:
-- if Mission/Task/Run are already COMPLETED/DONE, leave them as-is;
-- if Mission is still inconsistent, surface Need Attention / use existing Retry, not duplicate Run creation.
-
-### 6. Version
-Bump consistently:
-- `v0.4.0.6`
-- runner/package `0.4.0-6`
+9. Bump to v0.4.0.7 / 0.4.0-7 as appropriate.
 
 ## TESTS
-
-Add focused tests proving:
-
-1. Successful Execution completion returns `cancelled: false`, never undefined.
-2. Cancelled completion returns `cancelled: true`.
-3. `emitEvent()` safely persists payloads containing nested undefined.
-4. Event sanitizer does not mutate original payload.
-5. Successful Run completion writes exactly one Result.
-6. Successful Run completion emits RUN_COMPLETED without 500.
-7. Repeated completion after terminal state does not create duplicate Result.
-8. Runner handles `409 RUN_NOT_ACTIVE` after completion without a second failure cascade.
-9. W04 execution completion remains green.
-10. W01 execution/Git flow remains green.
-11. tenant isolation remains green.
-12. full suite passes.
+Prove:
+- W01-W05 profile paths are distinct
+- W04 maps to chrome-profiles/W04
+- W04 never falls back to W01 chat
+- missing W04 URL gives explicit config error
+- setup script and runtime use same W04 profile
+- .gitignore excludes profile data
+- W04 logs say W04, not W01
+- login page is not accepted as success
+- existing W04 Brain-only and Brain->Codex flows stay green
+- W01 remains green
+- full suite passes
 
 Run:
-`node --test`
+node --test
 
 ## SUCCESS CRITERIA
-After human deploy and Runner restart, a successful Codex Task ends with a clean terminal result such as:
+After implementation, human runs:
 
-```text
-[SHADOW] COMPLETE ...
-```
+cd C:\Users\Shadow\Documents\GitHub\mrapi-dev-orchestrator\brain-adapter
+powershell -ExecutionPolicy Bypass -File .\setup-w04-chatgpt-profile.ps1
 
-and NOT:
+Chrome opens with W04 profile and W04 chat:
+https://chatgpt.com/c/6a8c60e3-46ec-83e9-97c4-c9834b4c6b24
 
-```text
-[SHADOW TASK ERROR] 500 ...
-[SHADOW COMPLETE ERROR] 409 RUN_NOT_ACTIVE
-```
+Human logs into ChatGPT once if required, closes Chrome, then restarts W04 Brain Adapter.
 
-Mission/Task/Run/Result must stay consistent and only one Result must be created.
+Expected startup:
+[BRAIN] adapter brain_shadow_chatgpt_w04_01 [ 'W04' ]
+[BRAIN] W04 chat https://chatgpt.com/c/...
+[BRAIN] W04 profile C:\...\chrome-profiles\W04
 
 ## STOP CONDITIONS
-- Do not delete completed Runs.
-- Do not duplicate Results.
-- Do not globally enable Firestore ignoreUndefinedProperties.
-- Do not revert to W01-only.
-- Do not weaken tenant isolation.
-- Do not let Codex become Brain.
-- Do not deploy.
-- Do not push.
+- no credentials in code
+- no shared worker profile
+- no W01 fallback
+- no GCP
+- no deploy
+- no push
 
 ## DEPLOY
-Codex:
-- inspect
-- implement
-- test
-- stop
-
-Human:
-- commit/push
-- manual Cloud Run deploy
-- restart Shadow Runner only
+Codex implements/tests only.
+Human handles commit/push and any manual deploy.

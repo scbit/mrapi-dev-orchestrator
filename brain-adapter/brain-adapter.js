@@ -17,7 +17,7 @@ async function heartbeat() {
     state: 'ONLINE',
     adapter_status: currentBrainRunId ? 'BUSY' : 'IDLE',
     current_brain_run_id: currentBrainRunId,
-    adapter_version: 'v0.4.0.6',
+    adapter_version: 'v0.4.0.7',
     host_name: cfg.hostName
   });
 }
@@ -29,7 +29,7 @@ async function register() {
     state: 'ONLINE',
     adapter_status: 'IDLE',
     current_brain_run_id: null,
-    adapter_version: 'v0.4.0.6',
+    adapter_version: 'v0.4.0.7',
     host_name: cfg.hostName
   });
 }
@@ -71,10 +71,15 @@ async function processRun(run) {
     console.log('[BRAIN] COMPLETE', run.id);
   } catch (error) {
     console.error('[BRAIN ERROR]', run.id, error.message);
+    if (error.message === 'CHATGPT_LOGIN_REQUIRED') {
+      console.error('[BRAIN] WAITING CHATGPT_LOGIN_REQUIRED', run.worker_id);
+    }
 
     try {
       await api.request(`/api/brain/runs/${encodeURIComponent(run.id)}/release`, {
-        message: `Brain Adapter released after error: ${error.message}`
+        message: error.message === 'CHATGPT_LOGIN_REQUIRED'
+          ? `WAITING CHATGPT_LOGIN_REQUIRED for ${run.worker_id}`
+          : `Brain Adapter released after error: ${error.message}`
       });
     } catch (releaseError) {
       console.error('[BRAIN RELEASE ERROR]', releaseError.message);
@@ -86,7 +91,11 @@ async function processRun(run) {
 
 async function loop() {
   console.log('[BRAIN] adapter', cfg.brainAdapterId, cfg.workerIds);
-  console.log('[BRAIN] W01 chat', cfg.brainChatUrlW01 || '(missing)');
+  for (const workerId of cfg.workerIds) {
+    const id = String(workerId || '').toUpperCase();
+    console.log(`[BRAIN] ${id} chat`, cfg.brainChatUrls[id] || '(missing)');
+    console.log(`[BRAIN] ${id} profile`, cfg.chromeUserDataDirForWorker(id));
+  }
   console.log('[BRAIN] repo context', cfg.repoPath);
   await register();
 
