@@ -1,0 +1,215 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#09111f">
+  <title>MRAPI DEV ORCHESTRATOR</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">
+        <div class="brand-mark">M</div>
+        <div>
+          <strong>MRAPI DEV</strong>
+          <span>ORCHESTRATOR</span>
+        </div>
+      </div>
+
+      <nav id="nav">
+        <button class="nav-item active" data-view="dashboard">Dashboard</button>
+        <button class="nav-item" data-view="inbox">Inbox</button>
+        <button class="nav-item" data-view="missions">Missions</button>
+        <button class="nav-item" data-view="tasks">Tasks</button>
+        <button class="nav-item" data-view="workers">Workers</button>
+        <button class="nav-item" data-view="workspaces">Workspaces</button>
+        <button class="nav-item" data-view="projects">Projects</button>
+        <button class="nav-item" data-view="reports">Reports</button>
+        <button class="nav-item" data-view="evidence">Evidence</button>
+        <button class="nav-item" data-view="notifications">Notifications</button>
+        <button class="nav-item" data-view="executors">Executors</button>
+        <button class="nav-item" data-view="connections">Connections</button>
+        <button class="nav-item" data-view="settings">Settings</button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="version">v0.1-alpha</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <button class="menu-button" id="menuButton" aria-label="Toggle navigation">☰</button>
+        <div>
+          <div class="eyebrow">FACUNDO GROUP</div>
+          <h1 id="pageTitle">Control Room</h1>
+        </div>
+        <button class="primary-button" id="newMissionButton">+ NEW MISSION</button>
+      </header>
+
+      <section class="view active" id="view-dashboard">
+        <section class="hero">
+          <div>
+            <div class="eyebrow">MRAPI DEV ORCHESTRATOR</div>
+            <h2>Autonomous operations, under control.</h2>
+            <p>Mission-first orchestration across workers, brains, executors and evidence.</p>
+          </div>
+          <div class="system-pill" id="systemPill">
+            <span class="status-dot"></span>
+            <span id="systemStatus">SYSTEM —</span>
+          </div>
+        </section>
+
+        <section class="quick-mission" id="quickMissionCard">
+          <div>
+            <span class="eyebrow">QUICK ENTRY</span>
+            <h3>What do you want done?</h3>
+          </div>
+          <button class="ghost-button" id="quickMissionButton">Create mission →</button>
+        </section>
+
+        <section class="metrics-grid">
+          <article class="metric-card"><span>Active Workers</span><strong id="metricActiveWorkers">—</strong></article>
+          <article class="metric-card"><span>Running Missions</span><strong id="metricRunningMissions">—</strong></article>
+          <article class="metric-card"><span>Queued Tasks</span><strong id="metricQueuedTasks">—</strong></article>
+          <article class="metric-card attention"><span>Need Attention</span><strong id="metricAttention">—</strong></article>
+          <article class="metric-card"><span>Completed</span><strong id="metricCompleted">—</strong></article>
+          <article class="metric-card"><span>Executors Online</span><strong id="metricExecutors">—</strong></article>
+        </section>
+
+        <section class="content-grid">
+          <article class="panel">
+            <div class="panel-header">
+              <div>
+                <span class="eyebrow">WORKFORCE</span>
+                <h3><span id="workerCount">—</span> Workers</h3>
+              </div>
+              <button class="text-button" data-view-target="workers">View all</button>
+            </div>
+            <div id="workersList" class="worker-list">
+              <div class="skeleton-row"></div>
+              <div class="skeleton-row"></div>
+              <div class="skeleton-row"></div>
+            </div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-header">
+              <div>
+                <span class="eyebrow">MISSIONS</span>
+                <h3>Recent activity</h3>
+              </div>
+              <button class="text-button" data-view-target="missions">View all</button>
+            </div>
+            <div id="recentMissions" class="empty-state">Loading…</div>
+          </article>
+        </section>
+      </section>
+
+      <section class="view" id="view-missions">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">MISSION CONTROL</span>
+            <h2>Missions</h2>
+            <p>Objectives and outcomes. Tasks stay secondary.</p>
+          </div>
+          <button class="primary-button mobile-wide" id="missionsNewButton">+ NEW MISSION</button>
+        </div>
+        <div class="panel">
+          <div id="missionsList" class="mission-list"></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-workers">
+        <div class="section-heading">
+          <div>
+            <span class="eyebrow">WORKFORCE</span>
+            <h2>Workers</h2>
+            <p>Independent roles with configurable brains, executors and hosts.</p>
+          </div>
+        </div>
+        <div class="panel">
+          <div id="workersFullList" class="worker-cards"></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-tasks">
+        <div class="section-heading">
+          <div><span class="eyebrow">ORCHESTRATOR</span><h2>Tasks</h2><p>Internal execution units generated from missions.</p></div>
+        </div>
+        <div class="panel"><div id="tasksList" class="empty-state">No tasks yet.</div></div>
+      </section>
+
+      <section class="view placeholder-view" id="view-inbox"></section>
+      <section class="view placeholder-view" id="view-workspaces"></section>
+      <section class="view placeholder-view" id="view-projects"></section>
+      <section class="view placeholder-view" id="view-reports"></section>
+      <section class="view placeholder-view" id="view-evidence"></section>
+      <section class="view placeholder-view" id="view-notifications"></section>
+      <section class="view placeholder-view" id="view-executors"></section>
+      <section class="view placeholder-view" id="view-connections"></section>
+      <section class="view placeholder-view" id="view-settings"></section>
+    </main>
+  </div>
+
+  <div class="modal-backdrop" id="missionModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="missionModalTitle">
+      <div class="modal-header">
+        <div>
+          <span class="eyebrow">NEW MISSION</span>
+          <h2 id="missionModalTitle">What do you want done?</h2>
+        </div>
+        <button class="icon-button" id="closeMissionModal" aria-label="Close">×</button>
+      </div>
+
+      <form id="missionForm">
+        <label class="field">
+          <span>Objective</span>
+          <textarea id="missionObjective" required minlength="3" rows="5" placeholder="Describe the outcome in natural language…"></textarea>
+        </label>
+
+        <div class="form-grid">
+          <label class="field">
+            <span>Workspace</span>
+            <select id="missionWorkspace" required></select>
+          </label>
+
+          <label class="field">
+            <span>Project</span>
+            <select id="missionProject" required></select>
+          </label>
+
+          <label class="field">
+            <span>Preferred worker</span>
+            <select id="missionWorker"></select>
+          </label>
+
+          <label class="field">
+            <span>Priority</span>
+            <select id="missionPriority">
+              <option value="NORMAL">Normal</option>
+              <option value="HIGH">High</option>
+              <option value="CRITICAL">Critical</option>
+              <option value="LOW">Low</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="modal-actions">
+          <span id="missionFormMessage"></span>
+          <div>
+            <button type="button" class="ghost-button" id="cancelMissionButton">Cancel</button>
+            <button type="submit" class="primary-button" id="createMissionSubmit">Create mission</button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

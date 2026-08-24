@@ -1,0 +1,102 @@
+const express = require('express');
+const { FieldValue } = require('@google-cloud/firestore');
+const { MISSION_STATES } = require('../constants/states');
+const { serializeFirestore } = require('../utils/firestore');
+
+function cleanString(value) {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function createMissionsRouter({ repos }) {
+  const router = express.Router();
+
+  router.get('/', async (req, res, next) => {
+    try {
+      const missions = await repos.missions.listByTenant(req.tenantId);
+      res.json({ items: serializeFirestore(missions), total: missions.length });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/:missionId', async (req, res, next) => {
+    try {
+      const mission = await repos.missions.getById(req.params.missionId);
+      if (!mission || mission.tenant_id !== req.tenantId) {
+        return res.status(404).json({ error: 'MISSION_NOT_FOUND' });
+      }
+      res.json(serializeFirestore(mission));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/', async (req, res, next) => {
+    try {
+      const objective = cleanString(req.body.objective || req.body.prompt);
+      const workspaceId = cleanString(req.body.workspace_id);
+      const projectId = cleanString(req.body.project_id);
+      const preferredWorkerId = cleanString(req.body.preferred_worker_id);
+      const priority = cleanString(req.body.priority || 'NORMAL').toUpperCase();
+
+      if (objective.length < 3) {
+        return res.status(400).json({
+          error: 'INVALID_OBJECTIVE',
+          message: 'Mission objective must contain at least 3 characters.'
+        });
+      }
+
+      const workspace = await repos.workspaces.getById(workspaceId);
+      if (!workspace || workspace.tenant_id !== req.tenantId) {
+        return res.status(400).json({ error: 'INVALID_WORKSPACE' });
+      }
+
+      const project = await repos.projects.getById(projectId);
+      if (
+        !project ||
+        project.tenant_id !== req.tenantId ||
+        project.workspace_id !== workspaceId
+      ) {
+        return res.status(400).json({ error: 'INVALID_PROJECT' });
+      }
+
+      if (preferredWorkerId) {
+        const worker = await repos.workers.getById(preferredWorkerId);
+        if (
+          !worker ||
+          worker.tenant_id !== req.tenantId ||
+          worker.workspace_id !== workspaceId
+        ) {
+          return res.status(400).json({ error: 'INVALID_PREFERRED_WORKER' });
+        }
+      }
+
+      const state = 'READY';
+      if (!MISSION_STATES.includes(state)) {
+        throw new Error('Mission state configuration error.');
+      }
+
+      const mission = await repos.missions.create(req.tenantId, {
+        objective,
+        original_prompt: objective,
+        workspace_id: workspaceId,
+        project_id: projectId,
+        preferred_worker_id: preferredWorkerId || null,
+        priority: ['LOW', 'NORMAL', 'HIGH', 'CRITICAL'].includes(priority)
+          ? priority
+          : 'NORMAL',
+        state,
+        created_at: FieldValue.serverTimestamp(),
+        updated_at: FieldValue.serverTimestamp()
+      });
+
+      res.status(201).json(serializeFirestore(mission));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  return router;
+}
+
+module.exports = { createMissionsRouter };
