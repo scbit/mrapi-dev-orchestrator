@@ -383,6 +383,10 @@ function normalizeWorkerIds(value) {
     : [];
 }
 
+function nullIfUndefined(value) {
+  return value === undefined ? null : value;
+}
+
 function isClaimCandidateError(error) {
   return error?.retryCandidate === true ||
     [
@@ -515,6 +519,7 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
           throw error;
         }
         const brainRun = brainRunSnap?.exists ? { id: brainRunSnap.id, ...brainRunSnap.data() } : null;
+        const taskBrainRunId = nullIfUndefined(task.brain_run_id);
         const codexHandoff = buildCodexHandoff({
           tenantId,
           task: { id: taskSnap.id, ...task },
@@ -569,8 +574,8 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
           worker_id: candidate.worker_id,
           executor_id: executorId,
           host_name: executor.host_name || null,
-          brain_run_id: candidate.brain_run_id,
-          parent_run_id: candidate.brain_run_id,
+          brain_run_id: taskBrainRunId,
+          parent_run_id: taskBrainRunId,
           codex_handoff: codexHandoff,
           state: 'RUNNING',
           attempt,
@@ -597,6 +602,7 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
             current_run_id: runRef.id,
             execution_run_id: runRef.id,
             attempt_count: attempt,
+            brain_run_id: nullIfUndefined(candidate.brain_run_id),
             codex_handoff: codexHandoff
           },
           run: {
@@ -604,8 +610,8 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
             run_type: 'EXECUTION_RUN',
             state: 'RUNNING',
             attempt,
-            brain_run_id: candidate.brain_run_id,
-            parent_run_id: candidate.brain_run_id
+            brain_run_id: taskBrainRunId,
+            parent_run_id: taskBrainRunId
           },
           codex_handoff: codexHandoff
         };

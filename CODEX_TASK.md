@@ -1,157 +1,169 @@
-# MRAPI DEV v0.4.0.4 — Claim State Contract Fix
+# MRAPI DEV v0.4.0.5 — Firestore Undefined Claim Fix
 
 ## OBJECTIVE
-Fix the remaining `/api/runner/next-task` 500 after v0.4.0.3.
+Fix the exact remaining `/api/runner/next-task` 500 now exposed by v0.4.0.4 diagnostics.
 
-Observed runtime:
-- executor registers successfully for W01-W05
-- Runner no longer dies (v0.4.0.3 resilience works)
-- every poll still returns `500 INTERNAL_SERVER_ERROR`
+Observed production error:
 
-## CONFIRMED CODE MISMATCH
-Current claim flow considers BOTH:
-- `QUEUED`
-- `ASSIGNED`
-
-as eligible tasks.
-
-But `src/services/codexHandoff.js -> trustedScope()` rejects any task whose state is not exactly `QUEUED`:
-
-```js
-if (task.state !== 'QUEUED') throw fail('CODEX_HANDOFF_TASK_NOT_QUEUED');
+```text
+500 RUNNER_CLAIM_INTERNAL_ERROR:
+Value for argument "data" is not a valid Firestore document.
+Cannot use "undefined" as a Firestore value
+(found in field "brain_run_id").
 ```
 
-This is inconsistent with `claimNextTask()`, which explicitly accepts `['QUEUED', 'ASSIGNED']`.
+## CONFIRMED ROOT CAUSE
+In `claimNextTask()` the new Execution Run persists fields similar to:
 
-Also `CODEX_HANDOFF_TASK_NOT_QUEUED` is not currently treated as a skippable claim-candidate error, so an old/stuck `ASSIGNED` task can turn the whole poll into HTTP 500.
+```js
+brain_run_id: candidate.brain_run_id,
+parent_run_id: candidate.brain_run_id,
+```
+
+For legacy/stuck Tasks, `candidate.brain_run_id` can be `undefined`.
+
+Firestore rejects `undefined`.
+
+This is a data-normalization bug, not a Runner/Codex bug.
 
 ## ARCHITECTURE
-Do not change:
+Preserve:
 - ChatGPT Web = Brain
 - Codex = Executor
 - Shadow = Host
 - MRAPI DEV = source of truth
-- common executor supports W01-W05
+- common Codex Executor supports W01-W05
 - tenant isolation
+- no duplicate Runs
 - W01-only Git permissions
 
 ## IMPLEMENTATION
 
-### 1. Align claim/handoff state contract
-Choose one canonical claim-entry contract and use it consistently.
+### 1. Normalize nullable persisted IDs
+In the claim transaction, any optional ID written to Firestore MUST be `null`, never `undefined`.
 
-Preferred for compatibility:
-- claim may accept `QUEUED` and legacy/stale `ASSIGNED`
-- Codex handoff trusted scope may accept `QUEUED` and `ASSIGNED`
-- transaction atomically transitions the accepted task to `RUNNING`
-
-Do NOT execute tasks already `RUNNING`, `DONE`, `FAILED`, `SKIPPED`, etc.
-
-Update `trustedScope()` accordingly, for example:
+At minimum fix:
 ```js
-if (!['QUEUED', 'ASSIGNED'].includes(task.state)) {
-  throw fail('CODEX_HANDOFF_TASK_NOT_CLAIMABLE');
+brain_run_id: candidate.brain_run_id || null,
+parent_run_id: candidate.brain_run_id || null,
+```
+
+Also inspect the complete claim write path for optional values that may be undefined:
+- brain_run_id
+- parent_run_id
+- workspace_id
+- project_id
+- worker_profile_id
+- current_run_id
+- execution metadata
+- optional handoff metadata
+
+Use explicit `?? null` where empty string has meaning and `|| null` where it does not.
+
+Do NOT globally enable `ignoreUndefinedProperties` as the primary fix.
+We want explicit normalized documents at the orchestration boundary.
+
+### 2. Normalize returned claim object
+The returned `claimed.run` / `claimed.task` payload should also expose absent optional IDs as `null`, not `undefined`.
+
+Example:
+```js
+brain_run_id: candidate.brain_run_id ?? null,
+parent_run_id: candidate.brain_run_id ?? null
+```
+
+### 3. Legacy execution task compatibility
+A legacy execution Task without `brain_run_id` may still be claimable ONLY if the existing contract legitimately allows execution without a Brain Run.
+
+Do not weaken the current Brain-required validation for Tasks that explicitly reference a Brain Run.
+
+Rules:
+- if `task.brain_run_id` exists -> validate referenced Brain Run as today
+- if it does not exist -> do not create an undefined Firestore value
+- mission/worker/tenant/task scope validations still apply
+
+Do not fabricate a Brain Run ID.
+
+### 4. Defensive Firestore serialization helper
+If useful, add a small local helper for write-bound objects, e.g.:
+```js
+function nullIfUndefined(value) {
+  return value === undefined ? null : value;
 }
 ```
 
-Use a clear canonical error code.
+Avoid recursive mutation of arbitrary objects unless tests prove it safe.
+Especially do not silently strip required fields.
 
-### 2. Candidate-error safety
-Any expected per-task validation failure must not make `/next-task` return 500.
+### 5. Diagnostic remains
+Keep v0.4.0.4 safe Runner diagnostics.
+If another unexpected problem remains, terminal must still show safe `detail`.
 
-Include claim/handoff validation errors such as:
-- TASK_ALREADY_CLAIMED
-- TASK_BRAIN_NOT_COMPLETE
-- WORKER_NOT_FOUND
-- WORKER_NOT_AVAILABLE
-- MISSION_CANCELLED
-- CODEX_HANDOFF_TASK_NOT_CLAIMABLE
-- CODEX_HANDOFF_TASK_SPEC_REQUIRED
-- CODEX_HANDOFF_BRAIN_RUN_REQUIRED
-- CODEX_HANDOFF_BRAIN_TENANT_MISMATCH
-- CODEX_HANDOFF_BRAIN_RUN_TYPE_REQUIRED
-- CODEX_HANDOFF_BRAIN_NOT_COMPLETED
-- CODEX_HANDOFF_BRAIN_MISSION_MISMATCH
-- CODEX_HANDOFF_TASK_TENANT_MISMATCH
-- CODEX_HANDOFF_TASK_MISSION_MISMATCH
-- CODEX_HANDOFF_WORKER_REQUIRED
-- CODEX_HANDOFF_SCOPE_REQUIRED
+### 6. Current stuck W04 Mission
+Do not delete, recreate, retry, or mutate it manually.
 
-Expected bad candidate => log `[RUNNER CLAIM SKIP]` and continue to next candidate.
+After deploy + Runner restart:
+- if its Task remains claimable, Runner should claim it normally
+- exactly one Execution Run should be created
+- Codex should start
 
-Unexpected infrastructure/programming error => still return 500.
-
-### 3. Existing stuck ASSIGNED task
-The currently stuck W04 task must be recoverable if:
-- tenant matches
-- mission not cancelled
-- Brain Run completed
-- worker is eligible
-- task state is QUEUED or ASSIGNED
-
-Do not duplicate Task or Run.
-The transaction should claim it once and move it to RUNNING.
-
-### 4. Make authenticated Runner 500 diagnostic useful
-For `/api/runner/next-task` only, on unexpected errors:
-- keep server log with stack/code
-- return a safe machine-readable diagnostic to the authenticated Runner:
-  - `error: "RUNNER_CLAIM_INTERNAL_ERROR"`
-  - `detail: <safe error.message, max 500 chars>`
-  - no stack
-  - no secret
-  - no credentials
-
-Update Runner API error formatting so terminal prints the safe `detail` when present.
-
-This allows future production diagnosis without opening Cloud Run logs.
-
-Example:
-```text
-[SHADOW POLL ERROR] 500 RUNNER_CLAIM_INTERNAL_ERROR: <detail> retrying...
-```
-
-### 5. Version
-Bump:
-- app/runtime visible version: `v0.4.0.4`
-- runner package version consistently
+### 7. Version
+Bump consistently to:
+- `v0.4.0.5`
+- runner package `0.4.0-5`
 
 ## TESTS
-Add tests for:
 
-1. QUEUED task can be handed off.
-2. ASSIGNED task can be handed off/recovered.
-3. ASSIGNED W04 task is claimed once.
-4. RUNNING task cannot be claimed.
-5. Expected malformed candidate is skipped, not HTTP 500.
-6. Unexpected internal error returns diagnostic `RUNNER_CLAIM_INTERNAL_ERROR`.
-7. Runner prints returned safe detail and keeps retrying.
-8. W01 flow remains green.
-9. W04 multi-worker flow remains green.
-10. tenant isolation remains green.
-11. W01 Git permissions remain W01-only.
+Add focused tests proving:
+
+1. Claiming a Task with `brain_run_id === undefined` does not throw Firestore serialization error.
+2. Persisted Execution Run stores `brain_run_id: null`.
+3. Persisted Execution Run stores `parent_run_id: null`.
+4. Returned claim payload uses `null`, not `undefined`.
+5. Task with a real `brain_run_id` preserves it.
+6. Task with real Brain Run still validates Brain completion.
+7. W04 legacy/stuck claim creates exactly one Execution Run.
+8. No duplicate Runs on repeated polling.
+9. tenant isolation remains intact.
+10. W01 flow remains green.
+11. safe diagnostics remain green.
 12. full suite passes.
 
 Run:
 `node --test`
 
 ## SUCCESS CRITERIA
-After human deploy + Runner restart:
-- no repeated generic 500
-- if current W04 task is valid QUEUED/ASSIGNED, Runner claims it
-- terminal proceeds to Codex execution
-- if another unexpected backend error exists, terminal shows its safe exact detail instead of only `INTERNAL_SERVER_ERROR`
+After human deploy + Runner restart, this error disappears:
+
+```text
+Cannot use "undefined" as a Firestore value (found in field "brain_run_id")
+```
+
+Expected next behavior:
+- Runner claims the pending W04 Task, or
+- returns normal no-work polling,
+- but does NOT 500.
+
+If W04 Task is claimed, Codex CLI starts automatically.
 
 ## STOP CONDITIONS
-- Do not revert to W01-only.
-- Do not delete the stuck Mission/Task.
+- Do not enable a broad Firestore setting as a shortcut.
+- Do not delete/recreate pending Mission/Task.
+- Do not fabricate Brain IDs.
 - Do not create duplicate Runs.
-- Do not weaken tenant checks.
-- Do not let Codex become Brain.
+- Do not revert to W01-only.
+- Do not weaken tenant isolation.
 - Do not deploy.
 - Do not push.
 
 ## DEPLOY
-Codex implements + tests only.
-Human commit/push + manual Cloud Run deploy.
-Then restart Shadow Runner.
+Codex:
+- inspect
+- implement
+- test
+- stop
+
+Human:
+- commit/push
+- manual Cloud Run deploy
+- restart Shadow Runner

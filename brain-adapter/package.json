@@ -1,6 +1,6 @@
 {
   "name": "mrapi-brain-adapter-shadow",
-  "version": "0.4.0-4",
+  "version": "0.4.0-5",
   "private": true,
   "scripts": {
     "start": "node brain-adapter.js"

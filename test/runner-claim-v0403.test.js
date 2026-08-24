@@ -157,17 +157,7 @@ function seedBase(db, tenantId = 'tenant_a') {
 
 function seedTask(db, id, workerId, overrides = {}) {
   const missionId = overrides.mission_id || `mission_${id}`;
-  if (overrides.createMission !== false) {
-    db.set('missions', missionId, {
-      id: missionId,
-      tenant_id: overrides.tenant_id || 'tenant_a',
-      workspace_id: 'workspace_1',
-      project_id: 'project_1',
-      objective: `Mission ${id}`,
-      state: overrides.mission_state || 'PLANNING'
-    });
-  }
-  db.set('tasks', id, {
+  const task = {
     id,
     tenant_id: overrides.tenant_id || 'tenant_a',
     mission_id: missionId,
@@ -186,13 +176,30 @@ function seedTask(db, id, workerId, overrides = {}) {
     },
     attempt_count: 0,
     created_at: { toMillis: () => overrides.created_at || 1 }
-  });
+  };
+  if (Object.prototype.hasOwnProperty.call(overrides, 'brain_run_id')) {
+    task.brain_run_id = overrides.brain_run_id;
+  }
+  if (Object.prototype.hasOwnProperty.call(overrides, 'brain_completed_at')) {
+    task.brain_completed_at = overrides.brain_completed_at;
+  }
+  if (overrides.createMission !== false) {
+    db.set('missions', missionId, {
+      id: missionId,
+      tenant_id: overrides.tenant_id || 'tenant_a',
+      workspace_id: 'workspace_1',
+      project_id: 'project_1',
+      objective: `Mission ${id}`,
+      state: overrides.mission_state || 'PLANNING'
+    });
+  }
+  db.set('tasks', id, task);
 }
 
 async function registerCommonExecutor(db, tenantId = 'tenant_a') {
   return registerExecutor(db, tenantId, {
     executor_id: 'executor_shadow_codex_01',
-    runner_version: 'v0.4.0.4',
+    runner_version: 'v0.4.0.5',
     worker_ids: ['W01', 'W02', 'W03', 'W04', 'W05'],
     capabilities: ['EXECUTION_RUN:CODEX_CLI_AUTO', 'CODEX_HANDOFF:VALIDATED']
   });
@@ -244,6 +251,86 @@ test('v0.4.0.4 ASSIGNED W04 task is recovered and claimed once', async () => {
   assert.equal(db.get('tasks', 'task_assigned_w04').state, 'RUNNING');
   assert.equal(second, null);
   assert.equal(Object.values(db.collections.runs || {}).filter((run) => run.run_type === 'EXECUTION_RUN').length, 1);
+});
+
+test('v0.4.0.5 legacy task with undefined brain_run_id persists null linkage', async () => {
+  const db = new FakeDb();
+  seedBase(db);
+  await registerCommonExecutor(db);
+  seedTask(db, 'task_undefined_brain', 'W04', { brain_run_id: undefined });
+
+  let claim;
+  await assert.doesNotReject(async () => {
+    claim = await claimNextTask(db, 'tenant_a', 'executor_shadow_codex_01', {
+      repository_path: 'C:\\repo'
+    });
+  });
+
+  const run = db.get('runs', claim.run.id);
+  assert.equal(run.brain_run_id, null);
+  assert.equal(run.parent_run_id, null);
+  assert.equal(claim.run.brain_run_id, null);
+  assert.equal(claim.run.parent_run_id, null);
+  assert.equal(claim.task.brain_run_id, null);
+});
+
+test('v0.4.0.5 task with real brain_run_id preserves and validates it', async () => {
+  const db = new FakeDb();
+  seedBase(db);
+  await registerCommonExecutor(db);
+  db.set('runs', 'brain_1', {
+    id: 'brain_1',
+    tenant_id: 'tenant_a',
+    run_type: 'BRAIN_RUN',
+    state: 'COMPLETED',
+    mission_id: 'mission_task_real_brain',
+    workspace_id: 'workspace_1',
+    project_id: 'project_1',
+    brain_output: {
+      task_spec: {
+        objective: 'Execute with Brain context',
+        instructions: 'Use the real Brain handoff.'
+      }
+    }
+  });
+  seedTask(db, 'task_real_brain', 'W04', {
+    brain_run_id: 'brain_1',
+    brain_completed_at: { toMillis: () => 1 }
+  });
+
+  const claim = await claimNextTask(db, 'tenant_a', 'executor_shadow_codex_01', {
+    repository_path: 'C:\\repo'
+  });
+  const run = db.get('runs', claim.run.id);
+
+  assert.equal(run.brain_run_id, 'brain_1');
+  assert.equal(run.parent_run_id, 'brain_1');
+  assert.equal(claim.run.brain_run_id, 'brain_1');
+  assert.equal(claim.codex_handoff.brain_run_id, 'brain_1');
+});
+
+test('v0.4.0.5 task with real Brain Run still requires completed Brain', async () => {
+  const db = new FakeDb();
+  seedBase(db);
+  await registerCommonExecutor(db);
+  db.set('runs', 'brain_incomplete', {
+    id: 'brain_incomplete',
+    tenant_id: 'tenant_a',
+    run_type: 'BRAIN_RUN',
+    state: 'RUNNING',
+    mission_id: 'mission_task_incomplete_brain'
+  });
+  seedTask(db, 'task_incomplete_brain', 'W04', {
+    brain_run_id: 'brain_incomplete',
+    brain_completed_at: { toMillis: () => 1 }
+  });
+
+  const claim = await claimNextTask(db, 'tenant_a', 'executor_shadow_codex_01', {
+    repository_path: 'C:\\repo'
+  });
+
+  assert.equal(claim, null);
+  assert.equal(Object.values(db.collections.runs || {}).filter((run) => run.run_type === 'EXECUTION_RUN').length, 0);
 });
 
 test('v0.4.0.4 RUNNING task cannot be claimed', async () => {
