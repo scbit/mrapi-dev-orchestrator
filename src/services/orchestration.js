@@ -848,10 +848,20 @@ function normalizeMissionPlan(rawResponse, input = {}, brainOutput = {}) {
   const source = parsed?.parsed && parsed.parsed.contract === 'MISSION_PLAN_V1'
     ? parsed.parsed
     : {};
+  const hasMissionPlanContract = source.contract === 'MISSION_PLAN_V1';
   const taskSpec = brainOutput.task_spec || {};
+  const sourceExecutionSpec = source.execution_spec && typeof source.execution_spec === 'object'
+    ? source.execution_spec
+    : null;
   const executionSpec = source.execution_spec && typeof source.execution_spec === 'object'
     ? source.execution_spec
-    : {
+    : hasMissionPlanContract
+      ? {
+          instructions: '',
+          success_criteria: [],
+          stop_conditions: []
+        }
+      : {
         instructions: taskSpec.instructions || brainOutput.final_result_text || raw,
         success_criteria: [],
         stop_conditions: []
@@ -859,6 +869,12 @@ function normalizeMissionPlan(rawResponse, input = {}, brainOutput = {}) {
 
   const requiresExecution = parseBoolean(source.requires_execution);
   const fallbackRequiresExecution = brainOutput.requires_execution !== false;
+
+  const planRequiresExecution = requiresExecution === undefined ? fallbackRequiresExecution : requiresExecution;
+  const executionType = normalizeExecutionType(
+    source.execution_type || brainOutput.execution_type || (planRequiresExecution ? 'EXECUTOR' : 'BRAIN_ONLY'),
+    planRequiresExecution
+  );
 
   return {
     contract: 'MISSION_PLAN_V1',
@@ -871,14 +887,85 @@ function normalizeMissionPlan(rawResponse, input = {}, brainOutput = {}) {
     risks: arrayOfStrings(source.risks),
     assumptions: arrayOfStrings(source.assumptions),
     permissions_required: arrayOfStrings(source.permissions_required),
-    requires_execution: requiresExecution === undefined ? fallbackRequiresExecution : requiresExecution,
-    execution_type: String(source.execution_type || (fallbackRequiresExecution ? 'EXECUTOR' : 'BRAIN_ONLY')).trim(),
+    requires_execution: planRequiresExecution,
+    execution_type: executionType.value,
+    execution_type_raw: executionType.raw,
+    execution_type_error: executionType.error,
     execution_spec: {
       instructions: String(executionSpec.instructions || taskSpec.instructions || brainOutput.final_result_text || '').trim(),
       success_criteria: arrayOfStrings(executionSpec.success_criteria),
       stop_conditions: arrayOfStrings(executionSpec.stop_conditions)
-    }
+    },
+    execution_spec_missing: hasMissionPlanContract && planRequiresExecution && !sourceExecutionSpec
   };
+}
+
+function normalizeExecutionType(value, requiresExecution = true) {
+  const raw = String(value || '').trim();
+  const upper = raw.toUpperCase();
+  if (requiresExecution === false) {
+    return {
+      value: 'BRAIN_ONLY',
+      raw: raw || 'BRAIN_ONLY',
+      error: upper && upper !== 'BRAIN_ONLY' ? 'PLAN_EXECUTION_TYPE_UNKNOWN' : null
+    };
+  }
+  if (['EXECUTOR', 'EXECUTION', 'CODEX'].includes(upper)) {
+    return {
+      value: 'EXECUTOR',
+      raw: raw || upper,
+      error: null
+    };
+  }
+  return {
+    value: upper || null,
+    raw: raw || null,
+    error: 'PLAN_EXECUTION_TYPE_UNKNOWN'
+  };
+}
+
+function validateExecutionPlan(plan) {
+  if (plan.requires_execution === false) return null;
+  const executionType = normalizeExecutionType(plan.execution_type, true);
+  if (executionType.error) {
+    return {
+      code: 'PLAN_EXECUTION_TYPE_UNKNOWN',
+      message: `Unknown execution type: ${executionType.raw || 'missing'}`,
+      stage: 'APPROVAL'
+    };
+  }
+  if (
+    plan.execution_spec_missing === true ||
+    !plan.execution_spec ||
+    typeof plan.execution_spec !== 'object' ||
+    !hasMeaningfulText(plan.execution_spec.instructions)
+  ) {
+    return {
+      code: 'PLAN_EXECUTION_SPEC_MISSING',
+      message: 'Approved execution plan is missing execution_spec.instructions.',
+      stage: 'APPROVAL'
+    };
+  }
+  return null;
+}
+
+function blockMissionForApproval(tx, missionRef, plan, input, blocker) {
+  tx.set(missionRef, {
+    state: 'BLOCKED',
+    approval_status: input.approval_status || 'APPROVED',
+    approved_plan_revision_id: plan?.id || null,
+    approved_at: timestamp(),
+    approved_by: input.approved_by || 'operator',
+    block_reason: blocker.code,
+    blocked_reason: blocker.code,
+    blocker_code: blocker.code,
+    blocker_message: String(blocker.message || blocker.code).slice(0, 2000),
+    blocker_stage: blocker.stage || 'APPROVAL',
+    blocker_source_stage: blocker.stage || 'APPROVAL',
+    blocker_plan_revision_id: plan?.id || null,
+    blocker_brain_run_id: plan?.brain_run_id || null,
+    updated_at: timestamp()
+  }, { merge: true });
 }
 
 function planSummary(plan) {
@@ -1161,7 +1248,10 @@ async function completeBrainRun(db, tenantId, runId, input) {
         permissions_required: plan.permissions_required,
         requires_execution: plan.requires_execution,
         execution_type: plan.execution_type,
+        execution_type_raw: plan.execution_type_raw,
+        execution_type_error: plan.execution_type_error,
         execution_spec: plan.execution_spec,
+        execution_spec_missing: plan.execution_spec_missing,
         user_change_request: mission.pending_change_request || null,
         brain_run_id: runId,
         raw_response: outputText,
@@ -1505,7 +1595,8 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
   const missionRef = db.collection('missions').doc(missionId);
   let result;
 
-  await db.runTransaction(async (tx) => {
+  try {
+    await db.runTransaction(async (tx) => {
     const missionSnap = await tx.get(missionRef);
     if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
       const error = new Error('MISSION_NOT_FOUND');
@@ -1519,7 +1610,7 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
       .map((doc) => ({ id: doc.id, ...doc.data() }))
       .find((task) => task.mission_id === missionId && task.approved_plan_revision_id);
 
-    if (mission.approval_status === 'APPROVED' || mission.state === 'RUNNING') {
+    if ((mission.approval_status === 'APPROVED' || mission.state === 'RUNNING') && existingTask) {
       result = {
         success: true,
         reused: true,
@@ -1530,13 +1621,23 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
       return;
     }
 
-    if (mission.state !== 'READY' || mission.approval_status !== 'PENDING' || !mission.current_plan_revision_id) {
+    const recoveringApprovedPlan = mission.approval_status === 'APPROVED' &&
+      !existingTask &&
+      (mission.approved_plan_revision_id || mission.current_plan_revision_id);
+
+    if (
+      !recoveringApprovedPlan &&
+      (mission.state !== 'READY' || mission.approval_status !== 'PENDING' || !mission.current_plan_revision_id)
+    ) {
       const error = new Error('MISSION_PLAN_NOT_APPROVABLE');
       error.status = 409;
       throw error;
     }
 
-    const planRef = db.collection('mission_plans').doc(mission.current_plan_revision_id);
+    const planRevisionId = recoveringApprovedPlan
+      ? mission.approved_plan_revision_id || mission.current_plan_revision_id
+      : mission.current_plan_revision_id;
+    const planRef = db.collection('mission_plans').doc(planRevisionId);
     const planSnap = await tx.get(planRef);
     if (!planSnap.exists || planSnap.data().tenant_id !== tenantId || planSnap.data().mission_id !== missionId) {
       const error = new Error('PLAN_NOT_FOUND');
@@ -1553,19 +1654,38 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
     }, { merge: true });
 
     if (plan.permissions_required?.some((item) => /deploy|publish|production destructive/i.test(String(item)))) {
-      tx.set(missionRef, {
-        state: 'BLOCKED',
+      blockMissionForApproval(tx, missionRef, plan, input, {
+        code: 'PERMISSION_REQUIRED',
+        message: 'Plan requires an explicit human permission before execution.',
+        stage: 'APPROVAL'
+      });
+      result = {
+        success: false,
+        blocked: true,
+        error: 'PERMISSION_REQUIRED',
+        blocker_code: 'PERMISSION_REQUIRED',
+        mission_id: missionId,
+        plan_revision_id: plan.id
+      };
+      return;
+    }
+
+    const executionBlocker = validateExecutionPlan(plan);
+    if (executionBlocker) {
+      blockMissionForApproval(tx, missionRef, plan, input, executionBlocker);
+      tx.set(planRef, {
+        status: 'BLOCKED',
         approval_status: 'APPROVED',
-        approved_plan_revision_id: plan.id,
-        approved_at: timestamp(),
-        approved_by: input.approved_by || 'operator',
-        blocked_reason: 'PERMISSION_REQUIRED',
+        blocker_code: executionBlocker.code,
+        blocker_message: executionBlocker.message,
         updated_at: timestamp()
       }, { merge: true });
       result = {
         success: false,
         blocked: true,
-        error: 'PERMISSION_REQUIRED',
+        error: executionBlocker.code,
+        blocker_code: executionBlocker.code,
+        blocker_message: executionBlocker.message,
         mission_id: missionId,
         plan_revision_id: plan.id
       };
@@ -1619,46 +1739,53 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
 
     const taskRef = db.collection('tasks').doc();
     const taskSpec = taskSpecFromPlan(plan, mission);
-    tx.set(taskRef, {
-      id: taskRef.id,
-      tenant_id: tenantId,
-      mission_id: missionId,
-      workspace_id: plan.workspace_id || mission.workspace_id || null,
-      project_id: plan.project_id || mission.project_id || null,
-      worker_id: plan.worker_id || mission.preferred_worker_id,
-      title: taskSpec.title,
-      objective: taskSpec.objective,
-      task_spec: taskSpec,
-      priority: mission.priority || 'NORMAL',
-      state: 'QUEUED',
-      phase: 'EXECUTION_PENDING',
-      attempt_count: 0,
-      brain_run_id: plan.brain_run_id || null,
-      approved_plan_revision_id: plan.id,
-      brain_output: {
-        objective: taskSpec.objective,
-        worker_id: plan.worker_id || mission.preferred_worker_id,
-        requires_execution: true,
-        execution_type: plan.execution_type || 'EXECUTOR',
-        task_spec: taskSpec,
-        execution_constraints: {
-          no_gcp: true,
-          no_cloud_run: true,
-          no_deploy: true,
-          deployment: 'HUMAN_MANUAL_DEPLOY'
-        },
-        brain_run_id: plan.brain_run_id || null,
+    try {
+      tx.set(taskRef, {
+        id: taskRef.id,
         tenant_id: tenantId,
+        mission_id: missionId,
         workspace_id: plan.workspace_id || mission.workspace_id || null,
         project_id: plan.project_id || mission.project_id || null,
-        mission_id: missionId
-      },
-      brain_completed_at: timestamp(),
-      current_run_id: null,
-      claimed_by_executor_id: null,
-      created_at: timestamp(),
-      updated_at: timestamp()
-    });
+        worker_id: plan.worker_id || mission.preferred_worker_id,
+        title: taskSpec.title,
+        objective: taskSpec.objective,
+        task_spec: taskSpec,
+        priority: mission.priority || 'NORMAL',
+        state: 'QUEUED',
+        phase: 'EXECUTION_PENDING',
+        attempt_count: 0,
+        brain_run_id: plan.brain_run_id || null,
+        approved_plan_revision_id: plan.id,
+        brain_output: {
+          objective: taskSpec.objective,
+          worker_id: plan.worker_id || mission.preferred_worker_id,
+          requires_execution: true,
+          execution_type: normalizeExecutionType(plan.execution_type, true).value,
+          task_spec: taskSpec,
+          execution_constraints: {
+            no_gcp: true,
+            no_cloud_run: true,
+            no_deploy: true,
+            deployment: 'HUMAN_MANUAL_DEPLOY'
+          },
+          brain_run_id: plan.brain_run_id || null,
+          tenant_id: tenantId,
+          workspace_id: plan.workspace_id || mission.workspace_id || null,
+          project_id: plan.project_id || mission.project_id || null,
+          mission_id: missionId
+        },
+        brain_completed_at: timestamp(),
+        current_run_id: null,
+        claimed_by_executor_id: null,
+        created_at: timestamp(),
+        updated_at: timestamp()
+      });
+    } catch (error) {
+      error.approvalStage = 'TASK_CREATION';
+      error.planRevisionId = plan.id;
+      error.brainRunId = plan.brain_run_id || null;
+      throw error;
+    }
 
     tx.set(missionRef, {
       state: 'RUNNING',
@@ -1677,6 +1804,38 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
       requires_execution: true
     };
   });
+  } catch (error) {
+    if (error.approvalStage === 'TASK_CREATION') {
+      const missionSnap = await missionRef.get();
+      const mission = missionSnap.exists && missionSnap.data().tenant_id === tenantId
+        ? missionSnap.data()
+        : {};
+      await missionRef.set({
+        state: 'BLOCKED',
+        block_reason: 'TASK_CREATION_FAILED',
+        blocked_reason: 'TASK_CREATION_FAILED',
+        blocker_code: 'TASK_CREATION_FAILED',
+        blocker_message: String(error.message || 'Task creation failed').slice(0, 2000),
+        blocker_stage: 'TASK_CREATION',
+        blocker_source_stage: 'TASK_CREATION',
+        blocker_plan_revision_id: error.planRevisionId || mission.approved_plan_revision_id || mission.current_plan_revision_id || null,
+        blocker_brain_run_id: error.brainRunId || mission.brain_run_id || null,
+        updated_at: timestamp()
+      }, { merge: true });
+      result = {
+        success: false,
+        blocked: true,
+        error: 'TASK_CREATION_FAILED',
+        blocker_code: 'TASK_CREATION_FAILED',
+        blocker_message: String(error.message || 'Task creation failed').slice(0, 2000),
+        mission_id: missionId,
+        plan_revision_id: error.planRevisionId || null,
+        brain_run_id: error.brainRunId || null
+      };
+    } else {
+      throw error;
+    }
+  }
 
   await emitEvent(db, tenantId, 'MISSION_PLAN_APPROVED', result, result.blocked ? 'WARNING' : 'OPERATIVE');
   return result;

@@ -1,6 +1,6 @@
 {
   "name": "ia-sentire-customs-broker",
-  "version": "0.4.1-1",
+  "version": "0.4.1-2",
   "private": true,
   "description": "MRAPI DEV ORCHESTRATOR - multi-tenant autonomous worker control room",
   "main": "src/server.js",

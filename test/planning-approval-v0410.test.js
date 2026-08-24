@@ -1,12 +1,18 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const {
   dispatchMission,
   completeBrainRun,
   approveMissionPlan,
   requestMissionPlanChanges,
-  getMissionPlan
+  getMissionPlan,
+  claimNextTask
 } = require('../src/services/orchestration');
+
+const ROOT = path.join(__dirname, '..');
+const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
 
 class FakeSnapshot {
   constructor(id, data, ref = null) {
@@ -102,6 +108,7 @@ class FakeDb {
   constructor() {
     this.collections = {};
     this.counters = {};
+    this.failNextApprovedTaskSet = false;
   }
 
   collection(name) {
@@ -119,6 +126,10 @@ class FakeDb {
   }
 
   set(collectionName, id, data, options = {}) {
+    if (this.failNextApprovedTaskSet && collectionName === 'tasks' && data.approved_plan_revision_id) {
+      this.failNextApprovedTaskSet = false;
+      throw new Error('SIMULATED_TASK_WRITE_FAILURE');
+    }
     if (!this.collections[collectionName]) this.collections[collectionName] = {};
     const existing = this.collections[collectionName][id] || {};
     this.collections[collectionName][id] = options.merge ? { ...existing, ...data } : { ...data };
@@ -168,26 +179,29 @@ function seedPlanningMission(db, workerId = 'W01', missionId = `mission_${worker
 }
 
 function planOutput(overrides = {}) {
-  return `<MRAPI_PLAN>
-${JSON.stringify({
-  contract: 'MISSION_PLAN_V1',
-  objective: overrides.objective || 'Improve the HUB',
-  approach: overrides.approach || 'Review the current UI, implement carefully, and verify locally.',
-  planned_actions: [
-    { title: 'Implement approved change', description: 'Make the requested local change.', executor_required: overrides.requires_execution !== false }
-  ],
-  expected_deliverables: ['Updated code', 'Test result'],
-  risks: ['Regression risk'],
-  assumptions: ['Local tests are enough'],
-  permissions_required: overrides.permissions_required || [],
-  requires_execution: overrides.requires_execution !== false,
-  execution_type: overrides.requires_execution === false ? 'BRAIN_ONLY' : 'EXECUTOR',
-  execution_spec: {
-    instructions: overrides.instructions || 'Edit the local repository and run node --test.',
-    success_criteria: ['Tests pass'],
-    stop_conditions: ['Do not deploy']
+  const payload = {
+    contract: 'MISSION_PLAN_V1',
+    objective: overrides.objective || 'Improve the HUB',
+    approach: overrides.approach || 'Review the current UI, implement carefully, and verify locally.',
+    planned_actions: [
+      { title: 'Implement approved change', description: 'Make the requested local change.', executor_required: overrides.requires_execution !== false }
+    ],
+    expected_deliverables: ['Updated code', 'Test result'],
+    risks: ['Regression risk'],
+    assumptions: ['Local tests are enough'],
+    permissions_required: overrides.permissions_required || [],
+    requires_execution: overrides.requires_execution !== false,
+    execution_type: overrides.execution_type || (overrides.requires_execution === false ? 'BRAIN_ONLY' : 'EXECUTOR')
+  };
+  if (overrides.omit_execution_spec !== true) {
+    payload.execution_spec = {
+      instructions: overrides.instructions || 'Edit the local repository and run node --test.',
+      success_criteria: ['Tests pass'],
+      stop_conditions: ['Do not deploy']
+    };
   }
-})}
+  return `<MRAPI_PLAN>
+${JSON.stringify(payload)}
 </MRAPI_PLAN>`;
 }
 
@@ -228,6 +242,114 @@ test('v0.4.1.0 approval moves Mission running and creates one execution Task ide
   assert.match(values(db, 'tasks')[0].task_spec.instructions, /node --test/);
 });
 
+test('v0.4.1.2 EXECUTOR plan approves, creates one Task, and Runner can claim it', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W01', 'mission_executor', planOutput({ execution_type: 'EXECUTOR' }));
+  db.set('executors', 'executor_shadow_codex_01', {
+    id: 'executor_shadow_codex_01',
+    tenant_id: 'tenant_a',
+    worker_ids: ['W01'],
+    state: 'ONLINE',
+    host_name: 'Shadow'
+  });
+  db.set('worker_profiles', 'profile_W01', {
+    id: 'profile_W01',
+    tenant_id: 'tenant_a',
+    permissions: { allow_git_commit: false, allow_git_push: false }
+  });
+
+  const approval = await approveMissionPlan(db, 'tenant_a', 'mission_executor', { approved_by: 'test' });
+  const tasks = values(db, 'tasks');
+
+  assert.equal(approval.success, true);
+  assert.equal(db.get('missions', 'mission_executor').state, 'RUNNING');
+  assert.equal(db.get('missions', 'mission_executor').blocked_reason, undefined);
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0].state, 'QUEUED');
+  assert.equal(tasks[0].brain_output.execution_type, 'EXECUTOR');
+
+  const claim = await claimNextTask(db, 'tenant_a', 'executor_shadow_codex_01', {
+    repository_path: 'C:\\repo'
+  });
+  assert.equal(claim.task.id, tasks[0].id);
+  assert.equal(db.get('tasks', tasks[0].id).state, 'RUNNING');
+});
+
+test('v0.4.1.2 EXECUTION and CODEX execution types normalize to EXECUTOR', async () => {
+  for (const executionType of ['EXECUTION', 'CODEX']) {
+    const db = new FakeDb();
+    await readyPlan(db, 'W01', `mission_${executionType}`, planOutput({ execution_type: executionType }));
+
+    const approval = await approveMissionPlan(db, 'tenant_a', `mission_${executionType}`, {});
+
+    assert.equal(approval.success, true);
+    assert.equal(values(db, 'tasks')[0].brain_output.execution_type, 'EXECUTOR');
+    assert.equal(values(db, 'mission_plans')[0].execution_type, 'EXECUTOR');
+    assert.equal(values(db, 'mission_plans')[0].execution_type_raw, executionType);
+  }
+});
+
+test('v0.4.1.2 missing execution_spec blocks with explicit diagnostics', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W01', 'mission_missing_spec', planOutput({ omit_execution_spec: true }));
+
+  const approval = await approveMissionPlan(db, 'tenant_a', 'mission_missing_spec', {});
+  const mission = db.get('missions', 'mission_missing_spec');
+
+  assert.equal(approval.blocked, true);
+  assert.equal(approval.blocker_code, 'PLAN_EXECUTION_SPEC_MISSING');
+  assert.equal(mission.state, 'BLOCKED');
+  assert.equal(mission.blocker_code, 'PLAN_EXECUTION_SPEC_MISSING');
+  assert.equal(mission.blocker_stage, 'APPROVAL');
+  assert.equal(values(db, 'tasks').length, 0);
+});
+
+test('v0.4.1.2 unknown execution type blocks with explicit diagnostics', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W01', 'mission_unknown_type', planOutput({ execution_type: 'SHELL_ROBOT' }));
+
+  const approval = await approveMissionPlan(db, 'tenant_a', 'mission_unknown_type', {});
+  const mission = db.get('missions', 'mission_unknown_type');
+
+  assert.equal(approval.blocked, true);
+  assert.equal(approval.blocker_code, 'PLAN_EXECUTION_TYPE_UNKNOWN');
+  assert.equal(mission.state, 'BLOCKED');
+  assert.equal(mission.blocker_code, 'PLAN_EXECUTION_TYPE_UNKNOWN');
+  assert.equal(values(db, 'tasks').length, 0);
+});
+
+test('v0.4.1.2 task creation exception persists blocker diagnostics', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W01', 'mission_task_failure');
+  db.failNextApprovedTaskSet = true;
+
+  const approval = await approveMissionPlan(db, 'tenant_a', 'mission_task_failure', {});
+  const mission = db.get('missions', 'mission_task_failure');
+
+  assert.equal(approval.blocked, true);
+  assert.equal(approval.blocker_code, 'TASK_CREATION_FAILED');
+  assert.equal(mission.state, 'BLOCKED');
+  assert.equal(mission.blocker_stage, 'TASK_CREATION');
+  assert.equal(mission.blocker_message, 'SIMULATED_TASK_WRITE_FAILURE');
+});
+
+test('v0.4.1.2 approval retry recovers an approved plan without duplicating Task', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W01', 'mission_partial_approval');
+  const plan = values(db, 'mission_plans')[0];
+  db.set('missions', 'mission_partial_approval', {
+    state: 'RUNNING',
+    approval_status: 'APPROVED',
+    approved_plan_revision_id: plan.id
+  }, { merge: true });
+
+  const approval = await approveMissionPlan(db, 'tenant_a', 'mission_partial_approval', {});
+
+  assert.equal(approval.success, true);
+  assert.equal(values(db, 'tasks').length, 1);
+  assert.equal(values(db, 'tasks')[0].approved_plan_revision_id, plan.id);
+});
+
 test('v0.4.1.0 request changes preserves revision 1 and revision 2 returns ready', async () => {
   const db = new FakeDb();
   await readyPlan(db, 'W02', 'mission_changes');
@@ -249,6 +371,8 @@ test('v0.4.1.0 request changes preserves revision 1 and revision 2 returns ready
   assert.equal(plans[0].revision, 1);
   assert.equal(plans[0].status, 'SUPERSEDED');
   assert.equal(plans[1].revision, 2);
+  assert.equal(db.get('runs', secondRun.id).state, 'COMPLETED');
+  assert.equal(db.get('missions', 'mission_changes').state, 'READY');
   assert.equal(db.get('missions', 'mission_changes').approval_status, 'PENDING');
 });
 
@@ -299,6 +423,23 @@ test('v0.4.1.0 tenant isolation protects plan APIs', async () => {
     () => requestMissionPlanChanges(db, 'tenant_b', 'mission_tenant', { message: 'Change' }),
     /MISSION_NOT_FOUND/
   );
+});
+
+test('v0.4.1.2 UI renders blocked diagnostics and legacy fallback reason', () => {
+  const source = read('src/public/app.js');
+  assert.match(source, /renderBlockerDiagnostics/);
+  assert.match(source, /blocker_code/);
+  assert.match(source, /Source stage:/);
+  assert.match(source, /Block reason unavailable - inspect event\/run history/);
+});
+
+test('v0.4.1.2 Brain adapter returns after a stable valid plan response', () => {
+  const source = read('brain-adapter/adapters/chatgpt-web.js');
+  assert.match(source, /assistant response stable/);
+  assert.match(source, /return lastText/);
+  assert.doesNotMatch(source, /waitForUser|another user message|REQUEST CHANGES.*wait/i);
+  assert.match(read('brain-adapter/lib/prompts.js'), /execution_type must be EXECUTOR/);
+  assert.doesNotMatch(read('brain-adapter/lib/prompts.js'), /execution_type must be CODEX/);
 });
 
 test('v0.4.1.0 planning approval is common to W01-W05', async () => {

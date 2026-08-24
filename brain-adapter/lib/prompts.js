@@ -78,7 +78,7 @@ If requires_execution is false, execution_type must be BRAIN_ONLY and you must p
 Write the final answer/report here.
 </MRAPI_RESULT>
 
-If requires_execution is true, execution_type must be CODEX, omit the result block unless there is a genuine preliminary user-facing result, and put the concrete Codex executor task only inside task_spec/instructions in the control JSON. Do not put final prose or reports in executor instructions.
+If requires_execution is true in a planning run, execution_type must be EXECUTOR, omit the result block unless there is a genuine preliminary user-facing result, and put the concrete Codex executor task only inside execution_spec.instructions in the MRAPI_PLAN JSON. Do not put final prose or reports in executor instructions.
 
 For execution-required Missions, the Codex executor package must use EXACTLY these headings:
 OBJECTIVE

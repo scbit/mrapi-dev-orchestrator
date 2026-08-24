@@ -335,6 +335,25 @@ function renderPlanSection(mission, planData) {
   `;
 }
 
+function renderBlockerDiagnostics(mission) {
+  if (mission.state !== 'BLOCKED') return '';
+  const code = mission.blocker_code || mission.blocked_reason || mission.block_reason || 'BLOCK_REASON_UNAVAILABLE';
+  const reason = mission.blocker_message ||
+    mission.blocked_message ||
+    mission.block_reason_detail ||
+    (code === 'BLOCK_REASON_UNAVAILABLE'
+      ? 'Block reason unavailable - inspect event/run history'
+      : code);
+  const stage = mission.blocker_stage || mission.blocker_source_stage || mission.block_source_stage || 'UNKNOWN';
+  return `
+    <div class="result-block blocker-diagnostics">
+      <strong>${escapeHtml(code)}</strong>
+      <p>${escapeHtml(reason)}</p>
+      <div class="mission-meta">Source stage: ${escapeHtml(stage)}</div>
+    </div>
+  `;
+}
+
 async function openMissionDetail(missionId) {
   const mission = state.missions.find((item) => item.id === missionId);
   if (!mission) return;
@@ -364,6 +383,7 @@ async function openMissionDetail(missionId) {
       </div>
     </div>
     ${progressBar(progress)}
+    ${renderBlockerDiagnostics(mission)}
     ${renderPlanSection(mission, planData)}
     <h3>Runs</h3>
     ${runs.length ? runs.map((run) => `
