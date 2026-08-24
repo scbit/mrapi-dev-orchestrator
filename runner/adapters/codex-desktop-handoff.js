@@ -7,32 +7,17 @@ function sanitizeId(value) {
 }
 
 function buildCodexPrompt({ task, executionRun, cfg }) {
+  const handoff = task.codex_handoff || executionRun.codex_handoff || null;
   const brainInstructions =
+    handoff?.task_spec?.instructions ||
     task.brain_output?.task_spec?.instructions ||
     task.brain_output?.task_spec?.objective ||
     task.brain_output?.objective ||
     task.objective ||
     '';
-
-  return `MRAPI DEV ORCHESTRATOR — CODEX EXECUTION HANDOFF
-
-TASK ID
-${task.id}
-
-EXECUTION RUN ID
-${executionRun.id}
-
-BRAIN RUN ID
-${task.brain_run_id || executionRun.brain_run_id || ''}
-
-LOCAL REPOSITORY
-${cfg.repoPath}
-
-BRAIN INSTRUCTIONS
-${brainInstructions}
-
-EXECUTION RULES
-- You are the Executor, not the Brain.
+  const executionRules = handoff?.execution_rules?.length
+    ? handoff.execution_rules.map((rule) => `- ${rule}`).join('\n')
+    : `- You are the Executor, not the Brain.
 - Work only in the local repository shown above.
 - Follow the Brain instructions exactly.
 - Preserve multi-tenancy and existing functionality.
@@ -40,7 +25,50 @@ EXECUTION RULES
 - Do not access GCP or Cloud Run.
 - Do not deploy.
 - Do not push unless explicitly instructed by the human.
-- Stop if the Brain stop conditions are met.
+- Stop if the Brain stop conditions are met.`;
+
+  return `MRAPI DEV ORCHESTRATOR — CODEX EXECUTION HANDOFF
+
+CONTRACT VERSION
+${handoff?.contract_version || 'LEGACY_CODEX_HANDOFF'}
+
+TASK ID
+${handoff?.task_id || task.id}
+
+EXECUTION RUN ID
+${handoff?.execution_run_id || executionRun.id}
+
+BRAIN RUN ID
+${handoff?.brain_run_id || task.brain_run_id || executionRun.brain_run_id || ''}
+
+MISSION ID
+${handoff?.mission_id || task.mission_id || ''}
+
+TENANT ID
+${handoff?.tenant_id || task.tenant_id || ''}
+
+WORKSPACE ID
+${handoff?.workspace_id || task.workspace_id || ''}
+
+PROJECT ID
+${handoff?.project_id || task.project_id || ''}
+
+LOCAL REPOSITORY
+${handoff?.repository_path || cfg.repoPath}
+
+BRAIN INSTRUCTIONS
+${brainInstructions}
+
+EXECUTION CONSTRAINTS
+${JSON.stringify(handoff?.execution_constraints || {
+  no_gcp: true,
+  no_cloud_run: true,
+  no_deploy: true,
+  deployment: 'HUMAN_MANUAL_DEPLOY'
+}, null, 2)}
+
+EXECUTION RULES
+${executionRules}
 
 RETURN
 - changed files

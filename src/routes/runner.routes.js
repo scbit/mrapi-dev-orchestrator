@@ -44,7 +44,9 @@ function createRunnerRouter({ db }) {
     try {
       const executorId = String(req.body.executor_id || '').trim();
       if (!executorId) return res.status(400).json({ error: 'EXECUTOR_ID_REQUIRED' });
-      const claimed = await claimNextTask(db, req.tenantId, executorId);
+      const claimed = await claimNextTask(db, req.tenantId, executorId, {
+        repository_path: req.body?.repository_path || null
+      });
       if (!claimed) return res.status(204).end();
       res.json(serializeFirestore(claimed));
     } catch (error) {

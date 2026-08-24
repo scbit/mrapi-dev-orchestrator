@@ -61,6 +61,8 @@ async function markWaiting(taskId, message, handoff = null) {
 
 async function executeClaim(claim) {
   const { task, run: executionRun } = claim;
+  const codexHandoff = claim.codex_handoff || task.codex_handoff || null;
+  const handoffTask = codexHandoff ? { ...task, codex_handoff: codexHandoff } : task;
   currentRunId = executionRun.id;
 
   try {
@@ -68,12 +70,13 @@ async function executeClaim(claim) {
     await progress(executionRun.id, 10, 'Preparing Codex desktop handoff');
 
     const prepared = prepareCodexDesktopHandoff({
-      task,
+      task: handoffTask,
       executionRun,
       cfg
     });
 
     const instructions =
+      codexHandoff?.task_spec?.instructions ||
       task.brain_output?.task_spec?.instructions ||
       task.brain_output?.task_spec?.objective ||
       task.brain_output?.objective ||
@@ -82,10 +85,12 @@ async function executeClaim(claim) {
 
     const handoff = {
       type: 'CODEX_APP_MANUAL',
+      contract_version: codexHandoff?.contract_version || null,
       worker_id: task.worker_id,
-      repository_path: cfg.repoPath,
+      repository_path: codexHandoff?.repository_path || cfg.repoPath,
       brain_run_id: task.brain_run_id || executionRun.brain_run_id || null,
       execution_run_id: executionRun.id,
+      codex_handoff: codexHandoff,
       instructions,
       handoff_file: prepared.handoffPath,
       clipboard_ready: prepared.clipboard.copied,
@@ -155,7 +160,8 @@ async function loop() {
       await heartbeat();
 
       const claim = await request('/api/runner/next-task', {
-        executor_id: cfg.executorId
+        executor_id: cfg.executorId,
+        repository_path: cfg.repoPath
       });
 
       if (claim) {

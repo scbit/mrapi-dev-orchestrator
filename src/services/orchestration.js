@@ -6,6 +6,7 @@ try {
 }
 const { RUN_TYPES } = require('../constants/runTypes');
 const { EVIDENCE_TYPES } = require('../constants/evidenceTypes');
+const { buildCodexHandoff } = require('./codexHandoff');
 
 function getEvidenceBucket() {
   return require('./storage').getEvidenceBucket();
@@ -188,7 +189,7 @@ async function heartbeatExecutor(db, tenantId, executorId, payload = {}) {
   return { ok: true, executor_id: executorId };
 }
 
-async function claimNextTask(db, tenantId, executorId) {
+async function claimNextTask(db, tenantId, executorId, options = {}) {
   const executorRef = db.collection('executors').doc(executorId);
   const executorSnap = await executorRef.get();
 
@@ -210,7 +211,6 @@ async function claimNextTask(db, tenantId, executorId) {
   const candidates = queued.docs
     .map((doc) => ({ id: doc.id, ...doc.data() }))
     .filter((task) => allowedWorkerIds.length === 0 || allowedWorkerIds.includes(task.worker_id))
-    .filter((task) => task.brain_run_id && task.brain_completed_at)
     .sort((a, b) => {
       const pd = (priorities[b.priority] || 0) - (priorities[a.priority] || 0);
       if (pd) return pd;
@@ -221,7 +221,7 @@ async function claimNextTask(db, tenantId, executorId) {
     const taskRef = db.collection('tasks').doc(candidate.id);
     const workerRef = db.collection('workers').doc(candidate.worker_id);
     const missionRef = db.collection('missions').doc(candidate.mission_id);
-    const brainRunRef = db.collection('runs').doc(candidate.brain_run_id);
+    const brainRunRef = candidate.brain_run_id ? db.collection('runs').doc(candidate.brain_run_id) : null;
     const runRef = db.collection('runs').doc();
 
     try {
@@ -232,7 +232,7 @@ async function claimNextTask(db, tenantId, executorId) {
           tx.get(taskRef),
           tx.get(workerRef),
           tx.get(missionRef),
-          tx.get(brainRunRef)
+          brainRunRef ? tx.get(brainRunRef) : Promise.resolve(null)
         ]);
 
         if (!taskSnap.exists || taskSnap.data().state !== 'QUEUED') {
@@ -242,18 +242,18 @@ async function claimNextTask(db, tenantId, executorId) {
         }
 
         const task = taskSnap.data();
-        if (!task.brain_run_id || !task.brain_completed_at) {
+        if (task.brain_run_id && !task.brain_completed_at) {
           const error = new Error('TASK_BRAIN_NOT_COMPLETE');
           error.retryCandidate = true;
           throw error;
         }
 
-        if (
+        if (task.brain_run_id && (
           !brainRunSnap.exists ||
           brainRunSnap.data().tenant_id !== tenantId ||
           brainRunSnap.data().run_type !== 'BRAIN_RUN' ||
           brainRunSnap.data().state !== 'COMPLETED'
-        ) {
+        )) {
           const error = new Error('TASK_BRAIN_NOT_COMPLETE');
           error.retryCandidate = true;
           throw error;
@@ -272,6 +272,20 @@ async function claimNextTask(db, tenantId, executorId) {
         }
 
         const attempt = Number(taskSnap.data().attempt_count || 0) + 1;
+        const mission = missionSnap.exists ? { id: missionSnap.id, ...missionSnap.data() } : null;
+        const brainRun = brainRunSnap?.exists ? { id: brainRunSnap.id, ...brainRunSnap.data() } : null;
+        const codexHandoff = buildCodexHandoff({
+          tenantId,
+          task: { id: taskSnap.id, ...task },
+          mission,
+          brainRun,
+          executor: { id: executorId, ...executor },
+          executionRunId: runRef.id,
+          repositoryPath: options.repository_path ||
+            options.repositoryPath ||
+            process.env.MRAPI_REPO_PATH ||
+            'LOCAL_REPOSITORY_NOT_PROVIDED'
+        });
 
         tx.update(taskRef, {
           state: 'RUNNING',
@@ -279,6 +293,7 @@ async function claimNextTask(db, tenantId, executorId) {
           attempt_count: attempt,
           current_run_id: runRef.id,
           execution_run_id: runRef.id,
+          codex_handoff: codexHandoff,
           claimed_by_executor_id: executorId,
           claimed_at: timestamp(),
           updated_at: timestamp()
@@ -312,6 +327,7 @@ async function claimNextTask(db, tenantId, executorId) {
           host_name: executor.host_name || null,
           brain_run_id: candidate.brain_run_id,
           parent_run_id: candidate.brain_run_id,
+          codex_handoff: codexHandoff,
           state: 'RUNNING',
           attempt,
           progress_percent: 0,
@@ -329,7 +345,14 @@ async function claimNextTask(db, tenantId, executorId) {
         }, { merge: true });
 
         claimed = {
-          task: { ...candidate, state: 'RUNNING', current_run_id: runRef.id, attempt_count: attempt },
+          task: {
+            ...candidate,
+            state: 'RUNNING',
+            current_run_id: runRef.id,
+            execution_run_id: runRef.id,
+            attempt_count: attempt,
+            codex_handoff: codexHandoff
+          },
           run: {
             id: runRef.id,
             run_type: 'EXECUTION_RUN',
@@ -337,7 +360,8 @@ async function claimNextTask(db, tenantId, executorId) {
             attempt,
             brain_run_id: candidate.brain_run_id,
             parent_run_id: candidate.brain_run_id
-          }
+          },
+          codex_handoff: codexHandoff
         };
       });
 

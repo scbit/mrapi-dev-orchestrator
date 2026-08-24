@@ -1,16 +1,25 @@
-# CODEX — EXECUTION ONLY
+# CODEX - EXECUTION ONLY
 
-MRAPI DEV v0.3.1-alpha uses Codex manually inside the ChatGPT desktop app.
+MRAPI DEV v0.3.3 uses a validated Codex Handoff contract before Codex receives work.
 
-When MRAPI creates a `WAITING_FOR_CODEX` handoff:
+Lifecycle:
 
-1. Open the local repository already selected in Codex.
-2. Paste the Brain instructions from W01.
-3. Execute locally.
-4. Run tests.
-5. Do not access GCP.
-6. Do not deploy.
-7. Return:
+`MISSION -> BRAIN_RUN -> TASK -> CODEX_HANDOFF -> EXECUTION_RUN -> RESULT`
+
+Rules:
+
+1. Codex is the Executor, not the Brain.
+2. MRAPI DEV remains the source of truth.
+3. The runner may transport the validated handoff to Codex through the desktop app.
+4. Codex may modify only the local repository named in the handoff.
+5. Codex may run local tests.
+6. Codex must not access GCP, Cloud Run, production credentials, or deploy.
+7. Deployment remains `HUMAN MANUAL DEPLOY`.
+
+The handoff package must contain trusted tenant, mission, workspace, project, task, Brain Run, and Execution Run linkage. Scope identifiers come from stored MRAPI records, not task payload overrides.
+
+When MRAPI creates a `WAITING_FOR_CODEX` handoff, return:
+
    - changed files
    - tests
    - success/failure

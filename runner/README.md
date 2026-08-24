@@ -2,7 +2,7 @@
 
 Flow:
 
-`MRAPI DEV → W01 → ChatGPT Web Brain → Codex Executor → MRAPI DEV`
+`MRAPI DEV -> W01 -> ChatGPT Web Brain -> Task -> Codex Handoff -> Codex Executor -> MRAPI DEV`
 
 Shadow requires no GCP credentials.
 
@@ -35,15 +35,21 @@ $env:MRAPI_REPO_PATH="C:\Users\Shadow\Documents\GitHub\mrapi-dev-orchestrator"
 $env:MRAPI_W01_CHAT_URL="https://chatgpt.com/c/..."
 ```
 
-## Codex
+## Codex Handoff
 
-The Runner tries `codex` / `codex.cmd` locally. If your installation exposes another noninteractive command, set:
+The Runner claims a validated execution Task, sends its local repository path to MRAPI DEV, receives a deterministic `CODEX_HANDOFF` package, writes the prompt to a local file, and can copy it to the Windows clipboard.
+
+Codex receives the handoff in the desktop app. Codex is not the Brain and does not control orchestration.
+
+Optional desktop settings:
 
 ```powershell
-$env:MRAPI_CODEX_COMMAND='YOUR COMMAND HERE'
+$env:MRAPI_CODEX_AUTO_CLIPBOARD="true"
+$env:MRAPI_CODEX_HANDOFF_DIR="$env:LOCALAPPDATA\MRAPI\codex-handoffs"
+$env:MRAPI_CODEX_APP_COMMAND='OPTIONAL COMMAND TO OPEN CODEX'
 ```
 
-If Codex command execution is unavailable, the Brain Run can still finish and the Task moves to WAITING instead of pretending success.
+The handoff always includes explicit local-only, no-GCP, no-Cloud-Run, and no-deploy constraints. Deployment remains human/manual.
 
 ## Start
 
