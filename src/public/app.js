@@ -64,6 +64,7 @@ function workerRow(worker) {
 }
 
 function missionItem(mission) {
+  const canDispatch = mission.state === 'READY';
   return `
     <div class="mission-item">
       <div>
@@ -73,7 +74,10 @@ function missionItem(mission) {
           ${mission.preferred_worker_id ? ` · ${escapeHtml(mission.preferred_worker_id)}` : ''}
         </div>
       </div>
-      ${stateBadge(mission.state)}
+      <div class="mission-actions">
+        ${stateBadge(mission.state)}
+        ${canDispatch ? `<button class="ghost-button dispatch-button" data-mission-id="${escapeHtml(mission.id)}">Dispatch</button>` : ''}
+      </div>
     </div>
   `;
 }
@@ -100,6 +104,8 @@ function renderDashboard() {
     data.recent_missions.length > 0
       ? data.recent_missions.map(missionItem).join('')
       : '<div class="empty-state">No missions yet. Create the first real mission.</div>';
+
+  bindDispatchButtons();
 }
 
 function renderWorkers() {
@@ -124,11 +130,33 @@ function renderWorkers() {
       : '<div class="empty-state">No workers found.</div>';
 }
 
+function bindDispatchButtons() {
+  $$('.dispatch-button').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const missionId = button.dataset.missionId;
+      button.disabled = true;
+      try {
+        await api(`/api/missions/${encodeURIComponent(missionId)}/dispatch`, {
+          method: 'POST',
+          body: '{}'
+        });
+        showToast('Mission dispatched. Task queued for its worker.');
+        await loadAll();
+      } catch (error) {
+        showToast(`Dispatch failed: ${error.message}`, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+}
+
 function renderMissions() {
   $('#missionsList').innerHTML =
     state.missions.length > 0
       ? state.missions.map(missionItem).join('')
       : '<div class="empty-state">No missions yet. Your first mission will appear here.</div>';
+  bindDispatchButtons();
 }
 
 async function loadAll() {

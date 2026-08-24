@@ -242,3 +242,6 @@ textarea:focus, select:focus { border-color:rgba(106,167,255,.6); box-shadow:0 0
   .section-heading { align-items:flex-start; flex-direction:column; }
   .mobile-wide { width:100%; }
 }
+
+.mission-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
+.dispatch-button { padding:6px 9px; font-size:11px; }

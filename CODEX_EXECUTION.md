@@ -1,43 +1,26 @@
 # CODEX — EXECUTION ONLY
 
-ChatGPT already designed and programmed MRAPI DEV v0.1-alpha.
+ChatGPT already designed and programmed MRAPI DEV v0.2-alpha.
 
 Do not redesign architecture.
 
-## Objective
+## Backend
 
-Install this delivered code into the existing `mrapi-dev-orchestrator` repository, preserving any valid existing repository-only infrastructure files when they do not conflict.
-
-## Execute
-
-1. Copy the delivered v0.1-alpha files into the repo.
+1. Copy this package over the existing repo preserving unrelated valid infra files.
 2. Run:
    ```bash
    npm install
    npm test
    npm run test:syntax
    ```
-3. Fix only minor operational/syntax/dependency issues if encountered. Do not change the data model or architecture.
-4. Confirm GCP auth and that the target resources exist:
-   - project `ia-sentire-customs-broker`
-   - Firestore database `mrapi-dev`
-   - bucket `mrapi-dev-evidence`
-5. Deploy to the existing Cloud Run region/service. If no service exists, use service `mrapi-dev-orchestrator`.
-6. Verify:
-   - `/health`
-   - dashboard shows SYSTEM RUNNING
-   - 5 workers are visible and IDLE
-   - create one temporary validation mission only if requested by the user; otherwise do not create fake missions.
-7. Capture desktop/mobile screenshots.
-8. Commit and return:
-   - commit hash
-   - Cloud Run URL
-   - health response
-   - test output
-   - bootstrap output
-   - screenshots
-   - deploy result
+3. Fix only minor operational errors.
+4. Do NOT change Firestore schema, state machine or runner protocol.
+5. Return test output.
 
-## Stop
+The user is doing the initial Cloud Run deploy manually.
 
-Stop instead of redesigning if credentials/resources/repo access are unavailable or deployment would destroy existing infrastructure.
+## Shadow
+
+Do not enable Shadow yet unless requested after Cloud Run v0.2 is verified.
+
+When requested, copy only `runner/` to Shadow and configure its environment.

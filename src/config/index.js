@@ -1,4 +1,4 @@
-const VERSION = 'v0.1-alpha.2';
+const VERSION = 'v0.2-alpha';
 
 function boolEnv(name, fallback) {
   const value = process.env[name];
@@ -18,7 +18,8 @@ const config = Object.freeze({
   firestoreDatabase: process.env.FIRESTORE_DATABASE || 'mrapi-dev',
   evidenceBucket: process.env.EVIDENCE_BUCKET || 'mrapi-dev-evidence',
   defaultTenantId: process.env.DEFAULT_TENANT_ID || 'tenant_facundo_group',
-  bootstrapOnStart: boolEnv('BOOTSTRAP_ON_START', true)
+  bootstrapOnStart: boolEnv('BOOTSTRAP_ON_START', true),
+  runnerSharedSecret: process.env.RUNNER_SHARED_SECRET || ''
 });
 
 module.exports = { config, VERSION };

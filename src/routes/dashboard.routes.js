@@ -60,6 +60,12 @@ function createDashboardRouter({ db, repos }) {
         ...doc.data()
       }));
 
+      const nowMs = Date.now();
+      const onlineExecutors = executorItems.filter((executor) => {
+        const heartbeatMs = executor.last_heartbeat_at?.toMillis?.() || 0;
+        return executor.state === 'ONLINE' && (nowMs - heartbeatMs) < 120000;
+      });
+
       res.json(
         serializeFirestore({
           system,
@@ -73,7 +79,7 @@ function createDashboardRouter({ db, repos }) {
             workers.filter((worker) => worker.state === 'BLOCKED').length,
           executors: {
             total: executorItems.length,
-            online: executorItems.filter((executor) => executor.state === 'ONLINE').length,
+            online: onlineExecutors.length,
             items: executorItems
           },
           recent_missions: missions.slice(0, 8)

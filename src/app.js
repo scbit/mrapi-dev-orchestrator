@@ -8,6 +8,9 @@ const { createDashboardRouter } = require('./routes/dashboard.routes');
 const { createWorkersRouter } = require('./routes/workers.routes');
 const { createMissionsRouter } = require('./routes/missions.routes');
 const { createTasksRouter } = require('./routes/tasks.routes');
+const { createRunnerRouter } = require('./routes/runner.routes');
+const { createExecutorsRouter } = require('./routes/executors.routes');
+const { createRunsRouter } = require('./routes/runs.routes');
 
 function createApp(options = {}) {
   const app = express();
@@ -15,7 +18,7 @@ function createApp(options = {}) {
   const repos = options.repos || createRepositories(db);
 
   app.disable('x-powered-by');
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '14mb' }));
   app.use(express.urlencoded({ extended: false }));
   app.use(tenantMiddleware);
 
@@ -24,6 +27,9 @@ function createApp(options = {}) {
   app.use('/api/workers', createWorkersRouter({ repos }));
   app.use('/api/missions', createMissionsRouter({ repos }));
   app.use('/api/tasks', createTasksRouter({ repos }));
+  app.use('/api/executors', createExecutorsRouter({ repos }));
+  app.use('/api/runs', createRunsRouter({ repos }));
+  app.use('/api/runner', createRunnerRouter({ db }));
 
   app.use(express.static(path.join(__dirname, 'public')));
 
