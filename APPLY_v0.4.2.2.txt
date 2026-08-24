@@ -1,0 +1,17 @@
+MRAPI DEV ORCHESTRATOR v0.4.2.2 — APPROVAL FIRESTORE TRANSACTION FIX
+
+ROOT CAUSE
+The approval transaction wrote the approved plan before reading the Project document. Real Firestore rejects reads after a transaction has started writing, causing the UI toast: "Approval failed: Unexpected server error."
+
+FIX
+- All approval transaction reads now happen before the first write.
+- Project lookup is performed in the transaction read phase.
+- Null/missing project_id no longer creates an accidental auto-id document reference.
+- Planning approval fake transaction now enforces Firestore's read-before-write rule so this regression is covered by tests.
+
+APPLY
+1. Replace repo files with this package.
+2. Commit + push: v0.4.2.2 Approval Firestore Transaction Fix
+3. Deploy Cloud Run manually.
+4. Restart W01 Brain and Runner.
+5. Retry the exact Mission approval.

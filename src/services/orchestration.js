@@ -1929,6 +1929,21 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
     }
 
     const plan = { id: planSnap.id, ...planSnap.data() };
+
+    // Firestore requires every transaction read to happen before the first write.
+    // Keep project lookup in the read phase; otherwise real Firestore throws
+    // "Firestore transactions require all reads to be executed before all writes"
+    // even though the in-memory test transaction permits it.
+    const projectId = plan.project_id || mission.project_id || null;
+    let project = { id: projectId };
+    if (projectId) {
+      const projectRef = db.collection('projects').doc(projectId);
+      const projectSnap = await tx.get(projectRef);
+      project = projectSnap.exists && projectSnap.data().tenant_id === tenantId
+        ? { id: projectSnap.id, ...projectSnap.data() }
+        : { id: projectId };
+    }
+
     tx.set(planRef, {
       status: 'APPROVED',
       approved_at: timestamp(),
@@ -1974,11 +1989,6 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
       return;
     }
 
-    const projectRef = db.collection('projects').doc(plan.project_id || mission.project_id);
-    const projectSnap = await tx.get(projectRef);
-    const project = projectSnap.exists && projectSnap.data().tenant_id === tenantId
-      ? { id: projectSnap.id, ...projectSnap.data() }
-      : { id: plan.project_id || mission.project_id || null };
     const snapshotRef = db.collection('execution_snapshots').doc();
     const executionSnapshot = createExecutionSnapshot({
       snapshotRef,

@@ -93,15 +93,24 @@ class FakeCollection extends FakeQuery {
 }
 
 class FakeTransaction {
+  constructor() {
+    this.hasWritten = false;
+  }
+
   async get(refOrQuery) {
+    if (this.hasWritten) {
+      throw new Error('FIRESTORE_READ_AFTER_WRITE');
+    }
     return refOrQuery.get();
   }
 
   set(ref, data, options) {
+    this.hasWritten = true;
     ref.db.set(ref.collectionName, ref.id, data, options);
   }
 
   update(ref, data) {
+    this.hasWritten = true;
     ref.db.update(ref.collectionName, ref.id, data);
   }
 }
@@ -600,7 +609,8 @@ test('v0.4.1.0 Brain-only approval completes without fake Task', async () => {
 test('v0.4.1.0 missing high-risk permission blocks approval', async () => {
   const db = new FakeDb();
   await readyPlan(db, 'W05', 'mission_permission', planOutput({
-    permissions_required: ['production deploy permission']
+    permissions_required: ['production deploy permission'],
+    instructions: 'Deploy the approved change to production.'
   }));
 
   const approval = await approveMissionPlan(db, 'tenant_a', 'mission_permission', {});

@@ -8,8 +8,8 @@ const runnerPath = path.join(repoRoot, 'runner', 'shadow-runner.js');
 const runner = fs.readFileSync(runnerPath, 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'runner', 'package.json'), 'utf8'));
 
-test('runner version is v0.4.2.0', () => {
-  assert.equal(pkg.version, '0.4.2-0');
+test('runner version is v0.4.2.2', () => {
+  assert.equal(pkg.version, '0.4.2-2');
   assert.match(runner, /runner_version:\s*'v0\.4\.2\.0'/);
 });
 
