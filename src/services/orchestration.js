@@ -555,13 +555,13 @@ async function markTaskWaiting(db, tenantId, taskId, message, handoff = null) {
     phase: 'WAITING_FOR_CODEX',
     waiting_reason: String(message || '').slice(0, 5000),
     handoff: handoff || null,
-    updated_at: ts()
+    updated_at: timestamp()
   }, { merge: true });
 
   if (task.worker_id) {
     await db.collection('workers').doc(task.worker_id).set({
       state: 'WAITING',
-      updated_at: ts()
+      updated_at: timestamp()
     }, { merge: true });
   }
 
@@ -709,10 +709,10 @@ async function completeManualCodexHandoff(db, tenantId, taskId, input) {
       progress_percent: success ? 100 : 0,
       progress_message: String(input.summary || '').slice(0, 2000),
       error: success ? null : String(input.error || 'Manual Codex execution failed').slice(0, 5000),
-      started_at: ts(),
-      completed_at: ts(),
-      created_at: ts(),
-      updated_at: ts()
+      started_at: timestamp(),
+      completed_at: timestamp(),
+      created_at: timestamp(),
+      updated_at: timestamp()
     });
 
     tx.set(taskRef, {
@@ -720,21 +720,21 @@ async function completeManualCodexHandoff(db, tenantId, taskId, input) {
       phase: success ? 'COMPLETED' : 'FAILED',
       execution_run_id: executionRunRef.id,
       current_run_id: executionRunRef.id,
-      completed_at: ts(),
-      updated_at: ts()
+      completed_at: timestamp(),
+      updated_at: timestamp()
     }, { merge: true });
 
     tx.set(workerRef, {
       state: 'IDLE',
       current_mission_id: null,
       current_task_id: null,
-      updated_at: ts()
+      updated_at: timestamp()
     }, { merge: true });
 
     tx.set(missionRef, {
       state: success ? 'COMPLETED' : 'FAILED',
-      completed_at: ts(),
-      updated_at: ts()
+      completed_at: timestamp(),
+      updated_at: timestamp()
     }, { merge: true });
 
     tx.set(resultRef, {
@@ -748,7 +748,7 @@ async function completeManualCodexHandoff(db, tenantId, taskId, input) {
       status: success ? 'SUCCESS' : 'FAILED',
       summary: String(input.summary || '').slice(0, 10000),
       output: input.output || null,
-      created_at: ts()
+      created_at: timestamp()
     });
 
     result = {
@@ -802,8 +802,8 @@ async function recoverAbandonedBrainRuns(db, tenantId, executorId, staleMs = 120
       tx.set(doc.ref, {
         state: 'FAILED',
         error: 'RUNNER_RESTARTED_OR_ABANDONED',
-        completed_at: ts(),
-        updated_at: ts()
+        completed_at: timestamp(),
+        updated_at: timestamp()
       }, { merge: true });
 
       tx.set(taskRef, {
@@ -812,7 +812,7 @@ async function recoverAbandonedBrainRuns(db, tenantId, executorId, staleMs = 120
         current_run_id: null,
         claimed_by_executor_id: null,
         waiting_reason: null,
-        updated_at: ts()
+        updated_at: timestamp()
       }, { merge: true });
 
       if (task.worker_id) {
@@ -820,7 +820,7 @@ async function recoverAbandonedBrainRuns(db, tenantId, executorId, staleMs = 120
           state: 'IDLE',
           current_task_id: null,
           current_mission_id: null,
-          updated_at: ts()
+          updated_at: timestamp()
         }, { merge: true });
       }
     });
