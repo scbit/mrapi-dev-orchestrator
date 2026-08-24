@@ -19,7 +19,7 @@ Install this delivered code into the existing `mrapi-dev-orchestrator` repositor
    ```
 3. Fix only minor operational/syntax/dependency issues if encountered. Do not change the data model or architecture.
 4. Confirm GCP auth and that the target resources exist:
-   - project `mrapi-dev-orchestrator`
+   - project `ia-sentire-customs-broker`
    - Firestore database `mrapi-dev`
    - bucket `mrapi-dev-evidence`
 5. Deploy to the existing Cloud Run region/service. If no service exists, use service `mrapi-dev-orchestrator`.

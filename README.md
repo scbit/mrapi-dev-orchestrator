@@ -1,6 +1,6 @@
 # MRAPI DEV ORCHESTRATOR
 
-Version: **v0.1-alpha**
+Version: **v0.1-alpha.2**
 
 MRAPI DEV is a multi-tenant Control Room for autonomous workers.
 
@@ -23,7 +23,7 @@ A Worker is never hardcoded to Codex, Shadow, ChatGPT, Telegram, or any other pr
 
 ## Infrastructure
 
-- GCP project: `mrapi-dev-orchestrator`
+- GCP project: `ia-sentire-customs-broker`
 - Firestore database: `mrapi-dev`
 - Evidence bucket: `mrapi-dev-evidence`
 - Runtime: Node.js + Express
@@ -59,7 +59,7 @@ npm run test:syntax
 With valid Google Cloud Application Default Credentials:
 
 ```bash
-GOOGLE_CLOUD_PROJECT=mrapi-dev-orchestrator \
+GOOGLE_CLOUD_PROJECT=ia-sentire-customs-broker \
 FIRESTORE_DATABASE=mrapi-dev \
 EVIDENCE_BUCKET=mrapi-dev-evidence \
 DEFAULT_TENANT_ID=tenant_facundo_group \
@@ -99,10 +99,10 @@ Tenant scope is resolved from `x-tenant-id`. During v0.1-alpha, if the header is
 ```bash
 gcloud run deploy mrapi-dev-orchestrator \
   --source . \
-  --project mrapi-dev-orchestrator \
+  --project ia-sentire-customs-broker \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars GOOGLE_CLOUD_PROJECT=mrapi-dev-orchestrator,FIRESTORE_DATABASE=mrapi-dev,EVIDENCE_BUCKET=mrapi-dev-evidence,DEFAULT_TENANT_ID=tenant_facundo_group,BOOTSTRAP_ON_START=true
+  --set-env-vars GOOGLE_CLOUD_PROJECT=ia-sentire-customs-broker,FIRESTORE_DATABASE=mrapi-dev,EVIDENCE_BUCKET=mrapi-dev-evidence,DEFAULT_TENANT_ID=tenant_facundo_group,BOOTSTRAP_ON_START=true
 ```
 
 If the existing Cloud Run service already uses another region, keep that region instead of creating a second service unintentionally.
@@ -122,3 +122,13 @@ v0.1-alpha intentionally does not include:
 ## Next milestone
 
 **v0.2-alpha: Shadow Runner registration + heartbeat + first real W01 execution.**
+
+
+## v0.1-alpha.2 startup fix
+
+Cloud Run HTTP listener now starts before Firestore bootstrap. A bootstrap/IAM error is logged without killing the container, avoiding misleading PORT startup failures.
+
+
+## v0.1-alpha.2 infrastructure decision
+
+MRAPI DEV runs inside GCP project `ia-sentire-customs-broker`. The Cloud Run service remains `mrapi-dev-orchestrator`.
