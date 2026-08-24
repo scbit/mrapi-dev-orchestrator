@@ -40,7 +40,7 @@ async function register() {
     executor_type: 'CODEX_CLI_AUTO',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.4.2.0',
+    runner_version: 'v0.4.2.3',
     capabilities: [
       'EXECUTION_RUN:CODEX_CLI_AUTO',
       'CODEX_HANDOFF:VALIDATED',
@@ -257,10 +257,29 @@ async function runTrustedGitFlow({ claim, result }) {
 
   const handoff = claim.codex_handoff || claim.task?.codex_handoff || claim.run?.codex_handoff || {};
   const permissions = handoff.git_permissions || {};
+  const repositoryScope = String(handoff.execution_constraints?.repository_scope || '').trim();
+  const repositoryPath = String(handoff.repository_path || '').trim();
+
+  // Artifact-only work has no project repository. W01 may still have trusted
+  // Git permissions, but those permissions are capabilities, not a command to
+  // run Git for every execution. Skip Git entirely for artifact workspaces.
+  if (repositoryScope === 'ARTIFACT_WORKSPACE_ONLY' ||
+      !repositoryPath ||
+      repositoryPath === 'NO_REPOSITORY_ARTIFACT_WORKSPACE') {
+    return {
+      changed: false,
+      committed: false,
+      pushed: false,
+      commit_sha: null,
+      branch: null,
+      reason: 'GIT_NOT_APPLICABLE_ARTIFACT_TASK',
+      error: null
+    };
+  }
 
   try {
     const outcome = runGitFlow({
-      repoPath: handoff.repository_path || cfg.repoPath,
+      repoPath: repositoryPath,
       gitPermissions: permissions,
       missionId: handoff.mission_id || claim.task?.mission_id,
       objective: handoff.objective || handoff.task_spec?.objective || claim.task?.objective

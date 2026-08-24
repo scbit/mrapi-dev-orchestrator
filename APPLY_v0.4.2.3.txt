@@ -1,0 +1,12 @@
+MRAPI DEV v0.4.2.3
+
+Fix:
+- Artifact-only tasks no longer run automatic Git flow.
+- A successful PDF/Evidence task will not be marked FAILED because GIT_NOT_WORK_TREE.
+- Added versioned Shadow launchers under tools\shadow.
+
+Apply:
+1. Commit/push this version.
+2. Pull on Shadow.
+3. Deploy Cloud Run manually.
+4. Restart W01 Brain + Runner.

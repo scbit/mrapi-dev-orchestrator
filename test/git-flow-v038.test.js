@@ -110,7 +110,7 @@ test('git flow normalizes trusted permissions only', () => {
 
 test('runner registers git capabilities after v0.3.8', () => {
   const source = fs.readFileSync(path.join(root, 'runner', 'shadow-runner.js'), 'utf8');
-  assert.match(source, /runner_version:\s*'v(?:0\.3\.(?:8(?:\.1)?|9)-alpha\.0|0\.4\.0-alpha\.0|0\.4\.0\.[1234567]|0\.4\.1\.[012]|0\.4\.2\.0)'/);
+  assert.match(source, /runner_version:\s*'v(?:0\.3\.(?:8(?:\.1)?|9)-alpha\.0|0\.4\.0-alpha\.0|0\.4\.0\.[1234567]|0\.4\.1\.[012]|0\.4\.2\.[03])'/);
   assert.match(source, /GIT_COMMIT:AUTO/);
   assert.match(source, /GIT_PUSH:AUTO/);
 });
@@ -141,4 +141,32 @@ test('reports show compact git outcome', () => {
   assert.match(source, /Git: Committed/);
   assert.match(source, /Git: Pushed/);
   assert.match(source, /commit_sha/);
+});
+
+
+test('artifact-only successful execution skips automatic git even for W01', async () => {
+  const outcome = await runner.runTrustedGitFlow({
+    claim: {
+      codex_handoff: {
+        git_permissions: { allow_commit: true, allow_push: true, allowed_branch: 'main' },
+        repository_path: 'NO_REPOSITORY_ARTIFACT_WORKSPACE',
+        execution_constraints: { repository_scope: 'ARTIFACT_WORKSPACE_ONLY' }
+      },
+      task: { mission_id: 'mission-artifact' }
+    },
+    result: { success: true, stdout: 'PDF created', stderr: '' }
+  });
+
+  assert.equal(outcome.changed, false);
+  assert.equal(outcome.committed, false);
+  assert.equal(outcome.pushed, false);
+  assert.equal(outcome.error, null);
+  assert.equal(outcome.reason, 'GIT_NOT_APPLICABLE_ARTIFACT_TASK');
+});
+
+test('runner does not fall back to orchestrator repo for artifact-only git flow', () => {
+  const source = fs.readFileSync(path.join(root, 'runner', 'shadow-runner.js'), 'utf8');
+  assert.match(source, /ARTIFACT_WORKSPACE_ONLY/);
+  assert.match(source, /NO_REPOSITORY_ARTIFACT_WORKSPACE/);
+  assert.match(source, /GIT_NOT_APPLICABLE_ARTIFACT_TASK/);
 });
