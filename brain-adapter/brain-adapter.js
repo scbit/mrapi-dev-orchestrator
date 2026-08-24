@@ -8,9 +8,35 @@ if (!cfg.secret) throw new Error('MRAPI_RUNNER_SECRET is required.');
 
 const api = createApi(cfg);
 let stopping = false;
+let currentBrainRunId = null;
+
+async function heartbeat() {
+  return api.request('/api/brain/heartbeat', {
+    brain_adapter_id: cfg.brainAdapterId,
+    worker_ids: cfg.workerIds,
+    state: 'ONLINE',
+    adapter_status: currentBrainRunId ? 'BUSY' : 'IDLE',
+    current_brain_run_id: currentBrainRunId,
+    adapter_version: 'v0.3.9-alpha.0',
+    host_name: cfg.hostName
+  });
+}
+
+async function register() {
+  return api.request('/api/brain/register', {
+    brain_adapter_id: cfg.brainAdapterId,
+    worker_ids: cfg.workerIds,
+    state: 'ONLINE',
+    adapter_status: 'IDLE',
+    current_brain_run_id: null,
+    adapter_version: 'v0.3.9-alpha.0',
+    host_name: cfg.hostName
+  });
+}
 
 async function processRun(run) {
   console.log('[BRAIN] claimed', run.id, run.worker_id);
+  currentBrainRunId = run.id;
 
   try {
     const brain = await runChatGPTWeb({
@@ -53,6 +79,8 @@ async function processRun(run) {
     } catch (releaseError) {
       console.error('[BRAIN RELEASE ERROR]', releaseError.message);
     }
+  } finally {
+    currentBrainRunId = null;
   }
 }
 
@@ -60,18 +88,30 @@ async function loop() {
   console.log('[BRAIN] adapter', cfg.brainAdapterId, cfg.workerIds);
   console.log('[BRAIN] W01 chat', cfg.brainChatUrlW01 || '(missing)');
   console.log('[BRAIN] repo context', cfg.repoPath);
+  await register();
 
-  while (!stopping) {
-    const claim = await api.request('/api/brain/next-run', {
-      brain_adapter_id: cfg.brainAdapterId,
-      worker_ids: cfg.workerIds
-    });
+  const heartbeatTimer = setInterval(() => {
+    heartbeat().catch((error) =>
+      console.error('[BRAIN HEARTBEAT ERROR]', error.message)
+    );
+  }, 30000);
 
-    if (claim?.run) {
-      await processRun(claim.run);
-    } else {
-      await new Promise((resolve) => setTimeout(resolve, cfg.pollMs));
+  try {
+    while (!stopping) {
+      await heartbeat();
+      const claim = await api.request('/api/brain/next-run', {
+        brain_adapter_id: cfg.brainAdapterId,
+        worker_ids: cfg.workerIds
+      });
+
+      if (claim?.run) {
+        await processRun(claim.run);
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, cfg.pollMs));
+      }
     }
+  } finally {
+    clearInterval(heartbeatTimer);
   }
 }
 

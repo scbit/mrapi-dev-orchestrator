@@ -93,15 +93,17 @@ function workerRow(worker) {
       <div class="worker-code">${escapeHtml(worker.code)}</div>
       <div>
         <div class="worker-name">${escapeHtml(worker.name)}</div>
-        <div class="worker-role">${escapeHtml(worker.role)}</div>
+        <div class="worker-role">${escapeHtml(worker.role)}${worker.operational_status ? ` · ${escapeHtml(worker.operational_status)}` : ''}</div>
       </div>
-      ${stateBadge(worker.state)}
+      ${stateBadge(worker.operational_status || worker.state)}
     </div>
   `;
 }
 
 function missionItem(mission) {
   const canDispatch = mission.state === 'READY';
+  const canRetry = ['FAILED', 'BLOCKED'].includes(mission.state);
+  const canCancel = ['READY', 'PLANNING', 'RUNNING', 'BLOCKED'].includes(mission.state);
   const result = latestResult(mission.id);
   const progress = missionProgress(mission);
   return `
@@ -118,9 +120,77 @@ function missionItem(mission) {
       <div class="mission-actions">
         ${stateBadge(mission.state)}
         ${canDispatch ? `<button class="ghost-button dispatch-button" data-mission-id="${escapeHtml(mission.id)}">Dispatch</button>` : ''}
+        ${canRetry ? `<button class="ghost-button retry-button" data-mission-id="${escapeHtml(mission.id)}">Retry</button>` : ''}
+        ${canCancel ? `<button class="ghost-button cancel-mission-button" data-mission-id="${escapeHtml(mission.id)}">Cancel</button>` : ''}
       </div>
     </div>
   `;
+}
+
+function heartbeatLabel(item) {
+  const age = item.heartbeat_age_seconds == null ? 'never' : `${item.heartbeat_age_seconds}s ago`;
+  return `${item.health_state || 'OFFLINE'} · ${age}`;
+}
+
+function renderOperationsHealth() {
+  const data = state.dashboard || {};
+  const brain = data.brain_adapters?.items?.find((item) => (item.worker_ids || []).includes('W01'));
+  const executor = data.executors?.items?.find((item) => (item.worker_ids || []).includes('W01'));
+  const worker = data.workers?.find((item) => item.id === 'W01' || item.code === 'W01');
+
+  const rows = [
+    { label: 'W01 Worker', status: worker?.operational_status || worker?.state || 'OFFLINE', detail: worker?.active_mission_id || 'No active mission' },
+    { label: 'W01 Brain', status: brain ? heartbeatLabel(brain) : 'OFFLINE · never', detail: brain?.current_brain_run_id || 'No current Brain Run' },
+    { label: 'W01 Executor', status: executor ? heartbeatLabel(executor) : 'OFFLINE · never', detail: executor?.current_run_id || 'No current Run' }
+  ];
+
+  const target = $('#operationsHealth');
+  if (!target) return;
+  target.innerHTML = rows.map((row) => `
+    <div class="worker-row">
+      <div class="worker-code">${escapeHtml(row.label)}</div>
+      <div><div class="worker-name">${escapeHtml(row.status)}</div><div class="worker-role">${escapeHtml(row.detail)}</div></div>
+      ${stateBadge(String(row.status).split(' ')[0])}
+    </div>
+  `).join('');
+}
+
+function renderNeedAttention() {
+  const target = $('#attentionList');
+  if (!target) return;
+  const items = state.dashboard?.need_attention_items || [];
+  target.innerHTML = items.length
+    ? items.map((item) => `
+      <div class="mission-item">
+        <div class="mission-main">
+          <h4>${escapeHtml(item.message)}</h4>
+          <div class="mission-meta">${escapeHtml(item.entity_type)} ${escapeHtml(item.entity_id)} · ${escapeHtml(item.action_hint || '')}</div>
+        </div>
+        ${stateBadge(item.severity)}
+      </div>
+    `).join('')
+    : '<div class="empty-state">No operational issues.</div>';
+}
+
+function renderExecutors() {
+  const items = state.dashboard?.executors?.items || [];
+  const target = $('#executorsList');
+  if (!target) return;
+  target.innerHTML = items.length
+    ? items.map((executor) => `
+      <div class="mission-item">
+        <div class="mission-main">
+          <h4>${escapeHtml(executor.name || executor.id)}</h4>
+          <div class="mission-meta">
+            Host ${escapeHtml(executor.host_name || '—')} · ${escapeHtml(executor.runner_status || 'IDLE')} ·
+            Run ${escapeHtml(executor.current_run_id || 'none')} · heartbeat ${escapeHtml(heartbeatLabel(executor))}
+          </div>
+          <div class="result-preview">${escapeHtml(executor.executor_type || 'EXECUTOR')} · ${escapeHtml(executor.runner_version || 'unknown')}</div>
+        </div>
+        ${stateBadge(executor.health_state)}
+      </div>
+    `).join('')
+    : '<div class="empty-state">No executors have registered yet.</div>';
 }
 
 function renderDashboard() {
@@ -147,6 +217,9 @@ function renderDashboard() {
       : '<div class="empty-state">No missions yet. Create the first real mission.</div>';
 
   bindMissionActions();
+  renderOperationsHealth();
+  renderNeedAttention();
+  renderExecutors();
 }
 
 function renderWorkers() {
@@ -229,12 +302,21 @@ function openMissionDetail(missionId) {
   const runs = state.runs.filter((run) => run.mission_id === missionId);
   const results = state.results.filter((result) => result.mission_id === missionId);
   const progress = missionProgress(mission);
+  const canRetry = ['FAILED', 'BLOCKED'].includes(mission.state);
+  const canCancel = ['READY', 'PLANNING', 'RUNNING', 'BLOCKED'].includes(mission.state);
 
   $('#missionDetailTitle').textContent = mission.objective;
   $('#missionDetailBody').innerHTML = `
     <div class="detail-grid">
       <div><span class="eyebrow">STATE</span>${stateBadge(mission.state)}</div>
       <div><span class="eyebrow">WORKER</span><strong>${escapeHtml(mission.preferred_worker_id || 'Automatic')}</strong></div>
+    </div>
+    <div class="modal-actions">
+      <span>${escapeHtml(mission.state)}</span>
+      <div>
+        ${canRetry ? `<button class="ghost-button retry-button" data-mission-id="${escapeHtml(mission.id)}">Retry</button>` : ''}
+        ${canCancel ? `<button class="ghost-button cancel-mission-button" data-mission-id="${escapeHtml(mission.id)}">Cancel</button>` : ''}
+      </div>
     </div>
     ${progressBar(progress)}
     <h3>Runs</h3>
@@ -253,6 +335,7 @@ function openMissionDetail(missionId) {
       </div>
     `).join('') : '<div class="empty-state">No result yet.</div>'}
   `;
+  bindMissionActions();
   $('#missionDetailModal').hidden = false;
 }
 
@@ -275,6 +358,50 @@ function bindMissionActions() {
         await loadAll();
       } catch (error) {
         showToast(`Dispatch failed: ${error.message}`, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  $$('.retry-button').forEach((button) => {
+    button.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const missionId = button.dataset.missionId;
+      if (!confirm('Retry this mission and create a new attempt?')) return;
+      button.disabled = true;
+      try {
+        await api(`/api/missions/${encodeURIComponent(missionId)}/retry`, {
+          method: 'POST',
+          body: '{}'
+        });
+        showToast('Mission retry started.');
+        closeMissionDetail();
+        await loadAll();
+      } catch (error) {
+        showToast(`Retry failed: ${error.message}`, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  $$('.cancel-mission-button').forEach((button) => {
+    button.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const missionId = button.dataset.missionId;
+      if (!confirm('Cancel this mission? Running work will stop at the next safe boundary.')) return;
+      button.disabled = true;
+      try {
+        await api(`/api/missions/${encodeURIComponent(missionId)}/cancel`, {
+          method: 'POST',
+          body: JSON.stringify({ reason: 'Cancelled from Control Room' })
+        });
+        showToast('Mission cancelled.');
+        closeMissionDetail();
+        await loadAll();
+      } catch (error) {
+        showToast(`Cancel failed: ${error.message}`, true);
       } finally {
         button.disabled = false;
       }

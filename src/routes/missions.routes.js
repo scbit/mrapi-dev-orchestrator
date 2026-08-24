@@ -43,6 +43,28 @@ function createMissionsRouter({ repos }) {
     }
   });
 
+  router.post('/:missionId/retry', async (req, res, next) => {
+    try {
+      const { retryMission } = require('../services/orchestration');
+      const brainRun = await retryMission(repos.missions.db, req.tenantId, req.params.missionId);
+      res.status(201).json(serializeFirestore(brainRun));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.post('/:missionId/cancel', async (req, res, next) => {
+    try {
+      const { cancelMission } = require('../services/orchestration');
+      const result = await cancelMission(repos.missions.db, req.tenantId, req.params.missionId, req.body || {});
+      res.json(serializeFirestore(result));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
   router.post('/', async (req, res, next) => {
     try {
       const objective = cleanString(req.body.objective || req.body.prompt);

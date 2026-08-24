@@ -8,9 +8,9 @@ const runnerPath = path.join(repoRoot, 'runner', 'shadow-runner.js');
 const runner = fs.readFileSync(runnerPath, 'utf8');
 const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'runner', 'package.json'), 'utf8'));
 
-test('runner version is v0.3.8.1 alpha', () => {
-  assert.equal(pkg.version, '0.3.8.1-alpha.0');
-  assert.match(runner, /runner_version:\s*'v0\.3\.8\.1-alpha\.0'/);
+test('runner version is v0.3.9 alpha', () => {
+  assert.equal(pkg.version, '0.3.9-alpha.0');
+  assert.match(runner, /runner_version:\s*'v0\.3\.9-alpha\.0'/);
 });
 
 test('runner uses automatic Codex CLI adapter', () => {

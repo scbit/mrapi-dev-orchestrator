@@ -26,7 +26,7 @@ async function register() {
     executor_type: 'CODEX_CLI_AUTO',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.3.8.1-alpha.0',
+    runner_version: 'v0.3.9-alpha.0',
     capabilities: [
       'EXECUTION_RUN:CODEX_CLI_AUTO',
       'CODEX_HANDOFF:VALIDATED',
@@ -140,6 +140,11 @@ async function markWaiting(taskId, message, handoff = null) {
     message,
     handoff
   });
+}
+
+async function cancellationRequested(runId) {
+  const result = await request(`/api/runner/runs/${encodeURIComponent(runId)}/cancellation`, {});
+  return result?.cancellation_requested === true;
 }
 
 async function addLogEvidence(runId, taskId, result) {
@@ -294,12 +299,41 @@ async function executeClaim(claim) {
       console.error('[SHADOW EVIDENCE ERROR]', evidenceError.message);
     }
 
+    const cancelledBeforeArtifacts = await cancellationRequested(executionRun.id);
+    if (cancelledBeforeArtifacts) {
+      const git = {
+        changed: false,
+        committed: false,
+        pushed: false,
+        commit_sha: null,
+        branch: null,
+        reason: 'MISSION_CANCELLED'
+      };
+      await completeExecution(
+        executionRun.id,
+        { ...result, success: false, stderr: `${result.stderr || ''}\nMission cancellation requested.` },
+        git
+      );
+      console.log('[SHADOW] CANCELLED_SAFE_BOUNDARY', task.id, executionRun.id);
+      return;
+    }
+
     const artifacts = await uploadTaskArtifacts(executionRun.id, task.id);
     if (artifacts.uploaded) {
       console.log('[SHADOW ARTIFACTS UPLOADED]', task.id, artifacts.uploaded);
     }
 
-    const git = await runTrustedGitFlow({ claim, result });
+    const cancelledBeforeGit = await cancellationRequested(executionRun.id);
+    const git = cancelledBeforeGit
+      ? {
+          changed: false,
+          committed: false,
+          pushed: false,
+          commit_sha: null,
+          branch: null,
+          reason: 'MISSION_CANCELLED'
+        }
+      : await runTrustedGitFlow({ claim, result });
     try {
       await addGitEvidence(executionRun.id, task.id, git);
     } catch (gitEvidenceError) {

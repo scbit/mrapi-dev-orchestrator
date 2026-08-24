@@ -1,13 +1,6 @@
 const express = require('express');
 const { serializeFirestore } = require('../utils/firestore');
-
-function isAttentionMission(mission) {
-  return ['BLOCKED', 'FAILED'].includes(mission.state);
-}
-
-function isAttentionTask(task) {
-  return ['BLOCKED', 'FAILED'].includes(task.state);
-}
+const { needAttention, withHeartbeatHealth, workerHealth } = require('../services/operations');
 
 function createDashboardRouter({ db, repos }) {
   const router = express.Router();
@@ -18,17 +11,22 @@ function createDashboardRouter({ db, repos }) {
         workers,
         missions,
         tasks,
+        results,
         systemSnapshot,
-        executorsSnapshot
+        executorsSnapshot,
+        brainAdaptersSnapshot
       ] = await Promise.all([
         repos.workers.listByTenant(req.tenantId),
         repos.missions.listByTenant(req.tenantId),
         repos.tasks.listFiltered(req.tenantId),
+        repos.results.listByTenant(req.tenantId),
         db.collection('system').doc('primary').get(),
-        db.collection('executors').where('tenant_id', '==', req.tenantId).get()
+        db.collection('executors').where('tenant_id', '==', req.tenantId).get(),
+        db.collection('brain_adapters').where('tenant_id', '==', req.tenantId).get()
       ]);
 
       workers.sort((a, b) => String(a.code).localeCompare(String(b.code)));
+      missions.sort((a, b) => (b.updated_at?.toMillis?.() || 0) - (a.updated_at?.toMillis?.() || 0));
 
       const system = systemSnapshot.exists
         ? { id: systemSnapshot.id, ...systemSnapshot.data() }
@@ -55,32 +53,48 @@ function createDashboardRouter({ db, repos }) {
         done: tasks.filter((task) => task.state === 'DONE').length
       };
 
-      const executorItems = executorsSnapshot.docs.map((doc) => ({
+      const nowMs = Date.now();
+      const executorItems = executorsSnapshot.docs.map((doc) => withHeartbeatHealth({
         id: doc.id,
         ...doc.data()
-      }));
+      }, nowMs));
 
-      const nowMs = Date.now();
-      const onlineExecutors = executorItems.filter((executor) => {
-        const heartbeatMs = executor.last_heartbeat_at?.toMillis?.() || 0;
-        return executor.state === 'ONLINE' && (nowMs - heartbeatMs) < 120000;
+      const brainAdapterItems = brainAdaptersSnapshot.docs.map((doc) => withHeartbeatHealth({
+        id: doc.id,
+        ...doc.data()
+      }, nowMs));
+
+      const operationalWorkers = workers.map((worker) => workerHealth(worker, {
+        brainAdapters: brainAdapterItems,
+        executors: executorItems
+      }));
+      const attentionItems = needAttention({
+        missions,
+        tasks,
+        executors: executorItems,
+        brainAdapters: brainAdapterItems,
+        results
       });
+      const onlineExecutors = executorItems.filter((executor) => executor.health_state === 'ONLINE');
 
       res.json(
         serializeFirestore({
           system,
           worker_totals: workerTotals,
-          workers,
+          workers: operationalWorkers,
           mission_totals: missionTotals,
           task_totals: taskTotals,
-          need_attention:
-            missions.filter(isAttentionMission).length +
-            tasks.filter(isAttentionTask).length +
-            workers.filter((worker) => worker.state === 'BLOCKED').length,
+          need_attention: attentionItems.length,
+          need_attention_items: attentionItems.slice(0, 20),
           executors: {
             total: executorItems.length,
             online: onlineExecutors.length,
             items: executorItems
+          },
+          brain_adapters: {
+            total: brainAdapterItems.length,
+            online: brainAdapterItems.filter((item) => item.health_state === 'ONLINE').length,
+            items: brainAdapterItems
           },
           recent_missions: missions.slice(0, 8)
         })

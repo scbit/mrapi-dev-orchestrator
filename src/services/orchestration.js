@@ -131,6 +131,170 @@ async function dispatchMission(db, tenantId, missionId) {
   return result;
 }
 
+async function retryMission(db, tenantId, missionId) {
+  const missionRef = db.collection('missions').doc(missionId);
+  const runRef = db.collection('runs').doc();
+  let result;
+
+  await db.runTransaction(async (tx) => {
+    const missionSnap = await tx.get(missionRef);
+    if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+      const error = new Error('MISSION_NOT_FOUND');
+      error.status = 404;
+      throw error;
+    }
+
+    const mission = missionSnap.data();
+    if (!['FAILED', 'BLOCKED'].includes(mission.state)) {
+      const error = new Error('MISSION_RETRY_NOT_ALLOWED');
+      error.status = 409;
+      throw error;
+    }
+
+    let workerId = mission.preferred_worker_id || null;
+    if (!workerId) {
+      const projectSnap = await tx.get(db.collection('projects').doc(mission.project_id));
+      if (projectSnap.exists && projectSnap.data().tenant_id === tenantId) {
+        workerId = (projectSnap.data().primary_worker_ids || [])[0] || null;
+      }
+    }
+    if (!workerId) {
+      const error = new Error('NO_WORKER_AVAILABLE_FOR_PROJECT');
+      error.status = 409;
+      throw error;
+    }
+
+    const runsSnap = await tx.get(db.collection('runs').where('tenant_id', '==', tenantId).limit(200));
+    const missionRuns = runsSnap.docs
+      .map((doc) => ({ id: doc.id, ...doc.data() }))
+      .filter((run) => run.mission_id === missionId);
+    const latestRun = missionRuns
+      .sort((a, b) => (b.created_at?.toMillis?.() || 0) - (a.created_at?.toMillis?.() || 0))[0] || null;
+    const attempt = Math.max(1, ...missionRuns.map((run) => Number(run.attempt || 1))) + 1;
+
+    const brainRun = {
+      id: runRef.id,
+      tenant_id: tenantId,
+      run_type: 'BRAIN_RUN',
+      mission_id: missionId,
+      task_id: null,
+      workspace_id: mission.workspace_id,
+      project_id: mission.project_id,
+      worker_id: workerId,
+      executor_id: null,
+      parent_run_id: null,
+      objective: mission.objective,
+      state: 'RUNNING',
+      progress_percent: 0,
+      progress_message: 'Mission retry requested; Brain Run started',
+      retry_of_run_id: latestRun?.id || null,
+      attempt,
+      started_at: timestamp(),
+      created_at: timestamp(),
+      updated_at: timestamp()
+    };
+
+    tx.set(runRef, brainRun);
+    tx.set(missionRef, {
+      state: 'PLANNING',
+      retry_count: Number(mission.retry_count || 0) + 1,
+      retry_of_run_id: latestRun?.id || null,
+      current_retry_run_id: runRef.id,
+      brain_run_id: runRef.id,
+      updated_at: timestamp()
+    }, { merge: true });
+
+    result = brainRun;
+  });
+
+  await emitEvent(db, tenantId, 'MISSION_RETRIED', {
+    mission_id: missionId,
+    brain_run_id: result.id,
+    retry_of_run_id: result.retry_of_run_id
+  }, 'OPERATIVE');
+
+  return result;
+}
+
+async function cancelMission(db, tenantId, missionId, input = {}) {
+  const missionRef = db.collection('missions').doc(missionId);
+  const missionSnap = await missionRef.get();
+
+  if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+    const error = new Error('MISSION_NOT_FOUND');
+    error.status = 404;
+    throw error;
+  }
+
+  const mission = missionSnap.data();
+  if (!['READY', 'PLANNING', 'RUNNING', 'BLOCKED'].includes(mission.state)) {
+    const error = new Error('MISSION_CANCEL_NOT_ALLOWED');
+    error.status = 409;
+    throw error;
+  }
+
+  await missionRef.set({
+    state: 'CANCELLED',
+    cancellation_requested: true,
+    cancellation_reason: String(input.reason || 'Cancelled by operator').slice(0, 1000),
+    cancelled_at: timestamp(),
+    updated_at: timestamp()
+  }, { merge: true });
+
+  const tasksSnap = await db.collection('tasks').where('tenant_id', '==', tenantId).limit(200).get();
+  const missionTasks = tasksSnap.docs
+    .map((doc) => ({ id: doc.id, ref: doc.ref || db.collection('tasks').doc(doc.id), ...doc.data() }))
+    .filter((task) => task.mission_id === missionId);
+  for (const task of missionTasks) {
+    if (['QUEUED', 'ASSIGNED', 'WAITING', 'BLOCKED'].includes(task.state)) {
+      await task.ref.set({
+        state: 'SKIPPED',
+        phase: 'CANCELLED',
+        cancellation_requested: true,
+        updated_at: timestamp()
+      }, { merge: true });
+    } else if (['RUNNING', 'TESTING'].includes(task.state)) {
+      await task.ref.set({
+        cancellation_requested: true,
+        updated_at: timestamp()
+      }, { merge: true });
+    }
+  }
+
+  const runsSnap = await db.collection('runs').where('tenant_id', '==', tenantId).limit(200).get();
+  const activeRuns = runsSnap.docs
+    .map((doc) => ({ id: doc.id, ref: doc.ref || db.collection('runs').doc(doc.id), ...doc.data() }))
+    .filter((run) => run.mission_id === missionId && run.state === 'RUNNING');
+  for (const run of activeRuns) {
+    await run.ref.set({
+      cancellation_requested: true,
+      progress_message: 'Cancellation requested; runner will stop at safe boundary',
+      updated_at: timestamp()
+    }, { merge: true });
+  }
+
+  const workersSnap = await db.collection('workers').where('tenant_id', '==', tenantId).limit(100).get();
+  for (const doc of workersSnap.docs) {
+    const worker = doc.data();
+    if (worker.current_mission_id === missionId) {
+      const workerRef = doc.ref || db.collection('workers').doc(doc.id);
+      await workerRef.set({
+        state: 'IDLE',
+        current_mission_id: null,
+        current_task_id: null,
+        updated_at: timestamp()
+      }, { merge: true });
+    }
+  }
+
+  await emitEvent(db, tenantId, 'MISSION_CANCELLED', {
+    mission_id: missionId,
+    reason: input.reason || null
+  }, 'WARNING');
+
+  return { ok: true, mission_id: missionId, state: 'CANCELLED' };
+}
+
 async function registerExecutor(db, tenantId, input) {
   const executorId = String(input.executor_id || '').trim();
   if (!executorId) {
@@ -265,6 +429,12 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
           throw error;
         }
 
+        if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+          const error = new Error('CODEX_HANDOFF_MISSION_REQUIRED');
+          error.status = 409;
+          throw error;
+        }
+
         if (!['IDLE', 'WAITING'].includes(workerSnap.data().state)) {
           const error = new Error('WORKER_NOT_AVAILABLE');
           error.retryCandidate = true;
@@ -282,6 +452,11 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
 
         const attempt = Number(taskSnap.data().attempt_count || 0) + 1;
         const mission = missionSnap.exists ? { id: missionSnap.id, ...missionSnap.data() } : null;
+        if (mission.state === 'CANCELLED' || mission.cancellation_requested) {
+          const error = new Error('MISSION_CANCELLED');
+          error.retryCandidate = true;
+          throw error;
+        }
         const brainRun = brainRunSnap?.exists ? { id: brainRunSnap.id, ...brainRunSnap.data() } : null;
         const codexHandoff = buildCodexHandoff({
           tenantId,
@@ -1139,6 +1314,8 @@ async function recoverAbandonedBrainRuns(db, tenantId, executorId, staleMs = 120
 module.exports = {
   emitEvent,
   dispatchMission,
+  retryMission,
+  cancelMission,
   registerExecutor,
   heartbeatExecutor,
   claimNextTask,

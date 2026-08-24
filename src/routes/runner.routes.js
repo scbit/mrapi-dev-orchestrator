@@ -111,6 +111,32 @@ function createRunnerRouter({ db }) {
     }
   });
 
+  router.post('/runs/:runId/cancellation', async (req, res, next) => {
+    try {
+      const runRef = db.collection('runs').doc(req.params.runId);
+      const runSnap = await runRef.get();
+      if (!runSnap.exists || runSnap.data().tenant_id !== req.tenantId) {
+        return res.status(404).json({ error: 'RUN_NOT_FOUND' });
+      }
+
+      const run = runSnap.data();
+      let missionCancelled = false;
+      if (run.mission_id) {
+        const missionSnap = await db.collection('missions').doc(run.mission_id).get();
+        missionCancelled = missionSnap.exists &&
+          missionSnap.data().tenant_id === req.tenantId &&
+          (missionSnap.data().state === 'CANCELLED' || missionSnap.data().cancellation_requested === true);
+      }
+
+      res.json({
+        run_id: req.params.runId,
+        cancellation_requested: run.cancellation_requested === true || missionCancelled
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post('/runs/:runId/complete', async (req, res, next) => {
     try {
       res.json(await completeRun(db, req.tenantId, req.params.runId, req.body || {}));

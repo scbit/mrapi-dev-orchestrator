@@ -18,6 +18,65 @@ function createBrainRouter({ db }) {
   const router = express.Router();
   router.use(runnerAuth);
 
+  router.post('/register', async (req, res, next) => {
+    try {
+      const brainAdapterId = String(req.body.brain_adapter_id || '').trim();
+      if (!brainAdapterId) {
+        return res.status(400).json({ error: 'BRAIN_ADAPTER_ID_REQUIRED' });
+      }
+
+      const ref = db.collection('brain_adapters').doc(brainAdapterId);
+      const snap = await ref.get();
+      await ref.set({
+        id: brainAdapterId,
+        tenant_id: req.tenantId,
+        worker_ids: Array.isArray(req.body.worker_ids) ? req.body.worker_ids.map(String) : [],
+        state: req.body.state || 'ONLINE',
+        adapter_status: req.body.adapter_status || 'IDLE',
+        current_brain_run_id: req.body.current_brain_run_id || null,
+        adapter_version: req.body.adapter_version || 'unknown',
+        host_name: req.body.host_name || null,
+        last_heartbeat_at: timestamp(),
+        updated_at: timestamp(),
+        ...(snap.exists ? {} : { created_at: timestamp() })
+      }, { merge: true });
+
+      res.status(snap.exists ? 200 : 201).json({ ok: true, brain_adapter_id: brainAdapterId });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/heartbeat', async (req, res, next) => {
+    try {
+      const brainAdapterId = String(req.body.brain_adapter_id || '').trim();
+      if (!brainAdapterId) {
+        return res.status(400).json({ error: 'BRAIN_ADAPTER_ID_REQUIRED' });
+      }
+
+      const ref = db.collection('brain_adapters').doc(brainAdapterId);
+      const snap = await ref.get();
+      if (!snap.exists || snap.data().tenant_id !== req.tenantId) {
+        return res.status(404).json({ error: 'BRAIN_ADAPTER_NOT_FOUND' });
+      }
+
+      await ref.set({
+        state: req.body.state || 'ONLINE',
+        adapter_status: req.body.adapter_status || null,
+        current_brain_run_id: req.body.current_brain_run_id || null,
+        worker_ids: Array.isArray(req.body.worker_ids) ? req.body.worker_ids.map(String) : snap.data().worker_ids || [],
+        adapter_version: req.body.adapter_version || snap.data().adapter_version || 'unknown',
+        host_name: req.body.host_name || snap.data().host_name || null,
+        last_heartbeat_at: timestamp(),
+        updated_at: timestamp()
+      }, { merge: true });
+
+      res.json({ ok: true, brain_adapter_id: brainAdapterId });
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.post('/next-run', async (req, res, next) => {
     try {
       const brainAdapterId = String(req.body.brain_adapter_id || '').trim();

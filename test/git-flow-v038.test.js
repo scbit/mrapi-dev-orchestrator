@@ -108,9 +108,9 @@ test('git flow normalizes trusted permissions only', () => {
   });
 });
 
-test('runner registers git capabilities and v0.3.8 series', () => {
+test('runner registers git capabilities after v0.3.8', () => {
   const source = fs.readFileSync(path.join(root, 'runner', 'shadow-runner.js'), 'utf8');
-  assert.match(source, /runner_version:\s*'v0\.3\.8(?:\.1)?-alpha\.0'/);
+  assert.match(source, /runner_version:\s*'v0\.3\.(?:8(?:\.1)?|9)-alpha\.0'/);
   assert.match(source, /GIT_COMMIT:AUTO/);
   assert.match(source, /GIT_PUSH:AUTO/);
 });

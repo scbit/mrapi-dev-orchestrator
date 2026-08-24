@@ -13,6 +13,7 @@ const cfg = {
   tenantId: process.env.MRAPI_TENANT_ID || 'tenant_facundo_group',
   secret: process.env.MRAPI_RUNNER_SECRET || '',
   brainAdapterId: process.env.MRAPI_BRAIN_ADAPTER_ID || 'brain_shadow_chatgpt_w01_01',
+  hostName: process.env.MRAPI_HOST_NAME || os.hostname(),
   workerIds: csv(process.env.MRAPI_WORKER_IDS, 'W01'),
   pollMs: Math.max(5000, Number(process.env.MRAPI_POLL_SECONDS || 10) * 1000),
   repoPath: process.env.MRAPI_REPO_PATH || path.join(
