@@ -33,10 +33,19 @@ RULES
 - The human performs Cloud Run deploys manually.
 - Avoid open-ended loops and unnecessary context.
 
-Return a JSON decision block first:
+Return the MRAPI control block first. The control block must contain ONLY JSON:
+<MRAPI_CONTROL>
 ${contract}
+</MRAPI_CONTROL>
 
-If requires_execution is true, then return a concrete execution package for Codex using EXACTLY these headings:
+If requires_execution is false, execution_type must be BRAIN_ONLY and you must put the complete user-facing answer in a separate result block:
+<MRAPI_RESULT>
+Write the final answer/report here.
+</MRAPI_RESULT>
+
+If requires_execution is true, execution_type must be CODEX, omit the result block unless there is a genuine preliminary user-facing result, and put the concrete Codex executor task only inside task_spec/instructions in the control JSON. Do not put final prose or reports in executor instructions.
+
+For execution-required Missions, the Codex executor package must use EXACTLY these headings:
 OBJECTIVE
 CONTEXT
 FILES / AREAS
@@ -46,7 +55,7 @@ SUCCESS CRITERIA
 STOP CONDITIONS
 DEPLOY
 
-DEPLOY must say: HUMAN MANUAL DEPLOY — DO NOT DEPLOY.`;
+DEPLOY must say: HUMAN MANUAL DEPLOY - DO NOT DEPLOY.`;
 }
 
 module.exports = { brainPrompt };

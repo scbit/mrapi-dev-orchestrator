@@ -588,29 +588,175 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
   return null;
 }
 
-function buildBrainOutput(run, input = {}) {
-  let decision = {};
-  const rawText = String(input.output_text || input.summary || '');
-  const firstBrace = rawText.indexOf('{');
-  const lastBrace = rawText.lastIndexOf('}');
-  if (firstBrace >= 0 && lastBrace > firstBrace) {
-    try {
-      const parsed = JSON.parse(rawText.slice(firstBrace, lastBrace + 1));
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) decision = parsed;
-    } catch {
-      decision = {};
+function parseBoolean(value) {
+  if (value === false || String(value).toLowerCase() === 'false') return false;
+  if (value === true || String(value).toLowerCase() === 'true') return true;
+  return undefined;
+}
+
+function normalizeFinalResult(value) {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'string') return value.trim();
+  if (typeof value === 'object') {
+    if (typeof value.text === 'string') return value.text.trim();
+    if (typeof value.content === 'string') return value.content.trim();
+    if (typeof value.summary === 'string') return value.summary.trim();
+    return JSON.stringify(value, null, 2).trim();
+  }
+  return String(value).trim();
+}
+
+function extractTaggedBlock(text, tagName) {
+  const pattern = new RegExp(`<${tagName}>\\s*([\\s\\S]*?)\\s*</${tagName}>`, 'i');
+  const match = String(text || '').match(pattern);
+  return match ? match[1].trim() : '';
+}
+
+function findFirstJsonObject(text) {
+  const source = String(text || '');
+  const start = source.indexOf('{');
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+    } else if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        const jsonText = source.slice(start, index + 1);
+        try {
+          const parsed = JSON.parse(jsonText);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            return { parsed, start, end: index + 1, jsonText };
+          }
+        } catch {
+          return null;
+        }
+      }
     }
   }
 
+  return null;
+}
+
+function removeBrainControlText(text) {
+  const source = String(text || '');
+  const withoutTags = source
+    .replace(/<MRAPI_CONTROL>[\s\S]*?<\/MRAPI_CONTROL>/gi, '')
+    .replace(/<MRAPI_RESULT>/gi, '')
+    .replace(/<\/MRAPI_RESULT>/gi, '')
+    .trim();
+  const json = findFirstJsonObject(withoutTags);
+  if (!json) return withoutTags.trim();
+  return `${withoutTags.slice(0, json.start)}${withoutTags.slice(json.end)}`.trim();
+}
+
+function hasMeaningfulText(text) {
+  const value = String(text || '').trim();
+  if (!value) return false;
+  return /[A-Za-z0-9ÁÉÍÓÚÜÑáéíóúüñ]/.test(value);
+}
+
+function parseBrainResponse(rawResponse, input = {}) {
+  const raw = String(rawResponse || input.output_text || input.summary || '');
+  const taggedControl = extractTaggedBlock(raw, 'MRAPI_CONTROL');
+  const taggedResult = extractTaggedBlock(raw, 'MRAPI_RESULT');
+  const parsedTagged = taggedControl ? findFirstJsonObject(taggedControl) : null;
+  const parsedRaw = parsedTagged || findFirstJsonObject(raw);
+  const decision = parsedRaw?.parsed || {};
+
+  const inputRequiresExecution = parseBoolean(input.requires_execution);
+  const decisionRequiresExecution = parseBoolean(decision.requires_execution);
+  const requiresExecution = inputRequiresExecution !== undefined
+    ? inputRequiresExecution
+    : decisionRequiresExecution !== undefined
+      ? decisionRequiresExecution
+      : true;
+
+  const executionType = input.execution_type ||
+    decision.execution_type ||
+    (requiresExecution ? 'CODEX' : 'BRAIN_ONLY');
+
   const taskSpec = input.task_spec && typeof input.task_spec === 'object'
-    ? input.task_spec
+    ? { ...input.task_spec }
+    : decision.task_spec && typeof decision.task_spec === 'object'
+      ? { ...decision.task_spec }
+      : {};
+
+  let finalResultText = taggedResult ||
+    normalizeFinalResult(input.final_result) ||
+    normalizeFinalResult(decision.final_result);
+
+  if (!hasMeaningfulText(finalResultText) && !parsedTagged && parsedRaw && parsedRaw.end < raw.length) {
+    finalResultText = removeBrainControlText(raw.slice(parsedRaw.end));
+  }
+
+  if (!hasMeaningfulText(finalResultText) && !requiresExecution && typeof taskSpec.instructions === 'string') {
+    finalResultText = removeBrainControlText(taskSpec.instructions);
+  }
+
+  if (typeof taskSpec.instructions === 'string') {
+    taskSpec.instructions = removeBrainControlText(taskSpec.instructions);
+    if (!requiresExecution && taskSpec.instructions === finalResultText) {
+      delete taskSpec.instructions;
+    }
+  }
+
+  return {
+    requires_execution: requiresExecution,
+    execution_type: executionType,
+    task_spec: taskSpec,
+    final_result_text: hasMeaningfulText(finalResultText) ? String(finalResultText).trim() : '',
+    raw_response: raw
+  };
+}
+
+function brainResultSummary(input, finalResultText) {
+  return String(input.summary || finalResultText || 'Brain-only result completed').trim().slice(0, 10000);
+}
+
+function brainResultTitle(run, taskSpec) {
+  return String(taskSpec?.title || run.objective || 'Brain result').slice(0, 250);
+}
+
+function buildBrainOutput(run, input = {}) {
+  const parsed = parseBrainResponse(input.output_text || input.summary || '', input);
+  const decision = parsed;
+
+  let taskSpec = input.task_spec && typeof input.task_spec === 'object'
+    ? { ...input.task_spec, ...(decision.task_spec || {}) }
     : decision.task_spec && typeof decision.task_spec === 'object'
       ? decision.task_spec
-    : {
-        title: input.title || run.objective || 'Execution task',
-        objective: input.objective || run.objective || '',
-        instructions: input.output_text || input.instructions || ''
-      };
+      : {
+          title: input.title || run.objective || 'Execution task',
+          objective: input.objective || run.objective || '',
+          instructions: input.output_text || input.instructions || ''
+        };
+  if (!Object.keys(taskSpec).length && decision.requires_execution !== false) {
+    taskSpec = {
+      title: input.title || run.objective || 'Execution task',
+      objective: input.objective || run.objective || '',
+      instructions: input.instructions || input.output_text || ''
+    };
+  }
 
   const executionConstraints = input.execution_constraints && typeof input.execution_constraints === 'object'
     ? input.execution_constraints
@@ -624,9 +770,11 @@ function buildBrainOutput(run, input = {}) {
   return {
     objective: input.objective || run.objective || taskSpec.objective || '',
     worker_id: input.worker_id || run.worker_id || null,
-    requires_execution: input.requires_execution === false || decision.requires_execution === false ? false : true,
+    requires_execution: decision.requires_execution,
     execution_type: input.execution_type || decision.execution_type || 'CODEX',
-    final_result: input.final_result || decision.final_result || null,
+    final_result: input.final_result || null,
+    final_result_text: decision.final_result_text,
+    raw_response: decision.raw_response,
     task_spec: taskSpec,
     execution_constraints: executionConstraints,
     brain_run_id: run.id,
@@ -807,10 +955,41 @@ async function completeBrainRun(db, tenantId, runId, input) {
     const taskSpec = brainOutput.task_spec || {};
 
     if (brainOutput.requires_execution === false) {
+      if (!hasMeaningfulText(brainOutput.final_result_text)) {
+        tx.update(runRef, {
+          state: 'FAILED',
+          progress_percent: Number(run.progress_percent || 0),
+          progress_message: 'Brain-only result missing final user-facing answer',
+          error: 'BRAIN_RESULT_MISSING',
+          output_text: outputText,
+          brain_output: brainOutput,
+          brain_chat_url: input.brain_chat_url || null,
+          completed_at: timestamp(),
+          updated_at: timestamp()
+        });
+
+        tx.set(missionRef, {
+          state: 'BLOCKED',
+          block_reason: 'BRAIN_RESULT_MISSING',
+          updated_at: timestamp()
+        }, { merge: true });
+
+        result = {
+          success: false,
+          mission_id: run.mission_id,
+          task_id: null,
+          brain_run_id: runId,
+          requires_execution: false,
+          error: 'BRAIN_RESULT_MISSING'
+        };
+        return;
+      }
+
+      const finalResultText = brainOutput.final_result_text;
       tx.update(runRef, {
         state: 'COMPLETED',
         progress_percent: 100,
-        progress_message: 'Brain-only result completed',
+        progress_message: brainResultSummary(input, finalResultText).slice(0, 2000),
         output_text: outputText,
         brain_output: brainOutput,
         brain_chat_url: input.brain_chat_url || null,
@@ -828,9 +1007,15 @@ async function completeBrainRun(db, tenantId, runId, input) {
         project_id: run.project_id || null,
         worker_id: brainOutput.worker_id,
         executor_id: run.executor_id || null,
+        brain_run_id: runId,
+        run_type: 'BRAIN_RUN',
+        source_run_type: 'BRAIN_RUN',
         status: 'SUCCESS',
-        result_type: 'BRAIN_OUTPUT',
-        summary: String(input.summary || brainOutput.final_result?.summary || 'Brain-only result completed').slice(0, 10000),
+        result_type: 'BRAIN_RESULT',
+        title: brainResultTitle(run, taskSpec),
+        summary: brainResultSummary(input, finalResultText),
+        content: finalResultText,
+        text: finalResultText,
         output: brainOutput,
         created_at: timestamp()
       });
@@ -934,7 +1119,13 @@ async function completeBrainRun(db, tenantId, runId, input) {
     };
   });
 
-  await emitEvent(db, tenantId, 'BRAIN_RUN_COMPLETED', result, 'OPERATIVE');
+  await emitEvent(
+    db,
+    tenantId,
+    result.success === false ? 'BRAIN_RUN_FAILED' : 'BRAIN_RUN_COMPLETED',
+    result,
+    result.success === false ? 'WARNING' : 'OPERATIVE'
+  );
   return result;
 }
 
@@ -1130,14 +1321,44 @@ async function completeRun(db, tenantId, runId, input) {
       const resultRef = db.collection('results').doc();
       const executorRef = run.executor_id ? db.collection('executors').doc(run.executor_id) : null;
       const outputText = String(input.output_text || input.summary || '').slice(0, 100000);
-      const brainOutput = buildBrainOutput({ id: runId, ...run }, { ...input, output_text: outputText });
-      const taskSpec = brainOutput.task_spec || {};
+    const brainOutput = buildBrainOutput({ id: runId, ...run }, { ...input, output_text: outputText });
+    const taskSpec = brainOutput.task_spec || {};
 
       if (brainOutput.requires_execution === false) {
+        if (!hasMeaningfulText(brainOutput.final_result_text)) {
+          tx.update(runRef, {
+            state: 'FAILED',
+            progress_percent: Number(run.progress_percent || 0),
+            progress_message: 'Brain-only result missing final user-facing answer',
+            error: 'BRAIN_RESULT_MISSING',
+            output_text: outputText,
+            brain_output: brainOutput,
+            completed_at: timestamp(),
+            updated_at: timestamp()
+          });
+
+          tx.set(missionRef, {
+            state: 'BLOCKED',
+            block_reason: 'BRAIN_RESULT_MISSING',
+            updated_at: timestamp()
+          }, { merge: true });
+
+          result = {
+            success: false,
+            mission_id: run.mission_id,
+            task_id: null,
+            brain_run_id: runId,
+            requires_execution: false,
+            error: 'BRAIN_RESULT_MISSING'
+          };
+          return;
+        }
+
+        const finalResultText = brainOutput.final_result_text;
         tx.update(runRef, {
           state: 'COMPLETED',
           progress_percent: 100,
-          progress_message: String(input.summary || 'Brain-only result completed').slice(0, 2000),
+          progress_message: brainResultSummary(input, finalResultText).slice(0, 2000),
           output_text: outputText,
           brain_output: brainOutput,
           completed_at: timestamp(),
@@ -1154,9 +1375,15 @@ async function completeRun(db, tenantId, runId, input) {
           project_id: run.project_id || null,
           worker_id: brainOutput.worker_id,
           executor_id: run.executor_id || null,
+          brain_run_id: runId,
+          run_type: 'BRAIN_RUN',
+          source_run_type: 'BRAIN_RUN',
           status: 'SUCCESS',
-          result_type: 'BRAIN_OUTPUT',
-          summary: String(input.summary || brainOutput.final_result?.summary || '').slice(0, 10000),
+          result_type: 'BRAIN_RESULT',
+          title: brainResultTitle(run, taskSpec),
+          summary: brainResultSummary(input, finalResultText),
+          content: finalResultText,
+          text: finalResultText,
           output: brainOutput,
           created_at: timestamp()
         });
@@ -1547,5 +1774,6 @@ module.exports = {
   addEvidence,
   completeRun,
   completeManualCodexHandoff,
-  recoverAbandonedBrainRuns
+  recoverAbandonedBrainRuns,
+  parseBrainResponse
 };

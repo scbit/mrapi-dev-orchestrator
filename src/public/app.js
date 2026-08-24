@@ -281,10 +281,12 @@ function renderTasks() {
 }
 
 function renderReports() {
-  const executionResults = state.results.filter((result) => result.result_type === 'EXECUTION_OUTPUT' || !result.result_type);
+  const reportTypes = new Set(['EXECUTION_OUTPUT', 'BRAIN_RESULT', 'REPORT']);
+  const executionResults = state.results.filter((result) => reportTypes.has(result.result_type) || !result.result_type);
   $('#reportsList').innerHTML = executionResults.length
     ? executionResults.map((result) => {
         const mission = state.missions.find((m) => m.id === result.mission_id);
+        const resultText = result.content || result.text || result.output?.final_result_text || result.summary || 'No summary';
         return `
           <article class="report-card">
             <div class="panel-header">
@@ -294,13 +296,13 @@ function renderReports() {
               </div>
               ${stateBadge(result.status || 'SUCCESS')}
             </div>
-            <p>${escapeHtml(result.summary || 'No summary')}</p>
+            <p>${escapeHtml(resultText)}</p>
             <div class="mission-meta">Mission ${escapeHtml(result.mission_id || '')} · Run ${escapeHtml(result.run_id || '')}</div>
             ${result.output ? `<pre class="result-json">${escapeHtml(JSON.stringify(result.output, null, 2))}</pre>` : ''}
           </article>
         `;
       }).join('')
-    : '<div class="empty-state">No final execution results yet.</div>';
+    : '<div class="empty-state">No final results yet.</div>';
 }
 
 function openMissionDetail(missionId) {
@@ -337,7 +339,7 @@ function openMissionDetail(missionId) {
     ${results.length ? results.map((result) => `
       <div class="result-block">
         <strong>${escapeHtml(result.result_type || 'RESULT')}</strong>
-        <p>${escapeHtml(result.summary || '')}</p>
+        <p>${escapeHtml(result.content || result.text || result.output?.final_result_text || result.summary || '')}</p>
         ${result.output ? `<pre class="result-json">${escapeHtml(JSON.stringify(result.output, null, 2))}</pre>` : ''}
       </div>
     `).join('') : '<div class="empty-state">No result yet.</div>'}

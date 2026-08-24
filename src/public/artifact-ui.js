@@ -15,6 +15,17 @@
 
   function cleanResult(result) {
     const out = result.output || {};
+    const resultText = result.content || result.text || out.final_result_text || result.summary || '';
+    if (result.result_type === 'BRAIN_RESULT') {
+      return `<div class="clean-result">
+        <div>${stateBadge(result.status || 'SUCCESS')}</div>
+        <div class="clean-summary">${escapeHtml(resultText || 'Brain result completed.')}</div>
+        <details class="technical-details">
+          <summary>Technical details</summary>
+          <pre class="result-json">${escapeHtml(JSON.stringify(out, null, 2))}</pre>
+        </details>
+      </div>`;
+    }
     const git = out.git || {};
     const gitLabel = git.error
       ? `Git: ${git.error}`
@@ -43,7 +54,8 @@
   }
 
   renderReports = function () {
-    const results = state.results.filter((r) => r.result_type === 'EXECUTION_OUTPUT' || !r.result_type);
+    const reportTypes = new Set(['EXECUTION_OUTPUT', 'BRAIN_RESULT', 'REPORT']);
+    const results = state.results.filter((r) => reportTypes.has(r.result_type) || !r.result_type);
     $('#reportsList').innerHTML = results.length ? results.map((result) => {
       const mission = state.missions.find((m) => m.id === result.mission_id);
       const artifacts = artifactsForMission(result.mission_id);
@@ -54,7 +66,7 @@
         ${cleanResult(result)}
         ${artifacts.length ? `<h4>Artifacts</h4><div class="artifact-list">${artifacts.map(fileCard).join('')}</div>` : ''}
       </article>`;
-    }).join('') : '<div class="empty-state">No final execution results yet.</div>';
+    }).join('') : '<div class="empty-state">No final results yet.</div>';
   };
 
   const previousLoadAll = loadAll;
