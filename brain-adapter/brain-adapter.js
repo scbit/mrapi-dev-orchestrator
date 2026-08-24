@@ -17,7 +17,7 @@ async function heartbeat() {
     state: 'ONLINE',
     adapter_status: currentBrainRunId ? 'BUSY' : 'IDLE',
     current_brain_run_id: currentBrainRunId,
-    adapter_version: 'v0.4.0.3',
+    adapter_version: 'v0.4.0.4',
     host_name: cfg.hostName
   });
 }
@@ -29,7 +29,7 @@ async function register() {
     state: 'ONLINE',
     adapter_status: 'IDLE',
     current_brain_run_id: null,
-    adapter_version: 'v0.4.0.3',
+    adapter_version: 'v0.4.0.4',
     host_name: cfg.hostName
   });
 }

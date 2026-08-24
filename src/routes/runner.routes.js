@@ -57,10 +57,15 @@ function createRunnerRouter({ db }) {
         executor_id: String(req.body?.executor_id || '').trim() || null,
         worker_ids: Array.isArray(req.body?.worker_ids) ? req.body.worker_ids : undefined,
         capabilities: Array.isArray(req.body?.capabilities) ? req.body.capabilities : undefined,
-        error: error.message
+        code: error.code || null,
+        error: error.message,
+        stack: error.stack
       });
       if (error.status) return res.status(error.status).json({ error: error.message });
-      next(error);
+      res.status(500).json({
+        error: 'RUNNER_CLAIM_INTERNAL_ERROR',
+        detail: String(error.message || 'Unexpected runner claim failure').slice(0, 500)
+      });
     }
   });
 

@@ -1,191 +1,157 @@
-# MRAPI DEV v0.4.0.3 — Runner Claim 500 Fix
+# MRAPI DEV v0.4.0.4 — Claim State Contract Fix
 
 ## OBJECTIVE
-Fix the backend 500 that crashes the Shadow Runner immediately after successful executor registration.
+Fix the remaining `/api/runner/next-task` 500 after v0.4.0.3.
 
-Observed real runtime:
+Observed runtime:
+- executor registers successfully for W01-W05
+- Runner no longer dies (v0.4.0.3 resilience works)
+- every poll still returns `500 INTERNAL_SERVER_ERROR`
 
-```text
-[SHADOW] registering executor_shadow_codex_01 [ 'W01', 'W02', 'W03', 'W04', 'W05' ]
-[SHADOW] registered
-[SHADOW] repo C:\Users\Shadow\Documents\GitHub\mrapi-dev-orchestrator
-[SHADOW] Codex mode: CLI AUTO
-[SHADOW] configured command auto-detect codex/codex.cmd
-[SHADOW FATAL] Error: 500 INTERNAL_SERVER_ERROR
-    at ...runner\lib\api.js:17:29
-    at async loop (...runner\shadow-runner.js:411:21)
+## CONFIRMED CODE MISMATCH
+Current claim flow considers BOTH:
+- `QUEUED`
+- `ASSIGNED`
+
+as eligible tasks.
+
+But `src/services/codexHandoff.js -> trustedScope()` rejects any task whose state is not exactly `QUEUED`:
+
+```js
+if (task.state !== 'QUEUED') throw fail('CODEX_HANDOFF_TASK_NOT_QUEUED');
 ```
 
-This started after v0.4.0.x multi-worker changes.
+This is inconsistent with `claimNextTask()`, which explicitly accepts `['QUEUED', 'ASSIGNED']`.
 
-The Runner registers correctly.
-Failure happens on the first work polling / claim operation.
+Also `CODEX_HANDOFF_TASK_NOT_QUEUED` is not currently treated as a skippable claim-candidate error, so an old/stuck `ASSIGNED` task can turn the whole poll into HTTP 500.
 
-## CONTEXT
-Architecture remains:
-
+## ARCHITECTURE
+Do not change:
 - ChatGPT Web = Brain
 - Codex = Executor
 - Shadow = Host
 - MRAPI DEV = source of truth
-
-Executor:
-`executor_shadow_codex_01`
-
-Allowed workers:
-`W01, W02, W03, W04, W05`
-
-Do not reduce it back to W01-only.
-
-## FILES / AREAS
-Inspect actual code before modifying.
-
-Likely areas:
-- `runner/shadow-runner.js` around line ~411
-- `runner/lib/api.js`
-- runner claim/poll endpoint
-- `src/routes/*runner*`
-- `src/services/orchestration.js`
-- Task claim query / Firestore query
-- multi-worker worker_id filtering
-- tests for executor registration/claim
+- common executor supports W01-W05
+- tenant isolation
+- W01-only Git permissions
 
 ## IMPLEMENTATION
 
-### 1. Identify exact failing request
-Determine which request is made immediately after registration at Runner line ~411.
+### 1. Align claim/handoff state contract
+Choose one canonical claim-entry contract and use it consistently.
 
-Add/retain useful server-side operational logging so a future 500 records:
-- endpoint/action
-- executor_id
-- tenant_id
-- worker_ids/capabilities if applicable
-- error code/message
+Preferred for compatibility:
+- claim may accept `QUEUED` and legacy/stale `ASSIGNED`
+- Codex handoff trusted scope may accept `QUEUED` and `ASSIGNED`
+- transaction atomically transitions the accepted task to `RUNNING`
 
-Never log secrets.
+Do NOT execute tasks already `RUNNING`, `DONE`, `FAILED`, `SKIPPED`, etc.
 
-### 2. Fix multi-worker claim
-The Runner now serves five workers.
+Update `trustedScope()` accordingly, for example:
+```js
+if (!['QUEUED', 'ASSIGNED'].includes(task.state)) {
+  throw fail('CODEX_HANDOFF_TASK_NOT_CLAIMABLE');
+}
+```
 
-The claim endpoint must safely accept an executor that is bound to:
-`['W01','W02','W03','W04','W05']`
+Use a clear canonical error code.
 
-Do not assume a single `worker_id`.
+### 2. Candidate-error safety
+Any expected per-task validation failure must not make `/next-task` return 500.
 
-Claim semantics:
-- tenant-scoped
-- only QUEUED/ASSIGNED eligible work according to existing model
-- task worker must be one of executor's allowed worker IDs
-- required capabilities/permissions must match
-- cancelled missions/tasks must not be claimed
-- one atomic claim at a time
-- preserve attempt/run history
+Include claim/handoff validation errors such as:
+- TASK_ALREADY_CLAIMED
+- TASK_BRAIN_NOT_COMPLETE
+- WORKER_NOT_FOUND
+- WORKER_NOT_AVAILABLE
+- MISSION_CANCELLED
+- CODEX_HANDOFF_TASK_NOT_CLAIMABLE
+- CODEX_HANDOFF_TASK_SPEC_REQUIRED
+- CODEX_HANDOFF_BRAIN_RUN_REQUIRED
+- CODEX_HANDOFF_BRAIN_TENANT_MISMATCH
+- CODEX_HANDOFF_BRAIN_RUN_TYPE_REQUIRED
+- CODEX_HANDOFF_BRAIN_NOT_COMPLETED
+- CODEX_HANDOFF_BRAIN_MISSION_MISMATCH
+- CODEX_HANDOFF_TASK_TENANT_MISMATCH
+- CODEX_HANDOFF_TASK_MISSION_MISMATCH
+- CODEX_HANDOFF_WORKER_REQUIRED
+- CODEX_HANDOFF_SCOPE_REQUIRED
 
-### 3. Firestore query safety
-Pay special attention to Firestore query composition introduced by multi-worker support.
+Expected bad candidate => log `[RUNNER CLAIM SKIP]` and continue to next candidate.
 
-If the 500 is caused by an invalid query/index/operator combination:
-- use the simplest safe query compatible with existing indexes
-- filter the small candidate set in application code if that avoids brittle composite-index requirements
-- keep tenant isolation mandatory
-- do not query across tenants
+Unexpected infrastructure/programming error => still return 500.
 
-Prefer correctness and low operational complexity over a new index for this patch unless an index is clearly unavoidable.
+### 3. Existing stuck ASSIGNED task
+The currently stuck W04 task must be recoverable if:
+- tenant matches
+- mission not cancelled
+- Brain Run completed
+- worker is eligible
+- task state is QUEUED or ASSIGNED
 
-### 4. No-work response
-When there is no eligible Task, claim/poll must return a normal no-work response, never 500.
+Do not duplicate Task or Run.
+The transaction should claim it once and move it to RUNNING.
 
-Examples compatible with existing API:
-- HTTP 200 + `{ task: null }`
-or
-- HTTP 204
+### 4. Make authenticated Runner 500 diagnostic useful
+For `/api/runner/next-task` only, on unexpected errors:
+- keep server log with stack/code
+- return a safe machine-readable diagnostic to the authenticated Runner:
+  - `error: "RUNNER_CLAIM_INTERNAL_ERROR"`
+  - `detail: <safe error.message, max 500 chars>`
+  - no stack
+  - no secret
+  - no credentials
 
-Use existing project conventions.
+Update Runner API error formatting so terminal prints the safe `detail` when present.
 
-Runner must continue polling.
+This allows future production diagnosis without opening Cloud Run logs.
 
-### 5. Bad/stale task resilience
-One malformed/stale task must not crash the whole Runner.
+Example:
+```text
+[SHADOW POLL ERROR] 500 RUNNER_CLAIM_INTERNAL_ERROR: <detail> retrying...
+```
 
-If a candidate:
-- references missing Mission
-- references missing Worker
-- is cancelled
-- has invalid execution metadata
-
-skip/block it according to existing conventions and continue safely.
-
-Do not silently execute invalid work.
-
-### 6. Runner error handling
-A transient backend 5xx should not permanently terminate the Shadow Runner.
-
-Implement bounded polling resilience:
-- log concise error
-- wait/backoff
-- retry polling
-- heartbeat continues/re-register if existing architecture requires it
-
-Do NOT create an open hot loop.
-Do NOT retry task execution automatically beyond existing retry rules.
-
-Fatal should remain for unrecoverable local configuration errors, not a single poll 500.
-
-### 7. Preserve W04 pending mission
-Do not invent a migration for the currently stuck W04 mission.
-After deployment and Runner restart, if its Task is still eligible, the normal claim flow should take it.
-If mission/task state is already inconsistent, surface Need Attention rather than creating duplicates.
-
-### 8. Version
-Bump to:
-`v0.4.0.3`
+### 5. Version
+Bump:
+- app/runtime visible version: `v0.4.0.4`
+- runner package version consistently
 
 ## TESTS
+Add tests for:
 
-Add focused tests proving:
-
-1. Executor registers with W01-W05.
-2. Multi-worker claim does not throw.
-3. W04 queued Task can be claimed by the common Codex executor.
-4. W01 Task still works.
-5. Task from a worker outside executor binding is not claimed.
-6. Tenant isolation is preserved.
-7. No eligible task returns normal no-work response.
-8. Cancelled Mission Task is not claimed.
-9. Malformed/stale candidate does not crash polling.
-10. A poll 500 does not terminate Runner loop permanently.
-11. Existing Brain-only path remains unaffected.
-12. Existing Git W01-only permissions remain unaffected.
-13. Full suite passes.
+1. QUEUED task can be handed off.
+2. ASSIGNED task can be handed off/recovered.
+3. ASSIGNED W04 task is claimed once.
+4. RUNNING task cannot be claimed.
+5. Expected malformed candidate is skipped, not HTTP 500.
+6. Unexpected internal error returns diagnostic `RUNNER_CLAIM_INTERNAL_ERROR`.
+7. Runner prints returned safe detail and keeps retrying.
+8. W01 flow remains green.
+9. W04 multi-worker flow remains green.
+10. tenant isolation remains green.
+11. W01 Git permissions remain W01-only.
+12. full suite passes.
 
 Run:
 `node --test`
 
 ## SUCCESS CRITERIA
-After human deploy and Runner restart, terminal stays alive and shows normal polling/claim behavior instead of:
-
-`[SHADOW FATAL] Error: 500 INTERNAL_SERVER_ERROR`
-
-The existing W04 execution Mission can proceed to Codex if its Task remains valid.
+After human deploy + Runner restart:
+- no repeated generic 500
+- if current W04 task is valid QUEUED/ASSIGNED, Runner claims it
+- terminal proceeds to Codex execution
+- if another unexpected backend error exists, terminal shows its safe exact detail instead of only `INTERNAL_SERVER_ERROR`
 
 ## STOP CONDITIONS
 - Do not revert to W01-only.
-- Do not hardcode W04.
-- Do not weaken tenant isolation.
-- Do not let Codex become Brain.
-- Do not auto-deploy.
-- Do not push.
-- Do not delete pending Missions/Tasks.
+- Do not delete the stuck Mission/Task.
 - Do not create duplicate Runs.
+- Do not weaken tenant checks.
+- Do not let Codex become Brain.
+- Do not deploy.
+- Do not push.
 
 ## DEPLOY
-Codex:
-- inspect
-- implement
-- test
-- stop
-
-Human:
-- commit/push
-- manual Cloud Run deploy
-- restart Shadow Runner
+Codex implements + tests only.
+Human commit/push + manual Cloud Run deploy.
+Then restart Shadow Runner.

@@ -15,9 +15,12 @@ function createApi(cfg) {
     let data = {};
     try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
     if (!response.ok) {
-      const error = new Error(`${response.status} ${data.error || data.message || text}`);
+      const code = data.error || data.message || text || `HTTP_${response.status}`;
+      const detail = data.detail ? `: ${String(data.detail)}` : '';
+      const error = new Error(`${response.status} ${code}${detail}`);
       error.status = response.status;
-      error.code = data.error || data.message || text || `HTTP_${response.status}`;
+      error.code = code;
+      error.detail = data.detail || null;
       error.path = path;
       throw error;
     }

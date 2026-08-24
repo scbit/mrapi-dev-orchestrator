@@ -8,6 +8,7 @@ const {
   completeBrainRun,
   dispatchMission
 } = require('../src/services/orchestration');
+const { createApi } = require('../runner/lib/api');
 const { isTransientPollError } = require('../runner/shadow-runner');
 
 class FakeSnapshot {
@@ -191,7 +192,7 @@ function seedTask(db, id, workerId, overrides = {}) {
 async function registerCommonExecutor(db, tenantId = 'tenant_a') {
   return registerExecutor(db, tenantId, {
     executor_id: 'executor_shadow_codex_01',
-    runner_version: 'v0.4.0.3',
+    runner_version: 'v0.4.0.4',
     worker_ids: ['W01', 'W02', 'W03', 'W04', 'W05'],
     capabilities: ['EXECUTION_RUN:CODEX_CLI_AUTO', 'CODEX_HANDOFF:VALIDATED']
   });
@@ -224,6 +225,39 @@ test('v0.4.0.3 common executor claims W04 and W01 tasks without throwing', async
     repository_path: 'C:\\repo'
   });
   assert.equal(second.task.id, 'task_w01');
+});
+
+test('v0.4.0.4 ASSIGNED W04 task is recovered and claimed once', async () => {
+  const db = new FakeDb();
+  seedBase(db);
+  await registerCommonExecutor(db);
+  seedTask(db, 'task_assigned_w04', 'W04', { state: 'ASSIGNED' });
+
+  const first = await claimNextTask(db, 'tenant_a', 'executor_shadow_codex_01', {
+    repository_path: 'C:\\repo'
+  });
+  const second = await claimNextTask(db, 'tenant_a', 'executor_shadow_codex_01', {
+    repository_path: 'C:\\repo'
+  });
+
+  assert.equal(first.task.id, 'task_assigned_w04');
+  assert.equal(db.get('tasks', 'task_assigned_w04').state, 'RUNNING');
+  assert.equal(second, null);
+  assert.equal(Object.values(db.collections.runs || {}).filter((run) => run.run_type === 'EXECUTION_RUN').length, 1);
+});
+
+test('v0.4.0.4 RUNNING task cannot be claimed', async () => {
+  const db = new FakeDb();
+  seedBase(db);
+  await registerCommonExecutor(db);
+  seedTask(db, 'task_running', 'W04', { state: 'RUNNING', phase: 'EXECUTION_RUNNING' });
+
+  const claim = await claimNextTask(db, 'tenant_a', 'executor_shadow_codex_01', {
+    repository_path: 'C:\\repo'
+  });
+
+  assert.equal(claim, null);
+  assert.equal(Object.values(db.collections.runs || {}).length, 0);
 });
 
 test('v0.4.0.3 claim preserves worker binding and tenant isolation', async () => {
@@ -269,6 +303,21 @@ test('v0.4.0.3 malformed stale candidate is skipped and next valid task is claim
   assert.equal(claim.task.id, 'task_valid');
 });
 
+test('v0.4.0.4 expected handoff validation failure is skipped without 500', async () => {
+  const db = new FakeDb();
+  seedBase(db);
+  await registerCommonExecutor(db);
+  seedTask(db, 'task_missing_spec', 'W04', { created_at: 1 });
+  db.update('tasks', 'task_missing_spec', { objective: '', title: '' });
+  seedTask(db, 'task_after_bad_spec', 'W04', { created_at: 2 });
+
+  const claim = await claimNextTask(db, 'tenant_a', 'executor_shadow_codex_01', {
+    repository_path: 'C:\\repo'
+  });
+
+  assert.equal(claim.task.id, 'task_after_bad_spec');
+});
+
 test('v0.4.0.3 poll 500 is classified as transient and loop source retries', () => {
   const error = new Error('500 INTERNAL_SERVER_ERROR');
   error.status = 500;
@@ -278,6 +327,44 @@ test('v0.4.0.3 poll 500 is classified as transient and loop source retries', () 
   assert.match(source, /SHADOW POLL ERROR/);
   assert.match(source, /retrying in/);
   assert.match(source, /isTransientPollError/);
+});
+
+test('v0.4.0.4 runner API includes safe diagnostic detail in errors', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () => ({
+    status: 500,
+    ok: false,
+    text: async () => JSON.stringify({
+      error: 'RUNNER_CLAIM_INTERNAL_ERROR',
+      detail: 'CODEX_HANDOFF_TASK_NOT_CLAIMABLE'
+    })
+  });
+
+  try {
+    const api = createApi({ baseUrl: 'https://mrapi.test', secret: 'test', tenantId: 'tenant_a' });
+    await assert.rejects(
+      () => api.request('/api/runner/next-task', { executor_id: 'executor_shadow_codex_01' }),
+      (error) => {
+        assert.equal(error.status, 500);
+        assert.equal(error.code, 'RUNNER_CLAIM_INTERNAL_ERROR');
+        assert.equal(error.detail, 'CODEX_HANDOFF_TASK_NOT_CLAIMABLE');
+        assert.match(error.message, /500 RUNNER_CLAIM_INTERNAL_ERROR: CODEX_HANDOFF_TASK_NOT_CLAIMABLE/);
+        return true;
+      }
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('v0.4.0.4 next-task route returns safe authenticated diagnostic contract', () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'runner.routes.js'), 'utf8');
+
+  assert.match(source, /RUNNER NEXT_TASK ERROR/);
+  assert.match(source, /stack: error\.stack/);
+  assert.match(source, /res\.status\(500\)\.json/);
+  assert.match(source, /error: 'RUNNER_CLAIM_INTERNAL_ERROR'/);
+  assert.match(source, /detail: String\(error\.message \|\| 'Unexpected runner claim failure'\)\.slice\(0, 500\)/);
 });
 
 test('v0.4.0.3 Brain-only path remains unaffected', async () => {

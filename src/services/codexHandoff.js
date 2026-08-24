@@ -90,7 +90,9 @@ function trustedScope({ tenantId, task, mission, brainRun }) {
   if (!tenantId) throw fail('CODEX_HANDOFF_TENANT_REQUIRED');
   if (!task?.id) throw fail('CODEX_HANDOFF_TASK_REQUIRED');
   if (task.tenant_id !== tenantId) throw fail('CODEX_HANDOFF_TASK_TENANT_MISMATCH');
-  if (task.state !== 'QUEUED') throw fail('CODEX_HANDOFF_TASK_NOT_QUEUED');
+  if (!['QUEUED', 'ASSIGNED'].includes(task.state)) {
+    throw fail('CODEX_HANDOFF_TASK_NOT_CLAIMABLE');
+  }
   if (!mission?.id) throw fail('CODEX_HANDOFF_MISSION_REQUIRED');
   if (mission.tenant_id !== tenantId) throw fail('CODEX_HANDOFF_MISSION_TENANT_MISMATCH');
   if (task.mission_id !== mission.id) throw fail('CODEX_HANDOFF_TASK_MISSION_MISMATCH');
