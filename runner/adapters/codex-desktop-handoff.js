@@ -8,13 +8,15 @@ function sanitizeId(value) {
 
 function buildCodexPrompt({ task, executionRun, cfg }) {
   const handoff = task.codex_handoff || executionRun.codex_handoff || null;
-  const brainInstructions =
-    handoff?.task_spec?.instructions ||
-    task.brain_output?.task_spec?.instructions ||
-    task.brain_output?.task_spec?.objective ||
-    task.brain_output?.objective ||
-    task.objective ||
-    '';
+  const brainInstructions = handoff
+    ? String(handoff.task_spec?.instructions || '').trim()
+    : (
+        task.brain_output?.task_spec?.instructions ||
+        task.brain_output?.task_spec?.objective ||
+        task.brain_output?.objective ||
+        task.objective ||
+        ''
+      );
   const executionRules = handoff?.execution_rules?.length
     ? handoff.execution_rules.map((rule) => `- ${rule}`).join('\n')
     : `- You are the Executor, not the Brain.

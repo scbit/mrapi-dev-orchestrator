@@ -8,7 +8,9 @@ const {
   approveMissionPlan,
   requestMissionPlanChanges,
   getMissionPlan,
-  claimNextTask
+  claimNextTask,
+  retryMission,
+  addEvidence
 } = require('../src/services/orchestration');
 
 const ROOT = path.join(__dirname, '..');
@@ -154,7 +156,10 @@ function seedPlanningMission(db, workerId = 'W01', missionId = `mission_${worker
     id: 'project_1',
     tenant_id: 'tenant_a',
     workspace_id: 'workspace_1',
-    primary_worker_ids: [workerId]
+    primary_worker_ids: [workerId],
+    runtime_context: {
+      repository_path: 'C:\\project-one'
+    }
   });
   db.set('workers', workerId, {
     id: workerId,
@@ -348,6 +353,199 @@ test('v0.4.1.2 approval retry recovers an approved plan without duplicating Task
   assert.equal(approval.success, true);
   assert.equal(values(db, 'tasks').length, 1);
   assert.equal(values(db, 'tasks')[0].approved_plan_revision_id, plan.id);
+});
+
+test('v0.4.2.0 immutable snapshot is the only source for approved Task handoff', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W01', 'mission_snapshot', planOutput({
+    instructions: 'Create exactly OK MODIFICADO in the approved artifact.'
+  }));
+  await approveMissionPlan(db, 'tenant_a', 'mission_snapshot', {});
+  const task = values(db, 'tasks')[0];
+
+  task.brain_output.task_spec.instructions = 'Read CODEX_TASK.md and implement v0.4.1.2 planning dispatch fix.';
+  db.set('tasks', task.id, task);
+  db.set('executors', 'executor_shadow_codex_01', {
+    id: 'executor_shadow_codex_01',
+    tenant_id: 'tenant_a',
+    worker_ids: ['W01'],
+    state: 'ONLINE'
+  });
+  db.set('worker_profiles', 'profile_W01', {
+    id: 'profile_W01',
+    tenant_id: 'tenant_a',
+    permissions: {}
+  });
+
+  const claim = await claimNextTask(db, 'tenant_a', 'executor_shadow_codex_01', {
+    repository_path: 'C:\\wrong-runner-repo'
+  });
+
+  assert.match(claim.codex_handoff.task_spec.instructions, /OK MODIFICADO/);
+  assert.doesNotMatch(claim.codex_handoff.task_spec.instructions, /CODEX_TASK\.md|v0\.4\.1\.2|planning dispatch fix/);
+  assert.equal(claim.codex_handoff.execution_snapshot_id, task.execution_snapshot_id);
+  assert.match(claim.codex_handoff.repository_path, /MRAPI_TASK_WORKSPACE\/mission_snapshot/);
+  assert.notEqual(claim.codex_handoff.repository_path, 'C:\\wrong-runner-repo');
+});
+
+test('v0.4.2.0 artifact smoke executes without project repository fallback and records evidence', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W01', 'mission_pdf', planOutput({
+    objective: 'Crear un PDF que diga OK',
+    instructions: 'Crear un PDF que diga OK.'
+  }));
+  db.set('projects', 'project_1', {
+    id: 'project_1',
+    tenant_id: 'tenant_a',
+    workspace_id: 'workspace_1',
+    primary_worker_ids: ['W01']
+  });
+  const approval = await approveMissionPlan(db, 'tenant_a', 'mission_pdf', {});
+  db.set('executors', 'executor_shadow_codex_01', {
+    id: 'executor_shadow_codex_01',
+    tenant_id: 'tenant_a',
+    worker_ids: ['W01'],
+    state: 'ONLINE'
+  });
+
+  const claim = await claimNextTask(db, 'tenant_a', 'executor_shadow_codex_01', {});
+  const evidence = await addEvidence(db, 'tenant_a', claim.run.id, {
+    type: 'FILE',
+    title: 'ok.pdf',
+    url: 'local://artifact/ok.pdf'
+  });
+
+  assert.equal(approval.success, true);
+  assert.match(claim.codex_handoff.repository_path, /MRAPI_TASK_WORKSPACE\/mission_pdf/);
+  assert.match(claim.codex_handoff.task_spec.instructions, /PDF que diga OK/);
+  assert.equal(evidence.mission_id, 'mission_pdf');
+  assert.equal(evidence.task_id, claim.task.id);
+});
+
+test('v0.4.2.0 replan approval creates fresh rev2 snapshot and cannot execute rev1 payload', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W01', 'mission_replan_pdf', planOutput({
+    objective: 'Crear un PDF que diga OK',
+    instructions: 'Crear un PDF que diga OK.'
+  }));
+  const rev1 = values(db, 'mission_plans')[0];
+  await requestMissionPlanChanges(db, 'tenant_a', 'mission_replan_pdf', {
+    message: 'Cambiar el texto a OK MODIFICADO'
+  });
+  const run = values(db, 'runs').find((item) => item.state === 'RUNNING');
+  await completeBrainRun(db, 'tenant_a', run.id, {
+    output_text: planOutput({
+      objective: 'Crear un PDF que diga OK MODIFICADO',
+      instructions: 'Crear un PDF que diga OK MODIFICADO.'
+    })
+  });
+  db.set('projects', 'project_1', {
+    id: 'project_1',
+    tenant_id: 'tenant_a',
+    workspace_id: 'workspace_1',
+    primary_worker_ids: ['W01']
+  });
+
+  const approval = await approveMissionPlan(db, 'tenant_a', 'mission_replan_pdf', {});
+  const task = values(db, 'tasks')[0];
+
+  assert.equal(values(db, 'tasks').length, 1);
+  assert.equal(task.approved_plan_revision_id, approval.plan_revision_id);
+  assert.notEqual(task.approved_plan_revision_id, rev1.id);
+  assert.equal(task.execution_snapshot.approved_plan_revision_number, 2);
+  assert.match(task.execution_snapshot.execution_spec.instructions, /OK MODIFICADO/);
+  assert.doesNotMatch(task.execution_snapshot.execution_spec.instructions, /que diga OK\.$/);
+});
+
+test('v0.4.2.0 retry creates fresh Task from same immutable execution snapshot', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W01', 'mission_retry_snapshot', planOutput({
+    instructions: 'Crear un PDF que diga OK MODIFICADO.'
+  }));
+  db.set('projects', 'project_1', {
+    id: 'project_1',
+    tenant_id: 'tenant_a',
+    workspace_id: 'workspace_1',
+    primary_worker_ids: ['W01']
+  });
+  await approveMissionPlan(db, 'tenant_a', 'mission_retry_snapshot', {});
+  const firstTask = values(db, 'tasks')[0];
+  db.set('missions', 'mission_retry_snapshot', {
+    state: 'FAILED'
+  }, { merge: true });
+  db.set('tasks', firstTask.id, {
+    state: 'FAILED',
+    brain_output: {
+      task_spec: {
+        instructions: 'Old stale payload from CODEX_TASK.md v0.4.1.2'
+      }
+    }
+  }, { merge: true });
+
+  const retry = await retryMission(db, 'tenant_a', 'mission_retry_snapshot');
+  const tasks = values(db, 'tasks').sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  const retryTask = tasks.find((task) => task.id === retry.task_id);
+
+  assert.equal(retry.mode, 'EXECUTION_RETRY');
+  assert.equal(retryTask.execution_snapshot_id, firstTask.execution_snapshot_id);
+  assert.equal(retryTask.retry_of_task_id, firstTask.id);
+  assert.match(retryTask.execution_snapshot.execution_spec.instructions, /OK MODIFICADO/);
+  assert.doesNotMatch(retryTask.execution_snapshot.execution_spec.instructions, /CODEX_TASK\.md|v0\.4\.1\.2/);
+});
+
+test('v0.4.2.0 project runtime path is used for code projects', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W01', 'mission_code_project', planOutput({
+    instructions: 'Edit code in the repository and run node --test.'
+  }));
+  await approveMissionPlan(db, 'tenant_a', 'mission_code_project', {});
+
+  const snapshot = values(db, 'execution_snapshots')[0];
+  assert.equal(snapshot.repository_required, true);
+  assert.equal(snapshot.repository_path, 'C:\\project-one');
+});
+
+test('v0.4.2.0 missing code project runtime blocks without MRAPI repo fallback', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W01', 'mission_wrong_project', planOutput({
+    instructions: 'Edit code in the repository and run node --test.'
+  }));
+  db.set('projects', 'project_1', {
+    id: 'project_1',
+    tenant_id: 'tenant_a',
+    workspace_id: 'workspace_1',
+    primary_worker_ids: ['W01']
+  });
+
+  const approval = await approveMissionPlan(db, 'tenant_a', 'mission_wrong_project', {});
+  const mission = db.get('missions', 'mission_wrong_project');
+
+  assert.equal(approval.blocked, true);
+  assert.equal(approval.blocker_code, 'PROJECT_RUNTIME_CONTEXT_MISSING');
+  assert.equal(mission.state, 'BLOCKED');
+  assert.equal(values(db, 'tasks').length, 0);
+});
+
+test('v0.4.2.0 snapshot mismatch blocks before Runner receives execution', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W01', 'mission_snapshot_mismatch', planOutput());
+  await approveMissionPlan(db, 'tenant_a', 'mission_snapshot_mismatch', {});
+  const task = values(db, 'tasks')[0];
+  db.set('tasks', task.id, { project_id: 'other_project' }, { merge: true });
+  db.set('executors', 'executor_shadow_codex_01', {
+    id: 'executor_shadow_codex_01',
+    tenant_id: 'tenant_a',
+    worker_ids: ['W01'],
+    state: 'ONLINE'
+  });
+
+  const claim = await claimNextTask(db, 'tenant_a', 'executor_shadow_codex_01', {
+    repository_path: 'C:\\project-one'
+  });
+
+  assert.equal(claim, null);
+  assert.equal(db.get('tasks', task.id).blocker_code, 'EXECUTION_SNAPSHOT_MISMATCH');
+  assert.equal(db.get('missions', 'mission_snapshot_mismatch').blocker_code, 'EXECUTION_SNAPSHOT_MISMATCH');
 });
 
 test('v0.4.1.0 request changes preserves revision 1 and revision 2 returns ready', async () => {

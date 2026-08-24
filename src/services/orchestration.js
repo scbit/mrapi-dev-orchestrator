@@ -69,7 +69,7 @@ async function dispatchMission(db, tenantId, missionId) {
       throw error;
     }
 
-    const mission = missionSnap.data();
+    const mission = { id: missionSnap.id, ...missionSnap.data() };
 
     if (!['READY', 'PLANNING'].includes(mission.state)) {
       const error = new Error('MISSION_NOT_DISPATCHABLE');
@@ -175,6 +175,94 @@ async function retryMission(db, tenantId, missionId) {
       const error = new Error('MISSION_RETRY_NOT_ALLOWED');
       error.status = 409;
       throw error;
+    }
+
+    if (mission.approved_execution_snapshot_id) {
+      const snapshotRef = db.collection('execution_snapshots').doc(mission.approved_execution_snapshot_id);
+      const snapshotSnap = await tx.get(snapshotRef);
+      if (!snapshotSnap.exists || snapshotSnap.data().tenant_id !== tenantId) {
+        const error = new Error('EXECUTION_SNAPSHOT_NOT_FOUND');
+        error.status = 409;
+        throw error;
+      }
+
+      const snapshot = { id: snapshotSnap.id, ...snapshotSnap.data() };
+      if (
+        mission.current_plan_revision_id &&
+        mission.current_plan_revision_id !== snapshot.approved_plan_revision_id
+      ) {
+        const error = new Error('STALE_EXECUTION_SNAPSHOT_NOT_RETRYABLE');
+        error.status = 409;
+        throw error;
+      }
+
+      const tasksSnap = await tx.get(db.collection('tasks').where('tenant_id', '==', tenantId).limit(200));
+      const snapshotTasks = tasksSnap.docs
+        .map((doc) => ({ id: doc.id, ...doc.data() }))
+        .filter((task) => task.mission_id === missionId && task.execution_snapshot_id === snapshot.id);
+      const latestTask = snapshotTasks
+        .sort((a, b) => Number(b.attempt_count || 0) - Number(a.attempt_count || 0))[0] || null;
+      const taskRef = db.collection('tasks').doc();
+      const taskSpec = taskSpecFromExecutionSnapshot(snapshot);
+      const attempt = Math.max(1, ...snapshotTasks.map((task) => Number(task.attempt_count || 1))) + 1;
+
+      tx.set(taskRef, {
+        id: taskRef.id,
+        tenant_id: tenantId,
+        mission_id: missionId,
+        workspace_id: snapshot.workspace_id || mission.workspace_id || null,
+        project_id: snapshot.project_id || mission.project_id || null,
+        worker_id: snapshot.worker_id || mission.preferred_worker_id,
+        title: taskSpec.title,
+        objective: taskSpec.objective,
+        task_spec: taskSpec,
+        priority: mission.priority || 'NORMAL',
+        state: 'QUEUED',
+        phase: 'EXECUTION_PENDING',
+        attempt_count: attempt,
+        retry_of_task_id: latestTask?.id || null,
+        brain_run_id: mission.brain_run_id || null,
+        approved_plan_revision_id: snapshot.approved_plan_revision_id,
+        approved_plan_revision_number: snapshot.approved_plan_revision_number,
+        execution_snapshot_id: snapshot.id,
+        execution_snapshot: snapshot,
+        brain_output: {
+          objective: taskSpec.objective,
+          worker_id: snapshot.worker_id || mission.preferred_worker_id,
+          requires_execution: true,
+          execution_type: snapshot.execution_type || 'EXECUTOR',
+          task_spec: taskSpec,
+          execution_constraints: snapshot.execution_constraints || {},
+          brain_run_id: mission.brain_run_id || null,
+          tenant_id: tenantId,
+          workspace_id: snapshot.workspace_id || mission.workspace_id || null,
+          project_id: snapshot.project_id || mission.project_id || null,
+          mission_id: missionId
+        },
+        brain_completed_at: timestamp(),
+        current_run_id: null,
+        claimed_by_executor_id: null,
+        created_at: timestamp(),
+        updated_at: timestamp()
+      });
+
+      tx.set(missionRef, {
+        state: 'RUNNING',
+        retry_count: Number(mission.retry_count || 0) + 1,
+        retry_of_task_id: latestTask?.id || null,
+        current_retry_task_id: taskRef.id,
+        updated_at: timestamp()
+      }, { merge: true });
+
+      result = {
+        success: true,
+        mode: 'EXECUTION_RETRY',
+        mission_id: missionId,
+        task_id: taskRef.id,
+        execution_snapshot_id: snapshot.id,
+        retry_of_task_id: latestTask?.id || null
+      };
+      return;
     }
 
     let workerId = mission.preferred_worker_id || null;
@@ -651,6 +739,36 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
         return claimed;
       }
     } catch (error) {
+      if (error.message === 'EXECUTION_SNAPSHOT_MISMATCH') {
+        await taskRef.set({
+          state: 'BLOCKED',
+          phase: 'BLOCKED',
+          blocked_reason: 'EXECUTION_SNAPSHOT_MISMATCH',
+          blocker_code: 'EXECUTION_SNAPSHOT_MISMATCH',
+          blocker_message: 'Task identity does not match its immutable execution snapshot.',
+          blocker_stage: 'EXECUTION',
+          updated_at: timestamp()
+        }, { merge: true });
+        if (candidate.mission_id) {
+          await missionRef.set({
+            state: 'BLOCKED',
+            blocked_reason: 'EXECUTION_SNAPSHOT_MISMATCH',
+            block_reason: 'EXECUTION_SNAPSHOT_MISMATCH',
+            blocker_code: 'EXECUTION_SNAPSHOT_MISMATCH',
+            blocker_message: 'Task identity does not match its immutable execution snapshot.',
+            blocker_stage: 'EXECUTION',
+            blocker_task_id: candidate.id,
+            updated_at: timestamp()
+          }, { merge: true });
+        }
+        await emitEvent(db, tenantId, 'EXECUTION_SNAPSHOT_MISMATCH', {
+          task_id: candidate.id,
+          mission_id: candidate.mission_id || null,
+          worker_id: candidate.worker_id || null,
+          executor_id: executorId
+        }, 'WARNING');
+        continue;
+      }
       if (isClaimCandidateError(error)) {
         operationalLog('warn', '[RUNNER CLAIM SKIP]', {
           endpoint: '/api/runner/next-task',
@@ -966,6 +1084,109 @@ function blockMissionForApproval(tx, missionRef, plan, input, blocker) {
     blocker_brain_run_id: plan?.brain_run_id || null,
     updated_at: timestamp()
   }, { merge: true });
+}
+
+function projectRuntimeContext(project = {}) {
+  const runtime = project.runtime_context && typeof project.runtime_context === 'object'
+    ? project.runtime_context
+    : {};
+  const repositoryPath = String(
+    runtime.repository_path ||
+    runtime.local_path ||
+    project.repository_path ||
+    project.local_path ||
+    ''
+  ).trim();
+
+  return {
+    ...runtime,
+    repository_path: repositoryPath || null,
+    local_path: repositoryPath || null,
+    project_id: project.id || null,
+    project_name: project.name || null
+  };
+}
+
+function executionSpecRequiresRepository(plan) {
+  const spec = plan.execution_spec && typeof plan.execution_spec === 'object'
+    ? plan.execution_spec
+    : {};
+  if (spec.requires_repository === true || spec.repository_required === true) return true;
+  const targetType = String(spec.target_type || spec.target || '').toUpperCase();
+  if (['CODE', 'REPOSITORY', 'REPO', 'APP'].includes(targetType)) return true;
+  const text = [
+    spec.instructions,
+    plan.objective,
+    plan.approach,
+    ...(plan.planned_actions || []).map((item) => `${item.title || ''} ${item.description || ''}`)
+  ].filter(Boolean).join('\n');
+  return /\b(code|repository|repo|source code|local tests|node --test|npm(?:\.cmd)? test|git|commit|push)\b/i.test(text);
+}
+
+function artifactExpectationsFromPlan(plan) {
+  const text = [
+    plan.objective,
+    plan.approach,
+    plan.execution_spec?.instructions,
+    ...(plan.expected_deliverables || [])
+  ].filter(Boolean).join('\n');
+  const artifactTypes = [];
+  if (/\bpdf\b/i.test(text)) artifactTypes.push('PDF');
+  if (/\b(csv|spreadsheet|xlsx|excel)\b/i.test(text)) artifactTypes.push('SPREADSHEET');
+  if (/\b(image|png|jpg|jpeg|screenshot)\b/i.test(text)) artifactTypes.push('IMAGE');
+  return {
+    evidence_required: true,
+    artifact_required: artifactTypes.length > 0,
+    artifact_types: artifactTypes
+  };
+}
+
+function createExecutionSnapshot({ snapshotRef, tenantId, mission, plan, project }) {
+  const runtimeContext = projectRuntimeContext(project);
+  const requiresRepository = executionSpecRequiresRepository(plan);
+  const artifactExpectations = artifactExpectationsFromPlan(plan);
+
+  return {
+    id: snapshotRef.id,
+    tenant_id: tenantId,
+    workspace_id: plan.workspace_id || mission.workspace_id || null,
+    project_id: plan.project_id || mission.project_id || null,
+    mission_id: mission.id,
+    worker_id: plan.worker_id || mission.preferred_worker_id || null,
+    approved_plan_revision_id: plan.id,
+    approved_plan_revision_number: Number(plan.revision || mission.plan_revision_number || 0),
+    objective: plan.objective || mission.objective || '',
+    execution_type: normalizeExecutionType(plan.execution_type, true).value,
+    execution_spec: {
+      ...(plan.execution_spec || {}),
+      instructions: String(plan.execution_spec?.instructions || '').trim()
+    },
+    permissions: Array.isArray(plan.permissions_required) ? [...plan.permissions_required] : [],
+    project_runtime_context: runtimeContext,
+    repository_required: requiresRepository,
+    repository_path: requiresRepository ? runtimeContext.repository_path : null,
+    task_workspace_path: requiresRepository ? null : `MRAPI_TASK_WORKSPACE/${mission.id}/${snapshotRef.id}`,
+    artifact_expectations: artifactExpectations,
+    execution_constraints: {
+      no_gcp: true,
+      no_cloud_run: true,
+      no_deploy: true,
+      deployment: 'HUMAN_MANUAL_DEPLOY',
+      repository_required: requiresRepository
+    },
+    created_at: timestamp()
+  };
+}
+
+function taskSpecFromExecutionSnapshot(snapshot) {
+  const spec = snapshot.execution_spec && typeof snapshot.execution_spec === 'object'
+    ? snapshot.execution_spec
+    : {};
+  return {
+    title: String(spec.title || snapshot.objective || 'Approved execution task').trim(),
+    objective: String(snapshot.objective || '').trim(),
+    instructions: String(spec.instructions || '').trim()
+  };
 }
 
 function planSummary(plan) {
@@ -1692,6 +1913,45 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
       return;
     }
 
+    const projectRef = db.collection('projects').doc(plan.project_id || mission.project_id);
+    const projectSnap = await tx.get(projectRef);
+    const project = projectSnap.exists && projectSnap.data().tenant_id === tenantId
+      ? { id: projectSnap.id, ...projectSnap.data() }
+      : { id: plan.project_id || mission.project_id || null };
+    const snapshotRef = db.collection('execution_snapshots').doc();
+    const executionSnapshot = createExecutionSnapshot({
+      snapshotRef,
+      tenantId,
+      mission,
+      plan,
+      project
+    });
+
+    if (executionSnapshot.repository_required && !executionSnapshot.repository_path) {
+      const blocker = {
+        code: 'PROJECT_RUNTIME_CONTEXT_MISSING',
+        message: 'Project runtime context is missing repository/local_path for a code execution task.',
+        stage: 'APPROVAL'
+      };
+      blockMissionForApproval(tx, missionRef, plan, input, blocker);
+      tx.set(planRef, {
+        status: 'BLOCKED',
+        blocker_code: blocker.code,
+        blocker_message: blocker.message,
+        updated_at: timestamp()
+      }, { merge: true });
+      result = {
+        success: false,
+        blocked: true,
+        error: blocker.code,
+        blocker_code: blocker.code,
+        blocker_message: blocker.message,
+        mission_id: missionId,
+        plan_revision_id: plan.id
+      };
+      return;
+    }
+
     if (plan.requires_execution === false) {
       const resultRef = db.collection('results').doc();
       tx.set(resultRef, {
@@ -1740,6 +2000,7 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
     const taskRef = db.collection('tasks').doc();
     const taskSpec = taskSpecFromPlan(plan, mission);
     try {
+      tx.set(snapshotRef, executionSnapshot);
       tx.set(taskRef, {
         id: taskRef.id,
         tenant_id: tenantId,
@@ -1756,18 +2017,16 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
         attempt_count: 0,
         brain_run_id: plan.brain_run_id || null,
         approved_plan_revision_id: plan.id,
+        approved_plan_revision_number: executionSnapshot.approved_plan_revision_number,
+        execution_snapshot_id: snapshotRef.id,
+        execution_snapshot: executionSnapshot,
         brain_output: {
           objective: taskSpec.objective,
           worker_id: plan.worker_id || mission.preferred_worker_id,
           requires_execution: true,
           execution_type: normalizeExecutionType(plan.execution_type, true).value,
           task_spec: taskSpec,
-          execution_constraints: {
-            no_gcp: true,
-            no_cloud_run: true,
-            no_deploy: true,
-            deployment: 'HUMAN_MANUAL_DEPLOY'
-          },
+          execution_constraints: executionSnapshot.execution_constraints,
           brain_run_id: plan.brain_run_id || null,
           tenant_id: tenantId,
           workspace_id: plan.workspace_id || mission.workspace_id || null,
@@ -1791,6 +2050,8 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
       state: 'RUNNING',
       approval_status: 'APPROVED',
       approved_plan_revision_id: plan.id,
+      approved_plan_revision_number: executionSnapshot.approved_plan_revision_number,
+      approved_execution_snapshot_id: snapshotRef.id,
       approved_at: timestamp(),
       approved_by: input.approved_by || 'operator',
       updated_at: timestamp()
@@ -1801,6 +2062,7 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
       mission_id: missionId,
       task_id: taskRef.id,
       plan_revision_id: plan.id,
+      execution_snapshot_id: snapshotRef.id,
       requires_execution: true
     };
   });

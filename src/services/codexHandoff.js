@@ -26,7 +26,26 @@ function objectOrNull(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
 
+function snapshotOrNull(task) {
+  return objectOrNull(task.execution_snapshot) || null;
+}
+
 function normalizeTaskSpec(task, brainRun) {
+  const snapshot = snapshotOrNull(task);
+  if (snapshot) {
+    const spec = objectOrNull(snapshot.execution_spec) || {};
+    const objective = String(snapshot.objective || task.objective || '').trim();
+    const instructions = String(spec.instructions || '').trim();
+    if (!objective && !instructions) {
+      throw fail('CODEX_HANDOFF_TASK_SPEC_REQUIRED');
+    }
+    return {
+      title: String(spec.title || task.title || objective || 'Approved execution task').trim(),
+      objective,
+      instructions
+    };
+  }
+
   const brainOutput = objectOrNull(task.brain_output) || objectOrNull(brainRun?.brain_output) || {};
   const sourceSpec = objectOrNull(brainOutput.task_spec) || {};
 
@@ -57,6 +76,26 @@ function normalizeTaskSpec(task, brainRun) {
 }
 
 function normalizeExecutionConstraints(task, brainRun) {
+  const snapshot = snapshotOrNull(task);
+  if (snapshot) {
+    return {
+      ...(objectOrNull(snapshot.execution_constraints) || {}),
+      no_gcp: true,
+      no_cloud_run: true,
+      no_deploy: true,
+      deployment: 'HUMAN_MANUAL_DEPLOY',
+      repository_scope: snapshot.repository_path ? 'PROJECT_REPOSITORY_ONLY' : 'ARTIFACT_WORKSPACE_ONLY',
+      forbidden_actions: [
+        'GCP_ACCESS',
+        'CLOUD_RUN_ACCESS',
+        'DEPLOY',
+        'PRODUCTION_CREDENTIALS',
+        'UNREQUESTED_PUSH',
+        'CODEX_TASK_MD_RUNTIME_SOURCE'
+      ]
+    };
+  }
+
   const brainOutput = objectOrNull(task.brain_output) || objectOrNull(brainRun?.brain_output) || {};
   const source = objectOrNull(brainOutput.execution_constraints) || {};
 
@@ -87,6 +126,7 @@ function normalizeGitPermissions(workerProfile) {
 }
 
 function trustedScope({ tenantId, task, mission, brainRun }) {
+  const snapshot = snapshotOrNull(task);
   if (!tenantId) throw fail('CODEX_HANDOFF_TENANT_REQUIRED');
   if (!task?.id) throw fail('CODEX_HANDOFF_TASK_REQUIRED');
   if (task.tenant_id !== tenantId) throw fail('CODEX_HANDOFF_TASK_TENANT_MISMATCH');
@@ -98,6 +138,16 @@ function trustedScope({ tenantId, task, mission, brainRun }) {
   if (task.mission_id !== mission.id) throw fail('CODEX_HANDOFF_TASK_MISSION_MISMATCH');
   if (!task.worker_id) throw fail('CODEX_HANDOFF_WORKER_REQUIRED');
 
+  if (snapshot) {
+    if (task.mission_id !== snapshot.mission_id ||
+      task.worker_id !== snapshot.worker_id ||
+      task.project_id !== snapshot.project_id ||
+      task.approved_plan_revision_id !== snapshot.approved_plan_revision_id) {
+      throw fail('EXECUTION_SNAPSHOT_MISMATCH');
+    }
+    if (snapshot.tenant_id !== tenantId) throw fail('EXECUTION_SNAPSHOT_MISMATCH');
+  }
+
   if (task.brain_run_id) {
     if (!brainRun?.id) throw fail('CODEX_HANDOFF_BRAIN_RUN_REQUIRED');
     if (brainRun.tenant_id !== tenantId) throw fail('CODEX_HANDOFF_BRAIN_TENANT_MISMATCH');
@@ -108,8 +158,8 @@ function trustedScope({ tenantId, task, mission, brainRun }) {
     }
   }
 
-  const workspaceId = mission.workspace_id || brainRun?.workspace_id || null;
-  const projectId = mission.project_id || brainRun?.project_id || null;
+  const workspaceId = snapshot?.workspace_id || mission.workspace_id || brainRun?.workspace_id || null;
+  const projectId = snapshot?.project_id || mission.project_id || brainRun?.project_id || null;
   if (!workspaceId || !projectId) throw fail('CODEX_HANDOFF_SCOPE_REQUIRED');
 
   return {
@@ -118,7 +168,10 @@ function trustedScope({ tenantId, task, mission, brainRun }) {
     task_id: task.id,
     brain_run_id: task.brain_run_id || brainRun?.id || null,
     workspace_id: workspaceId,
-    project_id: projectId
+    project_id: projectId,
+    execution_snapshot_id: task.execution_snapshot_id || snapshot?.id || null,
+    approved_plan_revision_id: snapshot?.approved_plan_revision_id || task.approved_plan_revision_id || null,
+    approved_plan_revision_number: snapshot?.approved_plan_revision_number || task.approved_plan_revision_number || null
   };
 }
 
@@ -135,10 +188,14 @@ function buildCodexHandoff(input) {
   } = input || {};
 
   if (!executionRunId) throw fail('CODEX_HANDOFF_EXECUTION_RUN_REQUIRED');
-  if (!String(repositoryPath || '').trim()) throw fail('CODEX_HANDOFF_REPOSITORY_PATH_REQUIRED');
 
   const scope = trustedScope({ tenantId, task, mission, brainRun });
   const taskSpec = normalizeTaskSpec(task, brainRun);
+  const snapshot = snapshotOrNull(task);
+  const handoffRepositoryPath = snapshot
+    ? (snapshot.repository_path || snapshot.task_workspace_path || 'NO_REPOSITORY_ARTIFACT_WORKSPACE')
+    : String(repositoryPath || '').trim();
+  if (!handoffRepositoryPath) throw fail('CODEX_HANDOFF_REPOSITORY_PATH_REQUIRED');
 
   return {
     contract_version: CONTRACT_VERSION,
@@ -152,9 +209,10 @@ function buildCodexHandoff(input) {
     host_name: executor.host_name || 'Shadow',
     objective: taskSpec.objective || taskSpec.instructions,
     task_spec: taskSpec,
+    execution_snapshot: snapshot || null,
     execution_constraints: normalizeExecutionConstraints(task, brainRun),
     git_permissions: normalizeGitPermissions(workerProfile),
-    repository_path: String(repositoryPath).trim(),
+    repository_path: handoffRepositoryPath,
     execution_rules: [...EXECUTION_RULES],
     return_contract: [
       'changed files',

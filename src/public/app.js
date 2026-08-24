@@ -317,7 +317,7 @@ function renderPlanSection(mission, planData) {
   return `
     <h3>Plan</h3>
     <div class="plan-panel">
-      <div class="mission-meta">Plan Revision ${escapeHtml(plan.revision || '')} · ${escapeHtml(mission.approval_status || plan.status || '')}</div>
+      <div class="mission-meta">Plan Revision ${escapeHtml(plan.revision || '')} · Approved Revision ${escapeHtml(mission.approved_plan_revision_number || mission.approved_plan_revision_id || 'None')} · ${escapeHtml(mission.approval_status || plan.status || '')}</div>
       <h4>${escapeHtml(plan.objective || mission.objective || '')}</h4>
       <p>${escapeHtml(plan.approach || '')}</p>
       <div class="plan-grid">
@@ -354,6 +354,21 @@ function renderBlockerDiagnostics(mission) {
   `;
 }
 
+function renderExecutionSnapshotSummary(mission, runs) {
+  const snapshotLabel = mission.approved_execution_snapshot_id
+    ? `Snapshot Rev ${escapeHtml(mission.approved_plan_revision_number || mission.plan_revision_number || '')}`
+    : 'No execution snapshot';
+  const attempts = runs
+    .filter((run) => run.run_type === 'EXECUTION_RUN')
+    .map((run) => Number(run.attempt || 0));
+  const currentAttempt = Math.max(0, ...attempts, Number(mission.retry_count || 0));
+  return `
+    <div class="mission-meta">
+      Execution: ${snapshotLabel} · Current attempt: ${escapeHtml(currentAttempt || 0)}
+    </div>
+  `;
+}
+
 async function openMissionDetail(missionId) {
   const mission = state.missions.find((item) => item.id === missionId);
   if (!mission) return;
@@ -378,11 +393,12 @@ async function openMissionDetail(missionId) {
     <div class="modal-actions">
       <span>${escapeHtml(mission.state)}</span>
       <div>
-        ${canRetry ? `<button type="button" class="ghost-button retry-button" data-mission-id="${escapeHtml(mission.id)}">Retry</button>` : ''}
+        ${canRetry ? `<button type="button" class="ghost-button retry-button" data-mission-id="${escapeHtml(mission.id)}">Retry execution</button>` : ''}
         ${canCancel ? `<button type="button" class="ghost-button cancel-mission-button" data-mission-id="${escapeHtml(mission.id)}">Cancel</button>` : ''}
       </div>
     </div>
     ${progressBar(progress)}
+    ${renderExecutionSnapshotSummary(mission, runs)}
     ${renderBlockerDiagnostics(mission)}
     ${renderPlanSection(mission, planData)}
     <h3>Runs</h3>

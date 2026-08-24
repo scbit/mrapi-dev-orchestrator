@@ -211,7 +211,7 @@ function seedTask(db, id, workerId, overrides = {}) {
 async function registerCommonExecutor(db, tenantId = 'tenant_a') {
   return registerExecutor(db, tenantId, {
     executor_id: 'executor_shadow_codex_01',
-    runner_version: 'v0.4.1.2',
+    runner_version: 'v0.4.2.0',
     worker_ids: ['W01', 'W02', 'W03', 'W04', 'W05'],
     capabilities: ['EXECUTION_RUN:CODEX_CLI_AUTO', 'CODEX_HANDOFF:VALIDATED']
   });
