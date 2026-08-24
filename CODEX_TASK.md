@@ -1,30 +1,49 @@
-# MRAPI DEV v0.4.0.5 — Firestore Undefined Claim Fix
+# MRAPI DEV v0.4.0.6 — Completion Event Undefined Fix
 
 ## OBJECTIVE
-Fix the exact remaining `/api/runner/next-task` 500 now exposed by v0.4.0.4 diagnostics.
+Fix the exact post-Codex completion failure now observed in production.
 
-Observed production error:
+Observed runtime:
 
 ```text
-500 RUNNER_CLAIM_INTERNAL_ERROR:
-Value for argument "data" is not a valid Firestore document.
-Cannot use "undefined" as a Firestore value
-(found in field "brain_run_id").
+[CODEX STDOUT] Success.
+...
+[SHADOW TASK ERROR] 500 INTERNAL_SERVER_ERROR
+[SHADOW COMPLETE ERROR] 409 RUN_NOT_ACTIVE
 ```
 
 ## CONFIRMED ROOT CAUSE
-In `claimNextTask()` the new Execution Run persists fields similar to:
+
+In `completeRun()` the Execution Run transaction successfully completes the Run/Task/Mission and builds:
 
 ```js
-brain_run_id: candidate.brain_run_id,
-parent_run_id: candidate.brain_run_id,
+result = {
+  success: missionCancelled ? false : success,
+  cancelled: missionCancelled || undefined,
+  mission_id: run.mission_id,
+  task_id: run.task_id,
+  run_id: runId,
+  result_id: resultRef.id
+};
 ```
 
-For legacy/stuck Tasks, `candidate.brain_run_id` can be `undefined`.
+Immediately after the transaction:
 
-Firestore rejects `undefined`.
+```js
+await emitEvent(db, tenantId, result.success ? 'RUN_COMPLETED' : 'RUN_FAILED', result, ...)
+```
 
-This is a data-normalization bug, not a Runner/Codex bug.
+When `missionCancelled === false`, `result.cancelled` becomes `undefined`.
+
+Firestore rejects the Event payload because it contains `undefined`.
+
+Therefore:
+1. transaction can already have committed Run as COMPLETED;
+2. `emitEvent()` throws 500 afterward;
+3. Runner thinks Task failed and calls `/complete` again;
+4. second call correctly returns `409 RUN_NOT_ACTIVE`.
+
+This explains the exact log sequence.
 
 ## ARCHITECTURE
 Preserve:
@@ -32,127 +51,126 @@ Preserve:
 - Codex = Executor
 - Shadow = Host
 - MRAPI DEV = source of truth
-- common Codex Executor supports W01-W05
+- W01-W05 common Executor
+- existing Mission/Task/Run history
 - tenant isolation
-- no duplicate Runs
 - W01-only Git permissions
 
 ## IMPLEMENTATION
 
-### 1. Normalize nullable persisted IDs
-In the claim transaction, any optional ID written to Firestore MUST be `null`, never `undefined`.
+### 1. Never return undefined in completion result
+Replace:
 
-At minimum fix:
 ```js
-brain_run_id: candidate.brain_run_id || null,
-parent_run_id: candidate.brain_run_id || null,
+cancelled: missionCancelled || undefined
 ```
 
-Also inspect the complete claim write path for optional values that may be undefined:
-- brain_run_id
-- parent_run_id
-- workspace_id
-- project_id
-- worker_profile_id
-- current_run_id
-- execution metadata
-- optional handoff metadata
+with an explicit boolean:
 
-Use explicit `?? null` where empty string has meaning and `|| null` where it does not.
-
-Do NOT globally enable `ignoreUndefinedProperties` as the primary fix.
-We want explicit normalized documents at the orchestration boundary.
-
-### 2. Normalize returned claim object
-The returned `claimed.run` / `claimed.task` payload should also expose absent optional IDs as `null`, not `undefined`.
-
-Example:
 ```js
-brain_run_id: candidate.brain_run_id ?? null,
-parent_run_id: candidate.brain_run_id ?? null
+cancelled: missionCancelled === true
 ```
 
-### 3. Legacy execution task compatibility
-A legacy execution Task without `brain_run_id` may still be claimable ONLY if the existing contract legitimately allows execution without a Brain Run.
+or omit the property entirely when false, but explicit boolean is preferred.
 
-Do not weaken the current Brain-required validation for Tasks that explicitly reference a Brain Run.
+### 2. Make Event payloads Firestore-safe
+`emitEvent()` is a central persistence boundary.
 
-Rules:
-- if `task.brain_run_id` exists -> validate referenced Brain Run as today
-- if it does not exist -> do not create an undefined Firestore value
-- mission/worker/tenant/task scope validations still apply
+Add a small explicit sanitizer for Event payloads that recursively converts/removes `undefined` values before Firestore write.
 
-Do not fabricate a Brain Run ID.
+Preferred behavior:
+- object property `undefined` -> `null` or omitted consistently
+- arrays containing `undefined` -> `null`
+- preserve Date / Firestore Timestamp / primitives
+- do not stringify arbitrary objects
+- do not mutate original payload
 
-### 4. Defensive Firestore serialization helper
-If useful, add a small local helper for write-bound objects, e.g.:
-```js
-function nullIfUndefined(value) {
-  return value === undefined ? null : value;
-}
-```
+This is defense-in-depth. Callers should still normalize their own contracts.
 
-Avoid recursive mutation of arbitrary objects unless tests prove it safe.
-Especially do not silently strip required fields.
+Do NOT globally enable `ignoreUndefinedProperties`.
 
-### 5. Diagnostic remains
-Keep v0.4.0.4 safe Runner diagnostics.
-If another unexpected problem remains, terminal must still show safe `detail`.
+### 3. Audit completion/event result objects
+Inspect completion-related paths for other patterns like:
+- `foo: condition || undefined`
+- optional ids/fields copied into Event payloads
+- result payloads later persisted into Firestore
 
-### 6. Current stuck W04 Mission
-Do not delete, recreate, retry, or mutate it manually.
+At minimum cover:
+- `completeRun`
+- `completeBrainRun`
+- `completeManualCodexHandoff`
+- retry/cancel events
+- Task claimed/completed events
 
-After deploy + Runner restart:
-- if its Task remains claimable, Runner should claim it normally
-- exactly one Execution Run should be created
-- Codex should start
+Normalize optional values to `null`/boolean where appropriate.
 
-### 7. Version
-Bump consistently to:
-- `v0.4.0.5`
-- runner package `0.4.0-5`
+### 4. Completion API idempotency safety
+Do NOT broadly redesign completion semantics.
+
+However, for this exact already-committed case, improve Runner behavior:
+
+If Runner receives `409 RUN_NOT_ACTIVE` after it already sent a completion request, log a concise message indicating the Run may already be terminal and do not attempt another completion loop.
+
+Do not create a duplicate Result.
+Do not reopen a completed Run.
+
+If existing API can safely return terminal state on a repeated complete request without mutation, that is acceptable, but avoid a large redesign in this patch.
+
+### 5. Current production Mission
+Do not delete or recreate the Mission automatically.
+
+Because the transaction likely committed before `emitEvent()` failed, inspect normal UI state after deploy:
+- if Mission/Task/Run are already COMPLETED/DONE, leave them as-is;
+- if Mission is still inconsistent, surface Need Attention / use existing Retry, not duplicate Run creation.
+
+### 6. Version
+Bump consistently:
+- `v0.4.0.6`
+- runner/package `0.4.0-6`
 
 ## TESTS
 
 Add focused tests proving:
 
-1. Claiming a Task with `brain_run_id === undefined` does not throw Firestore serialization error.
-2. Persisted Execution Run stores `brain_run_id: null`.
-3. Persisted Execution Run stores `parent_run_id: null`.
-4. Returned claim payload uses `null`, not `undefined`.
-5. Task with a real `brain_run_id` preserves it.
-6. Task with real Brain Run still validates Brain completion.
-7. W04 legacy/stuck claim creates exactly one Execution Run.
-8. No duplicate Runs on repeated polling.
-9. tenant isolation remains intact.
-10. W01 flow remains green.
-11. safe diagnostics remain green.
+1. Successful Execution completion returns `cancelled: false`, never undefined.
+2. Cancelled completion returns `cancelled: true`.
+3. `emitEvent()` safely persists payloads containing nested undefined.
+4. Event sanitizer does not mutate original payload.
+5. Successful Run completion writes exactly one Result.
+6. Successful Run completion emits RUN_COMPLETED without 500.
+7. Repeated completion after terminal state does not create duplicate Result.
+8. Runner handles `409 RUN_NOT_ACTIVE` after completion without a second failure cascade.
+9. W04 execution completion remains green.
+10. W01 execution/Git flow remains green.
+11. tenant isolation remains green.
 12. full suite passes.
 
 Run:
 `node --test`
 
 ## SUCCESS CRITERIA
-After human deploy + Runner restart, this error disappears:
+After human deploy and Runner restart, a successful Codex Task ends with a clean terminal result such as:
 
 ```text
-Cannot use "undefined" as a Firestore value (found in field "brain_run_id")
+[SHADOW] COMPLETE ...
 ```
 
-Expected next behavior:
-- Runner claims the pending W04 Task, or
-- returns normal no-work polling,
-- but does NOT 500.
+and NOT:
 
-If W04 Task is claimed, Codex CLI starts automatically.
+```text
+[SHADOW TASK ERROR] 500 ...
+[SHADOW COMPLETE ERROR] 409 RUN_NOT_ACTIVE
+```
+
+Mission/Task/Run/Result must stay consistent and only one Result must be created.
 
 ## STOP CONDITIONS
-- Do not enable a broad Firestore setting as a shortcut.
-- Do not delete/recreate pending Mission/Task.
-- Do not fabricate Brain IDs.
-- Do not create duplicate Runs.
+- Do not delete completed Runs.
+- Do not duplicate Results.
+- Do not globally enable Firestore ignoreUndefinedProperties.
 - Do not revert to W01-only.
 - Do not weaken tenant isolation.
+- Do not let Codex become Brain.
 - Do not deploy.
 - Do not push.
 
@@ -166,4 +184,4 @@ Codex:
 Human:
 - commit/push
 - manual Cloud Run deploy
-- restart Shadow Runner
+- restart Shadow Runner only

@@ -122,18 +122,30 @@ class FakeDb {
   }
 
   set(collectionName, id, data, options = {}) {
+    assertNoUndefinedFirestoreValues(data);
     if (!this.collections[collectionName]) this.collections[collectionName] = {};
     const existing = this.collections[collectionName][id] || {};
     this.collections[collectionName][id] = options.merge ? { ...existing, ...data } : { ...data };
   }
 
   update(collectionName, id, data) {
+    assertNoUndefinedFirestoreValues(data);
     if (!this.collections[collectionName]?.[id]) throw new Error('NOT_FOUND');
     this.collections[collectionName][id] = { ...this.collections[collectionName][id], ...data };
   }
 
   async runTransaction(fn) {
     return fn(new FakeTransaction());
+  }
+}
+
+function assertNoUndefinedFirestoreValues(value, path = 'data') {
+  if (value === undefined) {
+    throw new Error(`Cannot use "undefined" as a Firestore value (found in field "${path}")`);
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value)) {
+    assertNoUndefinedFirestoreValues(child, path === 'data' ? key : `${path}.${key}`);
   }
 }
 
@@ -199,7 +211,7 @@ function seedTask(db, id, workerId, overrides = {}) {
 async function registerCommonExecutor(db, tenantId = 'tenant_a') {
   return registerExecutor(db, tenantId, {
     executor_id: 'executor_shadow_codex_01',
-    runner_version: 'v0.4.0.5',
+    runner_version: 'v0.4.0.6',
     worker_ids: ['W01', 'W02', 'W03', 'W04', 'W05'],
     capabilities: ['EXECUTION_RUN:CODEX_CLI_AUTO', 'CODEX_HANDOFF:VALIDATED']
   });
@@ -257,7 +269,7 @@ test('v0.4.0.5 legacy task with undefined brain_run_id persists null linkage', a
   const db = new FakeDb();
   seedBase(db);
   await registerCommonExecutor(db);
-  seedTask(db, 'task_undefined_brain', 'W04', { brain_run_id: undefined });
+  seedTask(db, 'task_undefined_brain', 'W04');
 
   let claim;
   await assert.doesNotReject(async () => {

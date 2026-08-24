@@ -20,6 +20,28 @@ function isMissionCancelled(mission) {
   return mission?.state === 'CANCELLED' || mission?.cancellation_requested === true;
 }
 
+function sanitizeEventPayload(value) {
+  if (value === undefined) return null;
+  if (value === null || typeof value !== 'object') return value;
+  if (value instanceof Date) return value;
+  if (
+    typeof value.toDate === 'function' ||
+    typeof value.toMillis === 'function' ||
+    value === FieldValue
+  ) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeEventPayload(item));
+  }
+
+  const sanitized = {};
+  for (const [key, item] of Object.entries(value)) {
+    sanitized[key] = sanitizeEventPayload(item);
+  }
+  return sanitized;
+}
+
 async function emitEvent(db, tenantId, type, payload = {}, severity = 'INFO') {
   const ref = db.collection('events').doc();
   await ref.set({
@@ -27,7 +49,7 @@ async function emitEvent(db, tenantId, type, payload = {}, severity = 'INFO') {
     tenant_id: tenantId,
     type,
     severity,
-    payload,
+    payload: sanitizeEventPayload(payload),
     created_at: timestamp()
   });
   return ref.id;
@@ -1629,7 +1651,7 @@ async function completeRun(db, tenantId, runId, input) {
 
     result = {
       success: missionCancelled ? false : success,
-      cancelled: missionCancelled || undefined,
+      cancelled: missionCancelled === true,
       mission_id: run.mission_id,
       task_id: run.task_id,
       run_id: runId,
@@ -1736,7 +1758,7 @@ async function completeManualCodexHandoff(db, tenantId, taskId, input) {
 
     result = {
       success: missionCancelled ? false : success,
-      cancelled: missionCancelled || undefined,
+      cancelled: missionCancelled === true,
       mission_id: task.mission_id,
       task_id: taskId,
       execution_run_id: executionRunRef.id,
@@ -1823,6 +1845,7 @@ async function recoverAbandonedBrainRuns(db, tenantId, executorId, staleMs = 120
 
 module.exports = {
   emitEvent,
+  sanitizeEventPayload,
   dispatchMission,
   retryMission,
   cancelMission,

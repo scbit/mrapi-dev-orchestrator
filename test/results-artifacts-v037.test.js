@@ -58,5 +58,5 @@ test('index exposes artifact UI and real evidence view', () => {
   assert.match(s, /\/progress\.css[\s\S]*\/artifact-ui\.css/);
   assert.match(s, /id="evidenceList" class="report-list"/);
   assert.match(s, /\/app\.js[\s\S]*\/artifact-ui\.js/);
-  assert.match(s, /v(?:0\.3\.(?:7|9)-alpha\.0|0\.4\.0-alpha\.0|0\.4\.0\.[12345])/);
+  assert.match(s, /v(?:0\.3\.(?:7|9)-alpha\.0|0\.4\.0-alpha\.0|0\.4\.0\.[123456])/);
 });

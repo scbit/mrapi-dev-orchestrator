@@ -28,6 +28,11 @@ function isTransientPollError(error) {
   return status >= 500 && status < 600;
 }
 
+function isRunAlreadyTerminalError(error) {
+  return Number(error?.status || 0) === 409 &&
+    (error.code === 'RUN_NOT_ACTIVE' || /RUN_NOT_ACTIVE/.test(String(error?.message || '')));
+}
+
 async function register() {
   return request('/api/runner/register', {
     executor_id: cfg.executorId,
@@ -35,7 +40,7 @@ async function register() {
     executor_type: 'CODEX_CLI_AUTO',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.4.0.5',
+    runner_version: 'v0.4.0.6',
     capabilities: [
       'EXECUTION_RUN:CODEX_CLI_AUTO',
       'CODEX_HANDOFF:VALIDATED',
@@ -367,6 +372,11 @@ async function executeClaim(claim) {
   } catch (error) {
     console.error('[SHADOW TASK ERROR]', error.message);
 
+    if (isRunAlreadyTerminalError(error)) {
+      console.error('[SHADOW COMPLETE SKIP]', 'Run is already terminal; not sending duplicate completion.');
+      return;
+    }
+
     if (error.message === 'CODEX_COMMAND_NOT_FOUND') {
       await markWaiting(
         task.id,
@@ -465,5 +475,6 @@ module.exports = {
   listArtifactFiles,
   runTrustedGitFlow,
   uploadTaskArtifacts,
-  isTransientPollError
+  isTransientPollError,
+  isRunAlreadyTerminalError
 };

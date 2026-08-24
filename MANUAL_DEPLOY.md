@@ -1,4 +1,4 @@
-# v0.3.1-alpha.5 Manual Deploy
+# v0.4.0.5 Manual Deploy
 
 Deploy over the same Cloud Run service:
 
