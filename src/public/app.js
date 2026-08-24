@@ -305,9 +305,45 @@ function renderReports() {
     : '<div class="empty-state">No final results yet.</div>';
 }
 
-function openMissionDetail(missionId) {
+function renderPlanSection(mission, planData) {
+  const plan = planData?.current_plan || null;
+  if (mission.planning_mode === 'REQUIRED' && !plan) {
+    return `<h3>Plan</h3><div class="plan-panel"><p>Brain is preparing the plan...</p></div>`;
+  }
+  if (!plan) return '';
+
+  const pending = mission.state === 'READY' && mission.approval_status === 'PENDING';
+  const readonly = ['RUNNING', 'COMPLETED', 'FAILED', 'BLOCKED'].includes(mission.state) || mission.approval_status === 'APPROVED';
+  return `
+    <h3>Plan</h3>
+    <div class="plan-panel">
+      <div class="mission-meta">Plan Revision ${escapeHtml(plan.revision || '')} · ${escapeHtml(mission.approval_status || plan.status || '')}</div>
+      <h4>${escapeHtml(plan.objective || mission.objective || '')}</h4>
+      <p>${escapeHtml(plan.approach || '')}</p>
+      <div class="plan-grid">
+        <div><strong>Planned actions</strong><ul>${(plan.planned_actions || []).map((item) => `<li>${escapeHtml(item.title || item.description || item)}</li>`).join('')}</ul></div>
+        <div><strong>Deliverables</strong><ul>${(plan.expected_deliverables || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></div>
+        <div><strong>Risks / assumptions</strong><ul>${[...(plan.risks || []), ...(plan.assumptions || [])].map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></div>
+        <div><strong>Permissions</strong><ul>${(plan.permissions_required || []).map((item) => `<li>${escapeHtml(item)}</li>`).join('') || '<li>None requested</li>'}</ul></div>
+      </div>
+      <div class="mission-meta">Requires execution: ${plan.requires_execution === false ? 'No' : 'Yes'} · ${escapeHtml(plan.execution_type || '')}</div>
+      ${pending && !readonly ? `<div class="plan-actions">
+        <button type="button" class="primary-button approve-plan-button" data-mission-id="${escapeHtml(mission.id)}">APPROVE & EXECUTE</button>
+        <button type="button" class="ghost-button request-plan-changes-button" data-mission-id="${escapeHtml(mission.id)}">REQUEST CHANGES</button>
+      </div>` : ''}
+    </div>
+  `;
+}
+
+async function openMissionDetail(missionId) {
   const mission = state.missions.find((item) => item.id === missionId);
   if (!mission) return;
+  let planData = null;
+  try {
+    planData = await api(`/api/missions/${encodeURIComponent(missionId)}/plan`);
+  } catch {
+    planData = null;
+  }
   const runs = state.runs.filter((run) => run.mission_id === missionId);
   const results = state.results.filter((result) => result.mission_id === missionId);
   const progress = missionProgress(mission);
@@ -328,6 +364,7 @@ function openMissionDetail(missionId) {
       </div>
     </div>
     ${progressBar(progress)}
+    ${renderPlanSection(mission, planData)}
     <h3>Runs</h3>
     ${runs.length ? runs.map((run) => `
       <div class="detail-row">
@@ -411,6 +448,50 @@ function bindMissionActions() {
         await loadAll();
       } catch (error) {
         showToast(`Cancel failed: ${error.message}`, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  $$('.approve-plan-button').forEach((button) => {
+    button.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const missionId = button.dataset.missionId;
+      button.disabled = true;
+      try {
+        await api(`/api/missions/${encodeURIComponent(missionId)}/plan/approve`, {
+          method: 'POST',
+          body: JSON.stringify({ approved_by: 'operator' })
+        });
+        showToast('Plan approved. Execution queued.');
+        closeMissionDetail();
+        await loadAll();
+      } catch (error) {
+        showToast(`Approval failed: ${error.message}`, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+
+  $$('.request-plan-changes-button').forEach((button) => {
+    button.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const missionId = button.dataset.missionId;
+      const message = prompt('What should the worker change?');
+      if (!message || !message.trim()) return;
+      button.disabled = true;
+      try {
+        await api(`/api/missions/${encodeURIComponent(missionId)}/plan/request-changes`, {
+          method: 'POST',
+          body: JSON.stringify({ message })
+        });
+        showToast('Plan changes requested.');
+        closeMissionDetail();
+        await loadAll();
+      } catch (error) {
+        showToast(`Change request failed: ${error.message}`, true);
       } finally {
         button.disabled = false;
       }
@@ -544,7 +625,7 @@ async function submitMission(event) {
     });
 
     closeMissionModal();
-    showToast(`Mission ${mission.id} created in READY state.`);
+    showToast(`Mission ${mission.id} created in PLANNING state.`);
     await loadAll();
     navigate('missions');
   } catch (error) {

@@ -821,6 +821,94 @@ function brainResultTitle(run, taskSpec) {
   return String(taskSpec?.title || run.objective || 'Brain result').slice(0, 250);
 }
 
+function arrayOfStrings(value) {
+  return Array.isArray(value)
+    ? value.map((item) => typeof item === 'string' ? item.trim() : String(item?.title || item?.description || '')).filter(Boolean)
+    : [];
+}
+
+function normalizePlannedActions(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    if (typeof item === 'string') {
+      return { title: item, description: item, executor_required: true };
+    }
+    return {
+      title: String(item?.title || item?.description || 'Planned action').trim(),
+      description: String(item?.description || item?.title || '').trim(),
+      executor_required: item?.executor_required !== false
+    };
+  }).filter((item) => item.title || item.description);
+}
+
+function normalizeMissionPlan(rawResponse, input = {}, brainOutput = {}) {
+  const raw = String(rawResponse || input.output_text || input.summary || '');
+  const taggedPlan = extractTaggedBlock(raw, 'MRAPI_PLAN');
+  const parsed = findFirstJsonObject(taggedPlan || raw);
+  const source = parsed?.parsed && parsed.parsed.contract === 'MISSION_PLAN_V1'
+    ? parsed.parsed
+    : {};
+  const taskSpec = brainOutput.task_spec || {};
+  const executionSpec = source.execution_spec && typeof source.execution_spec === 'object'
+    ? source.execution_spec
+    : {
+        instructions: taskSpec.instructions || brainOutput.final_result_text || raw,
+        success_criteria: [],
+        stop_conditions: []
+      };
+
+  const requiresExecution = parseBoolean(source.requires_execution);
+  const fallbackRequiresExecution = brainOutput.requires_execution !== false;
+
+  return {
+    contract: 'MISSION_PLAN_V1',
+    objective: String(source.objective || brainOutput.objective || input.objective || '').trim(),
+    approach: String(source.approach || taskSpec.objective || brainOutput.objective || 'Review the Mission and execute after approval.').trim(),
+    planned_actions: normalizePlannedActions(source.planned_actions).length
+      ? normalizePlannedActions(source.planned_actions)
+      : [{ title: taskSpec.title || 'Execute approved Mission', description: executionSpec.instructions || '', executor_required: fallbackRequiresExecution }],
+    expected_deliverables: arrayOfStrings(source.expected_deliverables),
+    risks: arrayOfStrings(source.risks),
+    assumptions: arrayOfStrings(source.assumptions),
+    permissions_required: arrayOfStrings(source.permissions_required),
+    requires_execution: requiresExecution === undefined ? fallbackRequiresExecution : requiresExecution,
+    execution_type: String(source.execution_type || (fallbackRequiresExecution ? 'EXECUTOR' : 'BRAIN_ONLY')).trim(),
+    execution_spec: {
+      instructions: String(executionSpec.instructions || taskSpec.instructions || brainOutput.final_result_text || '').trim(),
+      success_criteria: arrayOfStrings(executionSpec.success_criteria),
+      stop_conditions: arrayOfStrings(executionSpec.stop_conditions)
+    }
+  };
+}
+
+function planSummary(plan) {
+  return [
+    plan.objective,
+    plan.approach,
+    ...(plan.planned_actions || []).map((action) => `${action.title}: ${action.description}`),
+    ...(plan.expected_deliverables || []).map((item) => `Deliverable: ${item}`)
+  ].filter(Boolean).join('\n').slice(0, 10000);
+}
+
+function taskSpecFromPlan(plan, mission) {
+  const instructions = [
+    `MISSION OBJECTIVE\n${mission.objective || plan.objective || ''}`,
+    `APPROVED PLAN\n${planSummary(plan)}`,
+    `EXECUTION INSTRUCTIONS\n${plan.execution_spec?.instructions || plan.approach || ''}`,
+    plan.execution_spec?.success_criteria?.length ? `SUCCESS CRITERIA\n${plan.execution_spec.success_criteria.map((item) => `- ${item}`).join('\n')}` : '',
+    plan.execution_spec?.stop_conditions?.length ? `STOP CONDITIONS\n${plan.execution_spec.stop_conditions.map((item) => `- ${item}`).join('\n')}` : '',
+    plan.permissions_required?.length ? `PERMISSIONS\n${plan.permissions_required.map((item) => `- ${item}`).join('\n')}` : '',
+    'DEPLOY\nHUMAN MANUAL DEPLOY - DO NOT DEPLOY.'
+  ].filter(Boolean).join('\n\n');
+
+  return {
+    title: plan.planned_actions?.[0]?.title || mission.objective || 'Approved Mission execution',
+    objective: plan.objective || mission.objective || '',
+    instructions,
+    approved_plan: plan
+  };
+}
+
 function buildBrainOutput(run, input = {}) {
   const parsed = parseBrainResponse(input.output_text || input.summary || '', input);
   const decision = parsed;
@@ -1037,6 +1125,77 @@ async function completeBrainRun(db, tenantId, runId, input) {
     const outputText = String(input.output_text || '').slice(0, 100000);
     const brainOutput = buildBrainOutput({ id: runId, ...run }, { ...input, output_text: outputText });
     const taskSpec = brainOutput.task_spec || {};
+    const mission = missionSnap.data();
+
+    if (mission.planning_mode === 'REQUIRED' && mission.approval_status !== 'APPROVED') {
+      const revision = Number(mission.plan_revision_number || 0) + 1;
+      const planRef = db.collection('mission_plans').doc();
+      const plan = normalizeMissionPlan(outputText, input, brainOutput);
+
+      tx.update(runRef, {
+        state: 'COMPLETED',
+        progress_percent: 100,
+        progress_message: `Mission plan revision ${revision} ready`,
+        output_text: outputText,
+        brain_output: brainOutput,
+        brain_chat_url: input.brain_chat_url || null,
+        completed_at: timestamp(),
+        updated_at: timestamp()
+      });
+
+      tx.set(planRef, {
+        id: planRef.id,
+        tenant_id: tenantId,
+        workspace_id: run.workspace_id || mission.workspace_id || null,
+        project_id: run.project_id || mission.project_id || null,
+        mission_id: run.mission_id,
+        worker_id: run.worker_id || mission.preferred_worker_id || null,
+        revision,
+        status: 'READY',
+        objective: plan.objective || mission.objective || '',
+        approach: plan.approach,
+        planned_actions: plan.planned_actions,
+        expected_deliverables: plan.expected_deliverables,
+        risks: plan.risks,
+        assumptions: plan.assumptions,
+        permissions_required: plan.permissions_required,
+        requires_execution: plan.requires_execution,
+        execution_type: plan.execution_type,
+        execution_spec: plan.execution_spec,
+        user_change_request: mission.pending_change_request || null,
+        brain_run_id: runId,
+        raw_response: outputText,
+        created_at: timestamp(),
+        updated_at: timestamp()
+      });
+
+      if (mission.current_plan_revision_id) {
+        tx.set(db.collection('mission_plans').doc(mission.current_plan_revision_id), {
+          status: 'SUPERSEDED',
+          updated_at: timestamp()
+        }, { merge: true });
+      }
+
+      tx.set(missionRef, {
+        state: 'READY',
+        approval_status: 'PENDING',
+        current_plan_revision_id: planRef.id,
+        plan_revision_number: revision,
+        pending_change_request: null,
+        brain_run_id: runId,
+        updated_at: timestamp()
+      }, { merge: true });
+
+      result = {
+        success: true,
+        mission_id: run.mission_id,
+        brain_run_id: runId,
+        plan_revision_id: planRef.id,
+        revision,
+        requires_approval: true
+      };
+      return;
+    }
 
     if (brainOutput.requires_execution === false) {
       if (!hasMeaningfulText(brainOutput.final_result_text)) {
@@ -1210,6 +1369,316 @@ async function completeBrainRun(db, tenantId, runId, input) {
     result,
     result.success === false ? 'WARNING' : 'OPERATIVE'
   );
+  return result;
+}
+
+async function getMissionPlan(db, tenantId, missionId) {
+  const missionSnap = await db.collection('missions').doc(missionId).get();
+  if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+    const error = new Error('MISSION_NOT_FOUND');
+    error.status = 404;
+    throw error;
+  }
+
+  const plansSnap = await db.collection('mission_plans')
+    .where('tenant_id', '==', tenantId)
+    .limit(200)
+    .get();
+  const plans = plansSnap.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((plan) => plan.mission_id === missionId)
+    .sort((a, b) => Number(a.revision || 0) - Number(b.revision || 0));
+  const current = plans.find((plan) => plan.id === missionSnap.data().current_plan_revision_id) ||
+    plans[plans.length - 1] ||
+    null;
+
+  return {
+    mission: { id: missionSnap.id, ...missionSnap.data() },
+    current_plan: current,
+    revisions: plans
+  };
+}
+
+async function requestMissionPlanChanges(db, tenantId, missionId, input = {}) {
+  const message = String(input.message || '').trim();
+  if (!message) {
+    const error = new Error('CHANGE_REQUEST_REQUIRED');
+    error.status = 400;
+    throw error;
+  }
+
+  const missionRef = db.collection('missions').doc(missionId);
+  const runRef = db.collection('runs').doc();
+  let result;
+
+  await db.runTransaction(async (tx) => {
+    const missionSnap = await tx.get(missionRef);
+    if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+      const error = new Error('MISSION_NOT_FOUND');
+      error.status = 404;
+      throw error;
+    }
+
+    const mission = missionSnap.data();
+    if (['RUNNING', 'COMPLETED', 'CANCELLED'].includes(mission.state)) {
+      const error = new Error('PLAN_CHANGE_NOT_ALLOWED');
+      error.status = 409;
+      throw error;
+    }
+    if (mission.approval_status !== 'PENDING' || !mission.current_plan_revision_id) {
+      const error = new Error('PLAN_NOT_READY');
+      error.status = 409;
+      throw error;
+    }
+
+    const currentPlanRef = db.collection('mission_plans').doc(mission.current_plan_revision_id);
+    const currentPlanSnap = await tx.get(currentPlanRef);
+    if (!currentPlanSnap.exists || currentPlanSnap.data().tenant_id !== tenantId) {
+      const error = new Error('PLAN_NOT_FOUND');
+      error.status = 404;
+      throw error;
+    }
+
+    const workerId = currentPlanSnap.data().worker_id || mission.preferred_worker_id;
+    tx.set(currentPlanRef, {
+      status: 'SUPERSEDED',
+      updated_at: timestamp()
+    }, { merge: true });
+
+    const brainRun = {
+      id: runRef.id,
+      tenant_id: tenantId,
+      run_type: 'BRAIN_RUN',
+      mission_id: missionId,
+      task_id: null,
+      workspace_id: mission.workspace_id || null,
+      project_id: mission.project_id || null,
+      worker_id: workerId,
+      executor_id: null,
+      parent_run_id: null,
+      objective: [
+        mission.objective || '',
+        '',
+        'PREVIOUS PLAN SUMMARY',
+        planSummary(currentPlanSnap.data()),
+        '',
+        'REQUESTED CHANGES',
+        message
+      ].join('\n').slice(0, 20000),
+      state: 'RUNNING',
+      progress_percent: 0,
+      progress_message: 'Plan changes requested; Brain Run started',
+      planning_revision: Number(mission.plan_revision_number || currentPlanSnap.data().revision || 1) + 1,
+      change_request: message,
+      started_at: timestamp(),
+      created_at: timestamp(),
+      updated_at: timestamp()
+    };
+
+    tx.set(runRef, brainRun);
+    tx.set(missionRef, {
+      state: 'PLANNING',
+      approval_status: 'CHANGES_REQUESTED',
+      pending_change_request: message,
+      brain_run_id: runRef.id,
+      updated_at: timestamp()
+    }, { merge: true });
+
+    result = {
+      success: true,
+      mission_id: missionId,
+      brain_run_id: runRef.id,
+      requested_revision: brainRun.planning_revision
+    };
+  });
+
+  await emitEvent(db, tenantId, 'MISSION_PLAN_CHANGES_REQUESTED', {
+    mission_id: missionId,
+    brain_run_id: result.brain_run_id,
+    requested_revision: result.requested_revision
+  }, 'OPERATIVE');
+
+  return result;
+}
+
+async function approveMissionPlan(db, tenantId, missionId, input = {}) {
+  const missionRef = db.collection('missions').doc(missionId);
+  let result;
+
+  await db.runTransaction(async (tx) => {
+    const missionSnap = await tx.get(missionRef);
+    if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+      const error = new Error('MISSION_NOT_FOUND');
+      error.status = 404;
+      throw error;
+    }
+
+    const mission = missionSnap.data();
+    const tasksSnap = await tx.get(db.collection('tasks').where('tenant_id', '==', tenantId).limit(200));
+    const existingTask = tasksSnap.docs
+      .map((doc) => ({ id: doc.id, ...doc.data() }))
+      .find((task) => task.mission_id === missionId && task.approved_plan_revision_id);
+
+    if (mission.approval_status === 'APPROVED' || mission.state === 'RUNNING') {
+      result = {
+        success: true,
+        reused: true,
+        mission_id: missionId,
+        task_id: existingTask?.id || null,
+        plan_revision_id: mission.approved_plan_revision_id || mission.current_plan_revision_id || null
+      };
+      return;
+    }
+
+    if (mission.state !== 'READY' || mission.approval_status !== 'PENDING' || !mission.current_plan_revision_id) {
+      const error = new Error('MISSION_PLAN_NOT_APPROVABLE');
+      error.status = 409;
+      throw error;
+    }
+
+    const planRef = db.collection('mission_plans').doc(mission.current_plan_revision_id);
+    const planSnap = await tx.get(planRef);
+    if (!planSnap.exists || planSnap.data().tenant_id !== tenantId || planSnap.data().mission_id !== missionId) {
+      const error = new Error('PLAN_NOT_FOUND');
+      error.status = 404;
+      throw error;
+    }
+
+    const plan = { id: planSnap.id, ...planSnap.data() };
+    tx.set(planRef, {
+      status: 'APPROVED',
+      approved_at: timestamp(),
+      approved_by: input.approved_by || 'operator',
+      updated_at: timestamp()
+    }, { merge: true });
+
+    if (plan.permissions_required?.some((item) => /deploy|publish|production destructive/i.test(String(item)))) {
+      tx.set(missionRef, {
+        state: 'BLOCKED',
+        approval_status: 'APPROVED',
+        approved_plan_revision_id: plan.id,
+        approved_at: timestamp(),
+        approved_by: input.approved_by || 'operator',
+        blocked_reason: 'PERMISSION_REQUIRED',
+        updated_at: timestamp()
+      }, { merge: true });
+      result = {
+        success: false,
+        blocked: true,
+        error: 'PERMISSION_REQUIRED',
+        mission_id: missionId,
+        plan_revision_id: plan.id
+      };
+      return;
+    }
+
+    if (plan.requires_execution === false) {
+      const resultRef = db.collection('results').doc();
+      tx.set(resultRef, {
+        id: resultRef.id,
+        tenant_id: tenantId,
+        mission_id: missionId,
+        task_id: null,
+        run_id: plan.brain_run_id || null,
+        workspace_id: plan.workspace_id || mission.workspace_id || null,
+        project_id: plan.project_id || mission.project_id || null,
+        worker_id: plan.worker_id || mission.preferred_worker_id || null,
+        brain_run_id: plan.brain_run_id || null,
+        source_run_type: 'BRAIN_RUN',
+        status: 'SUCCESS',
+        result_type: 'BRAIN_RESULT',
+        title: plan.objective || mission.objective || 'Approved Brain result',
+        summary: planSummary(plan),
+        content: planSummary(plan),
+        text: planSummary(plan),
+        output: { approved_plan: plan },
+        created_at: timestamp()
+      });
+
+      tx.set(missionRef, {
+        state: 'COMPLETED',
+        approval_status: 'APPROVED',
+        approved_plan_revision_id: plan.id,
+        approved_at: timestamp(),
+        approved_by: input.approved_by || 'operator',
+        completed_at: timestamp(),
+        result_id: resultRef.id,
+        updated_at: timestamp()
+      }, { merge: true });
+
+      result = {
+        success: true,
+        mission_id: missionId,
+        task_id: null,
+        result_id: resultRef.id,
+        plan_revision_id: plan.id,
+        requires_execution: false
+      };
+      return;
+    }
+
+    const taskRef = db.collection('tasks').doc();
+    const taskSpec = taskSpecFromPlan(plan, mission);
+    tx.set(taskRef, {
+      id: taskRef.id,
+      tenant_id: tenantId,
+      mission_id: missionId,
+      workspace_id: plan.workspace_id || mission.workspace_id || null,
+      project_id: plan.project_id || mission.project_id || null,
+      worker_id: plan.worker_id || mission.preferred_worker_id,
+      title: taskSpec.title,
+      objective: taskSpec.objective,
+      task_spec: taskSpec,
+      priority: mission.priority || 'NORMAL',
+      state: 'QUEUED',
+      phase: 'EXECUTION_PENDING',
+      attempt_count: 0,
+      brain_run_id: plan.brain_run_id || null,
+      approved_plan_revision_id: plan.id,
+      brain_output: {
+        objective: taskSpec.objective,
+        worker_id: plan.worker_id || mission.preferred_worker_id,
+        requires_execution: true,
+        execution_type: plan.execution_type || 'EXECUTOR',
+        task_spec: taskSpec,
+        execution_constraints: {
+          no_gcp: true,
+          no_cloud_run: true,
+          no_deploy: true,
+          deployment: 'HUMAN_MANUAL_DEPLOY'
+        },
+        brain_run_id: plan.brain_run_id || null,
+        tenant_id: tenantId,
+        workspace_id: plan.workspace_id || mission.workspace_id || null,
+        project_id: plan.project_id || mission.project_id || null,
+        mission_id: missionId
+      },
+      brain_completed_at: timestamp(),
+      current_run_id: null,
+      claimed_by_executor_id: null,
+      created_at: timestamp(),
+      updated_at: timestamp()
+    });
+
+    tx.set(missionRef, {
+      state: 'RUNNING',
+      approval_status: 'APPROVED',
+      approved_plan_revision_id: plan.id,
+      approved_at: timestamp(),
+      approved_by: input.approved_by || 'operator',
+      updated_at: timestamp()
+    }, { merge: true });
+
+    result = {
+      success: true,
+      mission_id: missionId,
+      task_id: taskRef.id,
+      plan_revision_id: plan.id,
+      requires_execution: true
+    };
+  });
+
+  await emitEvent(db, tenantId, 'MISSION_PLAN_APPROVED', result, result.blocked ? 'WARNING' : 'OPERATIVE');
   return result;
 }
 
@@ -1847,6 +2316,9 @@ module.exports = {
   emitEvent,
   sanitizeEventPayload,
   dispatchMission,
+  getMissionPlan,
+  requestMissionPlanChanges,
+  approveMissionPlan,
   retryMission,
   cancelMission,
   registerExecutor,

@@ -31,6 +31,45 @@ function createMissionsRouter({ repos }) {
     }
   });
 
+  router.get('/:missionId/plan', async (req, res, next) => {
+    try {
+      const { getMissionPlan } = require('../services/orchestration');
+      res.json(serializeFirestore(await getMissionPlan(repos.missions.db, req.tenantId, req.params.missionId)));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.post('/:missionId/plan/request-changes', async (req, res, next) => {
+    try {
+      const { requestMissionPlanChanges } = require('../services/orchestration');
+      res.status(201).json(serializeFirestore(await requestMissionPlanChanges(
+        repos.missions.db,
+        req.tenantId,
+        req.params.missionId,
+        req.body || {}
+      )));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.post('/:missionId/plan/approve', async (req, res, next) => {
+    try {
+      const { approveMissionPlan } = require('../services/orchestration');
+      res.json(serializeFirestore(await approveMissionPlan(
+        repos.missions.db,
+        req.tenantId,
+        req.params.missionId,
+        req.body || {}
+      )));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
 
   router.post('/:missionId/dispatch', async (req, res, next) => {
     try {
@@ -105,12 +144,12 @@ function createMissionsRouter({ repos }) {
         }
       }
 
-      const state = 'READY';
+      const state = 'PLANNING';
       if (!MISSION_STATES.includes(state)) {
         throw new Error('Mission state configuration error.');
       }
 
-      const mission = await repos.missions.create(req.tenantId, {
+      let mission = await repos.missions.create(req.tenantId, {
         objective,
         original_prompt: objective,
         workspace_id: workspaceId,
@@ -120,9 +159,18 @@ function createMissionsRouter({ repos }) {
           ? priority
           : 'NORMAL',
         state,
+        planning_mode: 'REQUIRED',
+        approval_status: 'PENDING',
+        current_plan_revision_id: null,
+        approved_plan_revision_id: null,
+        plan_revision_number: 0,
         created_at: FieldValue.serverTimestamp(),
         updated_at: FieldValue.serverTimestamp()
       });
+
+      const { dispatchMission } = require('../services/orchestration');
+      await dispatchMission(repos.missions.db, req.tenantId, mission.id);
+      mission = await repos.missions.getById(mission.id);
 
       res.status(201).json(serializeFirestore(mission));
     } catch (error) {

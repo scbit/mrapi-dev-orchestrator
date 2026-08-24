@@ -245,3 +245,18 @@ textarea:focus, select:focus { border-color:rgba(106,167,255,.6); box-shadow:0 0
 
 .mission-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
 .dispatch-button { padding:6px 9px; font-size:11px; }
+.plan-panel {
+  border:1px solid var(--line); border-radius:12px; background:rgba(255,255,255,.025);
+  padding:14px; margin:12px 0 18px;
+}
+.plan-panel h4 { margin:8px 0; }
+.plan-panel p { color:var(--muted); line-height:1.55; }
+.plan-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:12px 0; }
+.plan-grid strong { display:block; margin-bottom:6px; }
+.plan-grid ul { margin:0; padding-left:18px; color:var(--muted); line-height:1.5; }
+.plan-actions { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+
+@media (max-width: 600px) {
+  .plan-grid { grid-template-columns:1fr; }
+  .plan-actions { flex-direction:column; }
+}

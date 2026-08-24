@@ -4,6 +4,29 @@ function brainPrompt(run, cfg) {
   const workerId = String(run.worker_id || 'W01').toUpperCase();
   const profile = workerBrainProfile(workerId) || workerBrainProfile('W01');
   const contract = JSON.stringify(profile.output_contract, null, 2);
+  const planningContract = JSON.stringify({
+    contract: 'MISSION_PLAN_V1',
+    objective: 'string',
+    approach: 'string',
+    planned_actions: [
+      {
+        title: 'string',
+        description: 'string',
+        executor_required: true
+      }
+    ],
+    expected_deliverables: ['string'],
+    risks: ['string'],
+    assumptions: ['string'],
+    permissions_required: ['string'],
+    requires_execution: true,
+    execution_type: 'EXECUTOR',
+    execution_spec: {
+      instructions: 'string',
+      success_criteria: ['string'],
+      stop_conditions: ['string']
+    }
+  }, null, 2);
 
   return `You are ${workerId} — ${profile.role}, the BRAIN for MRAPI DEV ORCHESTRATOR.
 
@@ -32,6 +55,18 @@ RULES
 - Codex must not access GCP or Cloud Run and must not deploy.
 - The human performs Cloud Run deploys manually.
 - Avoid open-ended loops and unnecessary context.
+
+If this is a planning run, return ONLY a concise user-readable Mission plan using this JSON contract. Do not create executor instructions outside execution_spec:
+<MRAPI_PLAN>
+${planningContract}
+</MRAPI_PLAN>
+
+Planning rules:
+- contract must be MISSION_PLAN_V1.
+- Prefer one approved execution task for the Mission.
+- Brain plans; Executor executes only after user approval.
+- Include real permissions needed before execution.
+- If no Executor is required, set requires_execution false and execution_type BRAIN_ONLY.
 
 Return the MRAPI control block first. The control block must contain ONLY JSON:
 <MRAPI_CONTROL>
