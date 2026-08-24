@@ -10,6 +10,9 @@ test('v0.3.1 Runner uses manual Codex app handoff', () => {
   );
   assert.match(source, /WAITING_FOR_CODEX/);
   assert.match(source, /CODEX_APP_MANUAL/);
+  assert.match(source, /execution_run_id/);
+  assert.doesNotMatch(source, /brain-complete/);
+  assert.doesNotMatch(source, /runChatGPTWeb/);
   assert.doesNotMatch(source, /runCodexCommand/);
 });
 

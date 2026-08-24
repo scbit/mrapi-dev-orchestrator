@@ -1,7 +1,5 @@
 const { cfg } = require('./lib/config');
 const { createApi } = require('./lib/api');
-const { brainPrompt } = require('./lib/prompts');
-const { runChatGPTWeb } = require('./adapters/chatgpt-web');
 
 if (!cfg.baseUrl) throw new Error('MRAPI_BASE_URL is required.');
 if (!cfg.secret) throw new Error('MRAPI_RUNNER_SECRET is required.');
@@ -23,7 +21,7 @@ async function register() {
     host_type: 'SHADOW',
     runner_version: 'v0.3.1-alpha.5',
     capabilities: [
-      'BRAIN_RUN:CHATGPT_WEB',
+      'EXECUTION_RUN:CODEX_APP_MANUAL',
       'CODEX_HANDOFF:MANUAL_APP',
       'LOG',
       'FILE',
@@ -69,62 +67,47 @@ async function markWaiting(taskId, message, handoff = null) {
 }
 
 async function executeClaim(claim) {
-  const { task, run: brainRun } = claim;
-  currentRunId = brainRun.id;
+  const { task, run: executionRun } = claim;
+  currentRunId = executionRun.id;
 
   try {
-    console.log('[SHADOW] BRAIN', task.id, brainRun.id);
+    console.log('[SHADOW] EXECUTION', task.id, executionRun.id);
+    await progress(executionRun.id, 10, 'Codex manual execution handoff prepared');
 
-    const brain = await runChatGPTWeb({
-      cfg,
-      task,
-      prompt: brainPrompt(task, cfg),
-      onProgress: (percent, message) => progress(brainRun.id, percent, message)
-    });
-
-    await addTextEvidence(
-      brainRun.id,
-      'LOG',
-      'W01 Brain plan',
-      'brain-plan.txt',
-      brain.outputText
-    );
-
-    await request(`/api/runner/runs/${encodeURIComponent(brainRun.id)}/brain-complete`, {
-      output_text: brain.outputText,
-      brain_chat_url: brain.chatUrl
-    });
-
-    console.log('[SHADOW] BRAIN COMPLETE', brainRun.id);
-
+    const instructions = task.brain_output?.task_spec?.instructions ||
+      task.brain_output?.task_spec?.objective ||
+      task.brain_output?.objective ||
+      task.objective ||
+      '';
     const handoff = {
       type: 'CODEX_APP_MANUAL',
       worker_id: task.worker_id,
       repository_path: cfg.repoPath,
-      brain_run_id: brainRun.id,
-      brain_chat_url: brain.chatUrl,
-      instructions: brain.outputText,
+      brain_run_id: task.brain_run_id || executionRun.brain_run_id || null,
+      execution_run_id: executionRun.id,
+      instructions,
       operator_action:
-        'Open Codex inside the ChatGPT desktop app on Shadow, select the local repository, and paste the Brain instructions. Do not deploy.'
+        'Open Codex inside the ChatGPT desktop app on Shadow, select the local repository, and paste the Brain output instructions. Do not deploy.'
     };
 
     await markWaiting(
       task.id,
-      'Brain completed. Waiting for manual Codex execution in the ChatGPT desktop app on Shadow.',
+      'Execution task claimed. Waiting for manual Codex execution in the ChatGPT desktop app on Shadow.',
       handoff
     );
 
     console.log('[SHADOW] WAITING_FOR_CODEX', task.id);
-    console.log('[SHADOW] Brain plan is stored in MRAPI DEV evidence and task handoff.');
+    console.log('[SHADOW] Brain output is stored on the task handoff.');
   } catch (error) {
     console.error('[SHADOW TASK ERROR]', error.message);
     try {
       await markWaiting(
         task.id,
-        `Brain/Runner blocked: ${error.message}`,
+        `Execution runner blocked: ${error.message}`,
         {
           type: 'OPERATOR_ATTENTION',
-          repository_path: cfg.repoPath
+          repository_path: cfg.repoPath,
+          execution_run_id: executionRun.id
         }
       );
     } catch (secondary) {
@@ -148,8 +131,7 @@ async function loop() {
     console.log('[SHADOW] recovered abandoned Brain Runs', recovery.recovered.length);
   }
   console.log('[SHADOW] repo', cfg.repoPath);
-  console.log('[SHADOW] W01 chat', cfg.brainChatUrlW01 || '(not configured)');
-  console.log('[SHADOW] Codex mode: manual ChatGPT desktop app handoff');
+  console.log('[SHADOW] Codex mode: manual execution handoff');
 
   const heartbeatTimer = setInterval(() => {
     heartbeat().catch((error) => console.error('[SHADOW HEARTBEAT ERROR]', error.message));

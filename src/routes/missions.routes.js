@@ -35,8 +35,8 @@ function createMissionsRouter({ repos }) {
   router.post('/:missionId/dispatch', async (req, res, next) => {
     try {
       const { dispatchMission } = require('../services/orchestration');
-      const task = await dispatchMission(repos.missions.db, req.tenantId, req.params.missionId);
-      res.status(task.reused ? 200 : 201).json(serializeFirestore(task));
+      const brainRun = await dispatchMission(repos.missions.db, req.tenantId, req.params.missionId);
+      res.status(brainRun.reused ? 200 : 201).json(serializeFirestore(brainRun));
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });
       next(error);

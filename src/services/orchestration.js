@@ -1,7 +1,15 @@
-const { FieldValue } = require('@google-cloud/firestore');
+let FieldValue;
+try {
+  ({ FieldValue } = require('@google-cloud/firestore'));
+} catch {
+  FieldValue = { serverTimestamp: () => new Date() };
+}
 const { RUN_TYPES } = require('../constants/runTypes');
 const { EVIDENCE_TYPES } = require('../constants/evidenceTypes');
-const { getEvidenceBucket } = require('./storage');
+
+function getEvidenceBucket() {
+  return require('./storage').getEvidenceBucket();
+}
 
 function timestamp() {
   return FieldValue.serverTimestamp();
@@ -22,7 +30,7 @@ async function emitEvent(db, tenantId, type, payload = {}, severity = 'INFO') {
 
 async function dispatchMission(db, tenantId, missionId) {
   const missionRef = db.collection('missions').doc(missionId);
-  const taskRef = db.collection('tasks').doc();
+  const runRef = db.collection('runs').doc();
 
   let result;
 
@@ -42,14 +50,17 @@ async function dispatchMission(db, tenantId, missionId) {
       throw error;
     }
 
-    const existingTaskQuery = db.collection('tasks')
+    const existingBrainRunQuery = db.collection('runs')
       .where('tenant_id', '==', tenantId)
-      .where('mission_id', '==', missionId)
-      .limit(1);
+      .limit(100);
 
-    const existing = await tx.get(existingTaskQuery);
-    if (!existing.empty) {
-      const doc = existing.docs[0];
+    const existing = await tx.get(existingBrainRunQuery);
+    const existingBrainRun = existing.docs.find((doc) => {
+      const data = doc.data();
+      return data.mission_id === missionId && data.run_type === 'BRAIN_RUN';
+    });
+    if (existingBrainRun) {
+      const doc = existingBrainRun;
       result = { id: doc.id, ...doc.data(), reused: true };
       return;
     }
@@ -79,37 +90,40 @@ async function dispatchMission(db, tenantId, missionId) {
       throw error;
     }
 
-    const task = {
-      id: taskRef.id,
+    const brainRun = {
+      id: runRef.id,
       tenant_id: tenantId,
+      run_type: 'BRAIN_RUN',
       mission_id: missionId,
+      task_id: null,
       workspace_id: mission.workspace_id,
       project_id: mission.project_id,
       worker_id: workerId,
-      title: mission.objective,
+      executor_id: null,
+      parent_run_id: null,
       objective: mission.objective,
-      priority: mission.priority || 'NORMAL',
-      state: 'QUEUED',
-      attempt_count: 0,
-      current_run_id: null,
-      claimed_by_executor_id: null,
+      state: 'RUNNING',
+      progress_percent: 0,
+      progress_message: 'Mission dispatched; Brain Run started',
+      started_at: timestamp(),
       created_at: timestamp(),
       updated_at: timestamp()
     };
 
-    tx.set(taskRef, task);
+    tx.set(runRef, brainRun);
     tx.update(missionRef, {
       state: 'PLANNING',
       dispatched_at: timestamp(),
+      brain_run_id: runRef.id,
       updated_at: timestamp()
     });
 
-    result = task;
+    result = brainRun;
   });
 
   await emitEvent(db, tenantId, 'MISSION_DISPATCHED', {
     mission_id: missionId,
-    task_id: result.id,
+    brain_run_id: result.id,
     worker_id: result.worker_id
   }, 'OPERATIVE');
 
@@ -196,6 +210,7 @@ async function claimNextTask(db, tenantId, executorId) {
   const candidates = queued.docs
     .map((doc) => ({ id: doc.id, ...doc.data() }))
     .filter((task) => allowedWorkerIds.length === 0 || allowedWorkerIds.includes(task.worker_id))
+    .filter((task) => task.brain_run_id && task.brain_completed_at)
     .sort((a, b) => {
       const pd = (priorities[b.priority] || 0) - (priorities[a.priority] || 0);
       if (pd) return pd;
@@ -206,20 +221,40 @@ async function claimNextTask(db, tenantId, executorId) {
     const taskRef = db.collection('tasks').doc(candidate.id);
     const workerRef = db.collection('workers').doc(candidate.worker_id);
     const missionRef = db.collection('missions').doc(candidate.mission_id);
+    const brainRunRef = db.collection('runs').doc(candidate.brain_run_id);
     const runRef = db.collection('runs').doc();
 
     try {
       let claimed = null;
 
       await db.runTransaction(async (tx) => {
-        const [taskSnap, workerSnap, missionSnap] = await Promise.all([
+        const [taskSnap, workerSnap, missionSnap, brainRunSnap] = await Promise.all([
           tx.get(taskRef),
           tx.get(workerRef),
-          tx.get(missionRef)
+          tx.get(missionRef),
+          tx.get(brainRunRef)
         ]);
 
         if (!taskSnap.exists || taskSnap.data().state !== 'QUEUED') {
           const error = new Error('TASK_ALREADY_CLAIMED');
+          error.retryCandidate = true;
+          throw error;
+        }
+
+        const task = taskSnap.data();
+        if (!task.brain_run_id || !task.brain_completed_at) {
+          const error = new Error('TASK_BRAIN_NOT_COMPLETE');
+          error.retryCandidate = true;
+          throw error;
+        }
+
+        if (
+          !brainRunSnap.exists ||
+          brainRunSnap.data().tenant_id !== tenantId ||
+          brainRunSnap.data().run_type !== 'BRAIN_RUN' ||
+          brainRunSnap.data().state !== 'COMPLETED'
+        ) {
+          const error = new Error('TASK_BRAIN_NOT_COMPLETE');
           error.retryCandidate = true;
           throw error;
         }
@@ -240,10 +275,10 @@ async function claimNextTask(db, tenantId, executorId) {
 
         tx.update(taskRef, {
           state: 'RUNNING',
-          phase: 'BRAIN_RUNNING',
+          phase: 'EXECUTION_RUNNING',
           attempt_count: attempt,
           current_run_id: runRef.id,
-          brain_run_id: runRef.id,
+          execution_run_id: runRef.id,
           claimed_by_executor_id: executorId,
           claimed_at: timestamp(),
           updated_at: timestamp()
@@ -267,16 +302,20 @@ async function claimNextTask(db, tenantId, executorId) {
         tx.set(runRef, {
           id: runRef.id,
           tenant_id: tenantId,
-          run_type: 'BRAIN_RUN',
+          run_type: 'EXECUTION_RUN',
           mission_id: candidate.mission_id,
           task_id: candidate.id,
+          workspace_id: candidate.workspace_id || null,
+          project_id: candidate.project_id || null,
           worker_id: candidate.worker_id,
           executor_id: executorId,
           host_name: executor.host_name || null,
+          brain_run_id: candidate.brain_run_id,
+          parent_run_id: candidate.brain_run_id,
           state: 'RUNNING',
           attempt,
           progress_percent: 0,
-          progress_message: 'Task claimed; ChatGPT Web Brain Run started',
+          progress_message: 'Task claimed; Codex Execution Run started',
           started_at: timestamp(),
           created_at: timestamp(),
           updated_at: timestamp()
@@ -291,7 +330,14 @@ async function claimNextTask(db, tenantId, executorId) {
 
         claimed = {
           task: { ...candidate, state: 'RUNNING', current_run_id: runRef.id, attempt_count: attempt },
-          run: { id: runRef.id, run_type: 'BRAIN_RUN', state: 'RUNNING', attempt }
+          run: {
+            id: runRef.id,
+            run_type: 'EXECUTION_RUN',
+            state: 'RUNNING',
+            attempt,
+            brain_run_id: candidate.brain_run_id,
+            parent_run_id: candidate.brain_run_id
+          }
         };
       });
 
@@ -313,6 +359,37 @@ async function claimNextTask(db, tenantId, executorId) {
   }
 
   return null;
+}
+
+function buildBrainOutput(run, input = {}) {
+  const taskSpec = input.task_spec && typeof input.task_spec === 'object'
+    ? input.task_spec
+    : {
+        title: input.title || run.objective || 'Execution task',
+        objective: input.objective || run.objective || '',
+        instructions: input.output_text || input.instructions || ''
+      };
+
+  const executionConstraints = input.execution_constraints && typeof input.execution_constraints === 'object'
+    ? input.execution_constraints
+    : {
+        no_gcp: true,
+        no_cloud_run: true,
+        no_deploy: true,
+        deployment: 'HUMAN_MANUAL_DEPLOY'
+      };
+
+  return {
+    objective: input.objective || run.objective || taskSpec.objective || '',
+    worker_id: input.worker_id || run.worker_id || null,
+    task_spec: taskSpec,
+    execution_constraints: executionConstraints,
+    brain_run_id: run.id,
+    tenant_id: run.tenant_id,
+    workspace_id: run.workspace_id || null,
+    project_id: run.project_id || null,
+    mission_id: run.mission_id || null
+  };
 }
 
 async function updateRunProgress(db, tenantId, runId, input) {
@@ -411,6 +488,9 @@ async function addEvidence(db, tenantId, runId, input) {
     mission_id: run.mission_id || null,
     task_id: run.task_id || null,
     run_id: runId,
+    workspace_id: run.workspace_id || null,
+    project_id: run.project_id || null,
+    brain_run_id: run.brain_run_id || run.parent_run_id || (run.run_type === 'BRAIN_RUN' ? runId : null),
     worker_id: run.worker_id || null,
     executor_id: run.executor_id || null,
     title: String(input.title || input.filename || type).slice(0, 250),
@@ -447,33 +527,87 @@ async function completeBrainRun(db, tenantId, runId, input) {
       const error = new Error('BRAIN_RUN_NOT_ACTIVE'); error.status = 409; throw error;
     }
 
-    const taskRef = db.collection('tasks').doc(run.task_id);
-    const executorRef = db.collection('executors').doc(run.executor_id);
+    const taskRef = run.task_id
+      ? db.collection('tasks').doc(run.task_id)
+      : db.collection('tasks').doc();
+    const missionRef = db.collection('missions').doc(run.mission_id);
+    const resultRef = db.collection('results').doc();
+    const executorRef = run.executor_id ? db.collection('executors').doc(run.executor_id) : null;
     const outputText = String(input.output_text || '').slice(0, 100000);
+    const brainOutput = buildBrainOutput({ id: runId, ...run }, { ...input, output_text: outputText });
+    const taskSpec = brainOutput.task_spec || {};
 
     tx.update(runRef, {
       state: 'COMPLETED',
       progress_percent: 100,
       progress_message: 'Brain plan completed',
       output_text: outputText,
+      brain_output: brainOutput,
       brain_chat_url: input.brain_chat_url || null,
       completed_at: timestamp(),
       updated_at: timestamp()
     });
 
     tx.set(taskRef, {
+      id: taskRef.id,
+      tenant_id: tenantId,
+      mission_id: run.mission_id,
+      workspace_id: run.workspace_id || null,
+      project_id: run.project_id || null,
+      worker_id: brainOutput.worker_id,
+      title: taskSpec.title || brainOutput.objective,
+      objective: taskSpec.objective || brainOutput.objective,
+      priority: input.priority || 'NORMAL',
+      state: 'QUEUED',
       phase: 'EXECUTION_PENDING',
-      brain_output: outputText,
+      attempt_count: 0,
+      brain_run_id: runId,
+      brain_output: brainOutput,
+      brain_completed_at: timestamp(),
       current_run_id: null,
+      claimed_by_executor_id: null,
+      created_at: timestamp(),
       updated_at: timestamp()
     }, { merge: true });
 
-    tx.set(executorRef, {
-      current_run_id: null,
+    tx.set(resultRef, {
+      id: resultRef.id,
+      tenant_id: tenantId,
+      mission_id: run.mission_id,
+      task_id: taskRef.id,
+      run_id: runId,
+      workspace_id: run.workspace_id || null,
+      project_id: run.project_id || null,
+      worker_id: brainOutput.worker_id,
+      executor_id: run.executor_id || null,
+      status: 'SUCCESS',
+      result_type: 'BRAIN_OUTPUT',
+      summary: String(input.summary || 'Brain output persisted').slice(0, 10000),
+      output: brainOutput,
+      created_at: timestamp()
+    });
+
+    tx.set(missionRef, {
+      state: 'PLANNING',
+      brain_run_id: runId,
+      brain_output_result_id: resultRef.id,
       updated_at: timestamp()
     }, { merge: true });
 
-    result = { task_id: run.task_id, brain_run_id: runId };
+    if (executorRef) {
+      tx.set(executorRef, {
+        current_run_id: null,
+        updated_at: timestamp()
+      }, { merge: true });
+    }
+
+    result = {
+      mission_id: run.mission_id,
+      task_id: taskRef.id,
+      brain_run_id: runId,
+      result_id: resultRef.id,
+      brain_output: brainOutput
+    };
   });
 
   await emitEvent(db, tenantId, 'BRAIN_RUN_COMPLETED', result, 'OPERATIVE');
@@ -508,9 +642,13 @@ async function startExecutionRun(db, tenantId, taskId, executorId) {
       run_type: 'EXECUTION_RUN',
       mission_id: task.mission_id,
       task_id: taskId,
+      workspace_id: task.workspace_id || null,
+      project_id: task.project_id || null,
       worker_id: task.worker_id,
       executor_id: executorId,
       host_name: executorSnap.data().host_name || null,
+      brain_run_id: task.brain_run_id || null,
+      parent_run_id: task.brain_run_id || null,
       state: 'RUNNING',
       attempt: task.attempt_count || 1,
       progress_percent: 0,
@@ -599,6 +737,117 @@ async function completeRun(db, tenantId, runId, input) {
       throw error;
     }
 
+    if (run.run_type === 'BRAIN_RUN') {
+      const success = input.success !== false;
+      const missionRef = db.collection('missions').doc(run.mission_id);
+
+      if (!success) {
+        tx.update(runRef, {
+          state: 'FAILED',
+          progress_percent: Number(run.progress_percent || 0),
+          progress_message: String(input.summary || 'Brain Run failed').slice(0, 2000),
+          error: String(input.error || 'Brain Run failed').slice(0, 5000),
+          completed_at: timestamp(),
+          updated_at: timestamp()
+        });
+
+        tx.set(missionRef, {
+          state: 'FAILED',
+          updated_at: timestamp()
+        }, { merge: true });
+
+        result = {
+          success: false,
+          mission_id: run.mission_id,
+          brain_run_id: runId
+        };
+        return;
+      }
+
+      const taskRef = run.task_id
+        ? db.collection('tasks').doc(run.task_id)
+        : db.collection('tasks').doc();
+      const resultRef = db.collection('results').doc();
+      const executorRef = run.executor_id ? db.collection('executors').doc(run.executor_id) : null;
+      const outputText = String(input.output_text || input.summary || '').slice(0, 100000);
+      const brainOutput = buildBrainOutput({ id: runId, ...run }, { ...input, output_text: outputText });
+      const taskSpec = brainOutput.task_spec || {};
+
+      tx.update(runRef, {
+        state: 'COMPLETED',
+        progress_percent: 100,
+        progress_message: String(input.summary || 'Brain plan completed').slice(0, 2000),
+        output_text: outputText,
+        brain_output: brainOutput,
+        completed_at: timestamp(),
+        updated_at: timestamp()
+      });
+
+      tx.set(taskRef, {
+        id: taskRef.id,
+        tenant_id: tenantId,
+        mission_id: run.mission_id,
+        workspace_id: run.workspace_id || null,
+        project_id: run.project_id || null,
+        worker_id: brainOutput.worker_id,
+        title: taskSpec.title || brainOutput.objective,
+        objective: taskSpec.objective || brainOutput.objective,
+        priority: input.priority || 'NORMAL',
+        state: 'QUEUED',
+        phase: 'EXECUTION_PENDING',
+        attempt_count: 0,
+        brain_run_id: runId,
+        brain_output: brainOutput,
+        brain_completed_at: timestamp(),
+        current_run_id: null,
+        claimed_by_executor_id: null,
+        created_at: timestamp(),
+        updated_at: timestamp()
+      }, { merge: true });
+
+      tx.set(resultRef, {
+        id: resultRef.id,
+        tenant_id: tenantId,
+        mission_id: run.mission_id,
+        task_id: taskRef.id,
+        run_id: runId,
+        workspace_id: run.workspace_id || null,
+        project_id: run.project_id || null,
+        worker_id: brainOutput.worker_id,
+        executor_id: run.executor_id || null,
+        status: 'SUCCESS',
+        result_type: 'BRAIN_OUTPUT',
+        summary: String(input.summary || '').slice(0, 10000),
+        output: brainOutput,
+        created_at: timestamp()
+      });
+
+      tx.set(missionRef, {
+        state: 'PLANNING',
+        brain_run_id: runId,
+        brain_output_result_id: resultRef.id,
+        updated_at: timestamp()
+      }, { merge: true });
+
+      if (executorRef) {
+        tx.set(executorRef, {
+          state: 'ONLINE',
+          current_run_id: null,
+          last_heartbeat_at: timestamp(),
+          updated_at: timestamp()
+        }, { merge: true });
+      }
+
+      result = {
+        success: true,
+        mission_id: run.mission_id,
+        task_id: taskRef.id,
+        brain_run_id: runId,
+        result_id: resultRef.id
+      };
+      return;
+    }
+
     const success = input.success !== false;
     const taskState = success ? 'DONE' : 'FAILED';
     const missionState = success ? 'COMPLETED' : 'FAILED';
@@ -651,6 +900,9 @@ async function completeRun(db, tenantId, runId, input) {
       mission_id: run.mission_id,
       task_id: run.task_id,
       run_id: runId,
+      workspace_id: run.workspace_id || null,
+      project_id: run.project_id || null,
+      brain_run_id: run.brain_run_id || run.parent_run_id || null,
       worker_id: run.worker_id,
       executor_id: run.executor_id,
       status: success ? 'SUCCESS' : 'FAILED',
@@ -701,10 +953,14 @@ async function completeManualCodexHandoff(db, tenantId, taskId, input) {
       run_type: 'EXECUTION_RUN',
       mission_id: task.mission_id,
       task_id: taskId,
+      workspace_id: task.workspace_id || null,
+      project_id: task.project_id || null,
       worker_id: task.worker_id,
       executor_id: task.claimed_by_executor_id || null,
       host_name: 'Shadow',
       executor_mode: 'CODEX_APP_MANUAL',
+      brain_run_id: task.brain_run_id || null,
+      parent_run_id: task.brain_run_id || null,
       state: success ? 'COMPLETED' : 'FAILED',
       progress_percent: success ? 100 : 0,
       progress_message: String(input.summary || '').slice(0, 2000),
@@ -743,6 +999,9 @@ async function completeManualCodexHandoff(db, tenantId, taskId, input) {
       mission_id: task.mission_id,
       task_id: taskId,
       run_id: executionRunRef.id,
+      workspace_id: task.workspace_id || null,
+      project_id: task.project_id || null,
+      brain_run_id: task.brain_run_id || null,
       worker_id: task.worker_id,
       executor_id: task.claimed_by_executor_id || null,
       status: success ? 'SUCCESS' : 'FAILED',
