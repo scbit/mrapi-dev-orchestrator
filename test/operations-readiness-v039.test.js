@@ -18,7 +18,7 @@ test('runner exposes heartbeat with runner status and current run', () => {
   const source = read('runner/shadow-runner.js');
   assert.match(source, /runner_status/);
   assert.match(source, /current_run_id/);
-  assert.match(source, /v0\.3\.9-alpha\.0/);
+  assert.match(source, /v0\.(?:3\.9|4\.0)-alpha\.0/);
 });
 
 test('executor heartbeat health derives online stale offline', () => {
@@ -42,7 +42,7 @@ test('brain adapter process reports operational heartbeat', () => {
   assert.match(source, /\/api\/brain\/register/);
   assert.match(source, /\/api\/brain\/heartbeat/);
   assert.match(source, /adapter_status/);
-  assert.match(source, /v0\.3\.9-alpha\.0/);
+  assert.match(source, /v0\.(?:3\.9|4\.0)-alpha\.0/);
 });
 
 test('worker health aggregation derives compact status', () => {
@@ -119,7 +119,7 @@ test('frontend exposes health need attention retry and cancel', () => {
 
 test('index exposes operational version and executors view', () => {
   const source = read('src/public/index.html');
-  assert.match(source, /v0\.3\.9-alpha\.0/);
+  assert.match(source, /v0\.(?:3\.9|4\.0)-alpha\.0/);
   assert.match(source, /id="view-executors"/);
   assert.match(source, /id="executorsList"/);
 });

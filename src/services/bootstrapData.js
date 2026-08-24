@@ -60,6 +60,7 @@ const WORKER_PROFILES = [
     default_brain: { provider: 'ChatGPT Web', type: 'BRAIN', hardcoded: false },
     default_executor: { provider: 'Codex', type: 'EXECUTOR', hardcoded: false },
     default_host: { provider: 'Shadow', type: 'HOST', hardcoded: false },
+    mission_policy: { brain_only_allowed: true, execution_optional: true },
     autonomy_level: 2,
     permissions: { ...DEFAULT_PERMISSIONS, allow_git_commit: true, allow_git_push: true }
   },
@@ -81,6 +82,16 @@ const WORKER_PROFILES = [
       'maximum purchase price',
       'final investment report'
     ],
+    default_brain: { provider: 'ChatGPT Web', type: 'BRAIN', hardcoded: false },
+    default_executor: { provider: 'Codex', type: 'EXECUTOR', hardcoded: false },
+    default_host: { provider: 'Shadow', type: 'HOST', hardcoded: false },
+    mission_policy: { brain_only_allowed: true, execution_optional: true },
+    execution_metadata: {
+      target_type: 'BROWSER',
+      target_name: 'Real estate sources',
+      browser_required: true,
+      evidence_required: true
+    },
     autonomy_level: 1,
     permissions: { ...DEFAULT_PERMISSIONS }
   },
@@ -101,6 +112,16 @@ const WORKER_PROFILES = [
       'commercial research',
       'reports'
     ],
+    default_brain: { provider: 'ChatGPT Web', type: 'BRAIN', hardcoded: false },
+    default_executor: { provider: 'Codex', type: 'EXECUTOR', hardcoded: false },
+    default_host: { provider: 'Shadow', type: 'HOST', hardcoded: false },
+    mission_policy: { brain_only_allowed: true, execution_optional: true },
+    execution_metadata: {
+      target_type: 'BROWSER',
+      target_name: 'Marine market sources',
+      browser_required: true,
+      evidence_required: true
+    },
     autonomy_level: 1,
     permissions: { ...DEFAULT_PERMISSIONS }
   },
@@ -119,6 +140,16 @@ const WORKER_PROFILES = [
       'creative variants',
       'execution based on approved insights'
     ],
+    default_brain: { provider: 'ChatGPT Web', type: 'BRAIN', hardcoded: false },
+    default_executor: { provider: 'Codex', type: 'EXECUTOR', hardcoded: false },
+    default_host: { provider: 'Shadow', type: 'HOST', hardcoded: false },
+    mission_policy: { brain_only_allowed: true, execution_optional: true },
+    execution_metadata: {
+      target_type: 'BROWSER',
+      target_name: 'Meta Ads / HeyGen',
+      browser_required: true,
+      evidence_required: true
+    },
     autonomy_level: 2,
     permissions: { ...DEFAULT_PERMISSIONS }
   },
@@ -136,6 +167,16 @@ const WORKER_PROFILES = [
       'generate hypotheses',
       'recommend actions to W04'
     ],
+    default_brain: { provider: 'ChatGPT Web', type: 'BRAIN', hardcoded: false },
+    default_executor: { provider: 'Codex', type: 'EXECUTOR', hardcoded: false },
+    default_host: { provider: 'Shadow', type: 'HOST', hardcoded: false },
+    mission_policy: { brain_only_allowed: true, execution_optional: true },
+    execution_metadata: {
+      target_type: 'BROWSER',
+      target_name: 'Meta Ads',
+      browser_required: true,
+      evidence_required: true
+    },
     autonomy_level: 1,
     permissions: { ...DEFAULT_PERMISSIONS }
   }
@@ -154,7 +195,11 @@ const WORKERS = WORKER_PROFILES.map((profile) => ({
   current_task_id: null,
   brain_binding: profile.default_brain || null,
   executor_binding: profile.default_executor || null,
-  host_binding: profile.default_host || null
+  host_binding: profile.default_host || null,
+  mission_policy: profile.mission_policy || null,
+  execution_metadata: profile.execution_metadata || null,
+  permissions: profile.permissions || null,
+  autonomy_level: profile.autonomy_level
 }));
 
 module.exports = {

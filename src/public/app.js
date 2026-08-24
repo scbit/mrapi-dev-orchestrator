@@ -232,9 +232,16 @@ function renderWorkers() {
                 <span class="eyebrow">${escapeHtml(worker.code)}</span>
                 <h3>${escapeHtml(worker.name)}</h3>
               </div>
-              ${stateBadge(worker.state)}
+              ${stateBadge(worker.operational_status || worker.state)}
             </div>
             <p>
+              Brain configured: ${worker.brain_binding ? 'YES' : 'NO'}<br>
+              Brain health: ${escapeHtml(worker.brain_health || 'OFFLINE')}<br>
+              Executor configured: ${worker.executor_binding ? 'YES' : 'NO'}<br>
+              Executor health: ${escapeHtml(worker.executor_health || 'OFFLINE')}<br>
+              Host: ${escapeHtml(worker.host_binding?.provider || 'None')}<br>
+              Autonomy: ${escapeHtml(worker.autonomy_level ?? '—')}<br>
+              Permissions: ${escapeHtml(Object.entries(worker.permissions || {}).filter(([, enabled]) => enabled === true).map(([key]) => key).join(', ') || 'none')}<br>
               Workspace: ${escapeHtml(worker.workspace_id)}<br>
               Project: ${escapeHtml(worker.project_id)}<br>
               Current mission: ${escapeHtml(worker.current_mission_id || 'None')}

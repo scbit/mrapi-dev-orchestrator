@@ -60,12 +60,15 @@ async function waitForAssistantCompletion(page, previousText, timeoutMs) {
 }
 
 async function runChatGPTWeb({ cfg, run, prompt, onProgress }) {
-  const chatUrl = run.worker_id === 'W01' ? cfg.brainChatUrlW01 : '';
-  if (!chatUrl) throw new Error(`BRAIN_CHAT_URL_MISSING_FOR_${run.worker_id}`);
+  const workerId = String(run.worker_id || '').toUpperCase();
+  const chatUrl = cfg.chatUrlForWorker(workerId);
+  const chromeUserDataDir = cfg.chromeUserDataDirForWorker
+    ? cfg.chromeUserDataDirForWorker(workerId)
+    : cfg.chromeUserDataDir;
 
   if (onProgress) await onProgress(10, 'Opening dedicated ChatGPT Web worker chat');
 
-  const context = await chromium.launchPersistentContext(cfg.chromeUserDataDir, {
+  const context = await chromium.launchPersistentContext(chromeUserDataDir, {
     channel: cfg.chromeChannel,
     headless: false,
     viewport: null,
@@ -84,7 +87,7 @@ async function runChatGPTWeb({ cfg, run, prompt, onProgress }) {
 
     const previousText = await getLastAssistantText(page);
 
-    if (onProgress) await onProgress(20, 'Sending mission to W01 Brain');
+    if (onProgress) await onProgress(20, `Sending mission to ${workerId} Brain`);
 
     await input.click();
     await input.fill(prompt);
@@ -92,7 +95,7 @@ async function runChatGPTWeb({ cfg, run, prompt, onProgress }) {
 
     console.log('[BRAIN WEB] prompt sent');
 
-    if (onProgress) await onProgress(35, 'Waiting for W01 Brain plan');
+    if (onProgress) await onProgress(35, `Waiting for ${workerId} Brain plan`);
 
     const outputText = await waitForAssistantCompletion(
       page,

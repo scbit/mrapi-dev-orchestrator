@@ -20,6 +20,9 @@ function buildCodexPrompt({ task, executionRun, cfg }) {
     : `- You are the Executor, not the Brain.
 - Work only in the local repository shown above.
 - Follow the Brain instructions exactly.
+- Do not redesign strategy.
+- Do not invent business objectives.
+- Do not change Worker role.
 - Preserve multi-tenancy and existing functionality.
 - Run the requested tests.
 - Do not access GCP or Cloud Run.
