@@ -125,6 +125,21 @@ function createRunnerRouter({ db }) {
     }
   });
 
+
+  router.post('/recover-abandoned', async (req, res, next) => {
+    try {
+      res.json(await recoverAbandonedBrainRuns(
+        db,
+        req.tenantId,
+        req.body.executor_id,
+        Number(req.body.stale_ms || 120000)
+      ));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
   return router;
 }
 

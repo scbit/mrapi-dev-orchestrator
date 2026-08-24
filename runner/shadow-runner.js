@@ -21,7 +21,7 @@ async function register() {
     executor_type: 'CODEX_APP_MANUAL',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.3.1-alpha',
+    runner_version: 'v0.3.1-alpha.1',
     capabilities: [
       'BRAIN_RUN:CHATGPT_WEB',
       'CODEX_HANDOFF:MANUAL_APP',
@@ -139,6 +139,14 @@ async function loop() {
   console.log('[SHADOW] registering', cfg.executorId, cfg.workerIds);
   await register();
   console.log('[SHADOW] registered');
+
+  const recovery = await request('/api/runner/recover-abandoned', {
+    executor_id: cfg.executorId,
+    stale_ms: 120000
+  });
+  if (recovery?.recovered?.length) {
+    console.log('[SHADOW] recovered abandoned Brain Runs', recovery.recovered.length);
+  }
   console.log('[SHADOW] repo', cfg.repoPath);
   console.log('[SHADOW] W01 chat', cfg.brainChatUrlW01 || '(not configured)');
   console.log('[SHADOW] Codex mode: manual ChatGPT desktop app handoff');

@@ -1,4 +1,4 @@
-# v0.3.1-alpha Manual Deploy
+# v0.3.1-alpha.1 Manual Deploy
 
 Deploy over the same Cloud Run service:
 
@@ -21,3 +21,5 @@ After deploy:
    - phase becomes `WAITING_FOR_CODEX`;
    - W01 becomes `WAITING`;
    - no fake EXECUTION_RUN is created until Codex actually works.
+
+After deploy and Runner restart, the previously stuck `BRAIN_RUNNING` task should be automatically recovered and re-queued if its run is older than 2 minutes.

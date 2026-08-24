@@ -771,6 +771,69 @@ async function completeManualCodexHandoff(db, tenantId, taskId, input) {
   return result;
 }
 
+async function recoverAbandonedBrainRuns(db, tenantId, executorId, staleMs = 120000) {
+  const now = Date.now();
+  const runsSnap = await db.collection('runs')
+    .where('tenant_id', '==', tenantId)
+    .where('run_type', '==', 'BRAIN_RUN')
+    .where('executor_id', '==', executorId)
+    .get();
+
+  const recovered = [];
+
+  for (const doc of runsSnap.docs) {
+    const run = doc.data();
+    if (!['RUNNING', 'CLAIMED'].includes(run.state)) continue;
+
+    const updated = run.updated_at?.toDate ? run.updated_at.toDate().getTime() : 0;
+    if (updated && now - updated < staleMs) continue;
+
+    const taskRef = db.collection('tasks').doc(run.task_id);
+    const taskSnap = await taskRef.get();
+    if (!taskSnap.exists) continue;
+    const task = taskSnap.data();
+    if (task.tenant_id !== tenantId) continue;
+    if (task.current_run_id && task.current_run_id !== doc.id) continue;
+
+    await db.runTransaction(async (tx) => {
+      tx.set(doc.ref, {
+        state: 'FAILED',
+        error: 'RUNNER_RESTARTED_OR_ABANDONED',
+        completed_at: ts(),
+        updated_at: ts()
+      }, { merge: true });
+
+      tx.set(taskRef, {
+        state: 'QUEUED',
+        phase: 'BRAIN_QUEUED',
+        current_run_id: null,
+        claimed_by_executor_id: null,
+        waiting_reason: null,
+        updated_at: ts()
+      }, { merge: true });
+
+      if (task.worker_id) {
+        tx.set(db.collection('workers').doc(task.worker_id), {
+          state: 'IDLE',
+          current_task_id: null,
+          current_mission_id: null,
+          updated_at: ts()
+        }, { merge: true });
+      }
+    });
+
+    await emitEvent(db, tenantId, 'BRAIN_RUN_RECOVERED', {
+      abandoned_run_id: doc.id,
+      task_id: run.task_id,
+      executor_id: executorId
+    }, 'WARNING');
+
+    recovered.push({ run_id: doc.id, task_id: run.task_id });
+  }
+
+  return { recovered };
+}
+
 module.exports = {
   emitEvent,
   dispatchMission,
