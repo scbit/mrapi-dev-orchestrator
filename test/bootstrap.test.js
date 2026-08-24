@@ -80,3 +80,29 @@ test('bootstrap does not reset live worker state', async () => {
   assert.equal(db.store.workers.W01.state, 'BUSY');
   assert.equal(db.store.workers.W01.current_mission_id, 'mission_live');
 });
+
+test('bootstrap safely adds W01-W05 runtime fields without leaking W01 Git permissions', async () => {
+  const db = new FakeDb();
+  db.store.workers = {
+    W01: {
+      id: 'W01',
+      code: 'W01',
+      tenant_id: 'tenant_facundo_group',
+      state: 'BUSY',
+      current_mission_id: 'mission_live',
+      brain_binding: { provider: 'Existing Brain' }
+    }
+  };
+
+  await bootstrapInitialData(db);
+
+  assert.deepEqual(Object.keys(db.store.workers).sort(), ['W01', 'W02', 'W03', 'W04', 'W05']);
+  assert.equal(db.store.workers.W01.state, 'BUSY');
+  assert.equal(db.store.workers.W01.brain_binding.provider, 'Existing Brain');
+
+  for (const id of ['W02', 'W03', 'W04', 'W05']) {
+    assert.equal(db.store.workers[id].executor_binding.provider, 'Codex');
+    assert.equal(db.store.workers[id].permissions.allow_git_commit, false);
+    assert.equal(db.store.workers[id].permissions.allow_git_push, false);
+  }
+});

@@ -104,6 +104,10 @@ async function bootstrapInitialData(db, options = {}) {
         brain_binding: data.brain_binding ?? worker.brain_binding,
         executor_binding: data.executor_binding ?? worker.executor_binding,
         host_binding: data.host_binding ?? worker.host_binding,
+        mission_policy: data.mission_policy ?? worker.mission_policy,
+        execution_metadata: data.execution_metadata ?? worker.execution_metadata,
+        permissions: data.permissions ?? worker.permissions,
+        autonomy_level: data.autonomy_level ?? worker.autonomy_level,
         updated_at: now(db)
       };
       await ref.set(safeMerge, { merge: true });

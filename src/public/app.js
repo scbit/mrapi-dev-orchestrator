@@ -494,11 +494,7 @@ function refreshProjectOptions() {
 }
 
 function refreshWorkerOptions() {
-  const workspaceId = $('#missionWorkspace').value;
-  const projectId = $('#missionProject').value;
-  const workers = state.workers.filter(
-    (worker) => worker.workspace_id === workspaceId && worker.project_id === projectId
-  );
+  const workers = [...state.workers].sort((a, b) => String(a.code || a.id).localeCompare(String(b.code || b.id)));
 
   $('#missionWorker').innerHTML = [
     '<option value="">Automatic / none yet</option>',

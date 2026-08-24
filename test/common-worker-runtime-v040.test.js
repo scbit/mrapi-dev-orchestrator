@@ -114,3 +114,15 @@ test('UI workers view exposes runtime readiness without chat URLs', () => {
   assert.match(source, /Autonomy/);
   assert.doesNotMatch(source, /brainChatUrlW0/);
 });
+
+test('mission worker selector uses all tenant workers without runtime filtering', () => {
+  const source = read('src/public/app.js');
+  const start = source.indexOf('function refreshWorkerOptions()');
+  const end = source.indexOf('function openMissionModal()', start);
+  const body = source.slice(start, end);
+  assert.match(body, /state\.workers/);
+  assert.match(body, /worker\.code/);
+  assert.doesNotMatch(body, /worker\.workspace_id === workspaceId/);
+  assert.doesNotMatch(body, /worker\.project_id === projectId/);
+  assert.doesNotMatch(body, /brain_health|executor_health|health_state/);
+});
