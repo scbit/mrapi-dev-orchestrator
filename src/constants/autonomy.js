@@ -11,7 +11,9 @@ const DEFAULT_PERMISSIONS = Object.freeze({
   allow_delete: false,
   allow_send_email: false,
   allow_publish: false,
-  allow_modify_production_data: false
+  allow_modify_production_data: false,
+  allow_git_commit: false,
+  allow_git_push: false
 });
 
 module.exports = { AUTONOMY_LEVELS, DEFAULT_PERMISSIONS };

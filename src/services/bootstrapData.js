@@ -61,7 +61,7 @@ const WORKER_PROFILES = [
     default_executor: { provider: 'Codex', type: 'EXECUTOR', hardcoded: false },
     default_host: { provider: 'Shadow', type: 'HOST', hardcoded: false },
     autonomy_level: 2,
-    permissions: { ...DEFAULT_PERMISSIONS, allow_deploy: true }
+    permissions: { ...DEFAULT_PERMISSIONS, allow_git_commit: true, allow_git_push: true }
   },
   {
     id: 'profile_W02',

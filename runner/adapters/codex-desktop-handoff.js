@@ -24,7 +24,8 @@ function buildCodexPrompt({ task, executionRun, cfg }) {
 - Run the requested tests.
 - Do not access GCP or Cloud Run.
 - Do not deploy.
-- Do not push unless explicitly instructed by the human.
+- Do not run git commit or git push; the Runner owns commit/push after successful Codex execution.
+- Runner may commit/push only when trusted MRAPI handoff git_permissions allow it.
 - Stop if the Brain stop conditions are met.`;
 
   return `MRAPI DEV ORCHESTRATOR — CODEX EXECUTION HANDOFF
@@ -65,6 +66,13 @@ ${JSON.stringify(handoff?.execution_constraints || {
   no_cloud_run: true,
   no_deploy: true,
   deployment: 'HUMAN_MANUAL_DEPLOY'
+}, null, 2)}
+
+TRUSTED GIT PERMISSIONS
+${JSON.stringify(handoff?.git_permissions || {
+  allow_commit: false,
+  allow_push: false,
+  allowed_branch: 'main'
 }, null, 2)}
 
 EXECUTION RULES

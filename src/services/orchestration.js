@@ -271,6 +271,15 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
           throw error;
         }
 
+        const worker = workerSnap.data();
+        const profileId = worker.profile_id || task.worker_profile_id || `profile_${task.worker_id}`;
+        const profileSnap = profileId
+          ? await tx.get(db.collection('worker_profiles').doc(profileId))
+          : null;
+        const workerProfile = profileSnap?.exists && profileSnap.data().tenant_id === tenantId
+          ? { id: profileSnap.id, ...profileSnap.data() }
+          : null;
+
         const attempt = Number(taskSnap.data().attempt_count || 0) + 1;
         const mission = missionSnap.exists ? { id: missionSnap.id, ...missionSnap.data() } : null;
         const brainRun = brainRunSnap?.exists ? { id: brainRunSnap.id, ...brainRunSnap.data() } : null;
@@ -279,6 +288,7 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
           task: { id: taskSnap.id, ...task },
           mission,
           brainRun,
+          workerProfile,
           executor: { id: executorId, ...executor },
           executionRunId: runRef.id,
           repositoryPath: options.repository_path ||

@@ -15,9 +15,22 @@
 
   function cleanResult(result) {
     const out = result.output || {};
+    const git = out.git || {};
+    const gitLabel = git.error
+      ? `Git: ${git.error}`
+      : git.pushed
+        ? 'Git: Pushed'
+        : git.committed
+          ? 'Git: Committed'
+          : git.changed === false
+            ? 'Git: No changes'
+            : git.reason
+              ? `Git: ${git.reason}`
+              : 'Git: Not run';
     return `<div class="clean-result">
       <div>${stateBadge(result.status || 'SUCCESS')}</div>
       <div class="clean-summary">${escapeHtml(result.summary || 'Execution completed.')}</div>
+      <div class="git-summary"><strong>${escapeHtml(gitLabel)}</strong>${git.commit_sha ? `<span>${escapeHtml(git.commit_sha)}</span>` : ''}</div>
       <details class="technical-details">
         <summary>Technical details</summary>
         <pre class="result-json">${escapeHtml(JSON.stringify({

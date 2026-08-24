@@ -1,4 +1,4 @@
-const CONTRACT_VERSION = 'CODEX_HANDOFF_V0_3_3';
+const CONTRACT_VERSION = 'CODEX_HANDOFF_V0_3_8';
 
 const EXECUTION_RULES = Object.freeze([
   'You are the Executor, not the Brain.',
@@ -8,7 +8,8 @@ const EXECUTION_RULES = Object.freeze([
   'Run local tests requested by the task_spec.',
   'Do not access GCP, Google Cloud credentials, or Cloud Run.',
   'Do not deploy.',
-  'Do not push unless explicitly instructed by the human.',
+  'Do not run git commit or git push; the Runner owns commit/push after successful Codex execution.',
+  'Runner may commit/push only when trusted MRAPI handoff git_permissions allow it.',
   'Stop if the Brain stop conditions are met.'
 ]);
 
@@ -73,6 +74,15 @@ function normalizeExecutionConstraints(task, brainRun) {
   };
 }
 
+function normalizeGitPermissions(workerProfile) {
+  const permissions = objectOrNull(workerProfile?.permissions) || {};
+  return {
+    allow_commit: permissions.allow_git_commit === true,
+    allow_push: permissions.allow_git_push === true,
+    allowed_branch: 'main'
+  };
+}
+
 function trustedScope({ tenantId, task, mission, brainRun }) {
   if (!tenantId) throw fail('CODEX_HANDOFF_TENANT_REQUIRED');
   if (!task?.id) throw fail('CODEX_HANDOFF_TASK_REQUIRED');
@@ -113,6 +123,7 @@ function buildCodexHandoff(input) {
     task,
     mission,
     brainRun = null,
+    workerProfile = null,
     executor = {},
     executionRunId,
     repositoryPath
@@ -137,6 +148,7 @@ function buildCodexHandoff(input) {
     objective: taskSpec.objective || taskSpec.instructions,
     task_spec: taskSpec,
     execution_constraints: normalizeExecutionConstraints(task, brainRun),
+    git_permissions: normalizeGitPermissions(workerProfile),
     repository_path: String(repositoryPath).trim(),
     execution_rules: [...EXECUTION_RULES],
     return_contract: [

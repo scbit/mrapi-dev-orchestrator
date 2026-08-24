@@ -4,6 +4,7 @@ const { cfg } = require('./lib/config');
 const { createApi } = require('./lib/api');
 const { buildCodexPrompt } = require('./adapters/codex-desktop-handoff');
 const { runCodexCommand } = require('./adapters/codex-command');
+const { runGitFlow } = require('./adapters/git-flow');
 
 if (require.main === module && !cfg.baseUrl) throw new Error('MRAPI_BASE_URL is required.');
 if (require.main === module && !cfg.secret) throw new Error('MRAPI_RUNNER_SECRET is required.');
@@ -25,12 +26,14 @@ async function register() {
     executor_type: 'CODEX_CLI_AUTO',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.3.7-alpha.0',
+    runner_version: 'v0.3.8-alpha.0',
     capabilities: [
       'EXECUTION_RUN:CODEX_CLI_AUTO',
       'CODEX_HANDOFF:VALIDATED',
       'CODEX_EXEC:AUTO',
       'ARTIFACT_UPLOAD:AUTO',
+      'GIT_COMMIT:AUTO',
+      'GIT_PUSH:AUTO',
       'RESULT:AUTO',
       'LOG',
       'FILE',
@@ -165,24 +168,96 @@ async function addLogEvidence(runId, taskId, result) {
   });
 }
 
-async function completeExecution(runId, result) {
+async function addGitEvidence(runId, taskId, git) {
+  const lines = [
+    `TASK ${taskId}`,
+    `GIT_CHANGED ${git.changed === true}`,
+    `GIT_COMMITTED ${git.committed === true}`,
+    `GIT_PUSHED ${git.pushed === true}`,
+    `GIT_BRANCH ${git.branch || ''}`,
+    `GIT_COMMIT_SHA ${git.commit_sha || ''}`,
+    `GIT_REASON ${git.reason || ''}`,
+    `GIT_ERROR ${git.error || ''}`
+  ];
+
+  return request(`/api/runner/runs/${encodeURIComponent(runId)}/evidence`, {
+    type: 'LOG',
+    title: `Git operation ${taskId}`,
+    description: git.error || git.reason || 'Git operation completed',
+    filename: `git-${taskId}.log`,
+    content_type: 'text/plain; charset=utf-8',
+    content_base64: Buffer.from(lines.join('\n'), 'utf8').toString('base64')
+  });
+}
+
+async function completeExecution(runId, result, git = {}) {
   const stdoutTail = String(result.stdout || '').slice(-50000);
   const stderrTail = String(result.stderr || '').slice(-20000);
   const success = result.success === true;
 
   return request(`/api/runner/runs/${encodeURIComponent(runId)}/complete`, {
     success,
-    summary: success
-      ? `Codex CLI completed automatically with exit code ${result.exitCode}.`
-      : `Codex CLI failed with exit code ${result.exitCode}.`,
-    error: success ? null : (stderrTail || `Codex exit code ${result.exitCode}`),
+    summary: git.error
+      ? `Automatic Git flow failed: ${git.error}`
+      : success
+        ? `Codex CLI completed automatically with exit code ${result.exitCode}.`
+        : `Codex CLI failed with exit code ${result.exitCode}.`,
+    error: success ? null : (git.error || stderrTail || `Codex exit code ${result.exitCode}`),
     output: {
       executor_mode: 'CODEX_CLI_AUTO',
       exit_code: result.exitCode,
       stdout_tail: stdoutTail,
-      stderr_tail: stderrTail
+      stderr_tail: stderrTail,
+      git
     }
   });
+}
+
+function gitMetadataFromError(error) {
+  return {
+    changed: null,
+    committed: false,
+    pushed: false,
+    commit_sha: null,
+    branch: null,
+    error: String(error.message || error).slice(0, 1000)
+  };
+}
+
+async function runTrustedGitFlow({ claim, result }) {
+  if (result.success !== true) {
+    return {
+      changed: false,
+      committed: false,
+      pushed: false,
+      commit_sha: null,
+      branch: null,
+      reason: 'CODEX_EXECUTION_FAILED'
+    };
+  }
+
+  const handoff = claim.codex_handoff || claim.task?.codex_handoff || claim.run?.codex_handoff || {};
+  const permissions = handoff.git_permissions || {};
+
+  try {
+    const outcome = runGitFlow({
+      repoPath: handoff.repository_path || cfg.repoPath,
+      gitPermissions: permissions,
+      missionId: handoff.mission_id || claim.task?.mission_id,
+      objective: handoff.objective || handoff.task_spec?.objective || claim.task?.objective
+    });
+    return {
+      changed: outcome.changed === true,
+      committed: outcome.committed === true,
+      pushed: outcome.pushed === true,
+      commit_sha: outcome.commit_sha || outcome.sha || null,
+      branch: outcome.branch || permissions.allowed_branch || null,
+      reason: outcome.reason || null,
+      error: null
+    };
+  } catch (error) {
+    return gitMetadataFromError(error);
+  }
 }
 
 async function executeClaim(claim) {
@@ -224,7 +299,21 @@ async function executeClaim(claim) {
       console.log('[SHADOW ARTIFACTS UPLOADED]', task.id, artifacts.uploaded);
     }
 
-    const completion = await completeExecution(executionRun.id, result);
+    const git = await runTrustedGitFlow({ claim, result });
+    try {
+      await addGitEvidence(executionRun.id, task.id, git);
+    } catch (gitEvidenceError) {
+      console.error('[SHADOW GIT EVIDENCE ERROR]', gitEvidenceError.message);
+    }
+
+    const gitFailed = result.success === true && git.error;
+    const completion = await completeExecution(
+      executionRun.id,
+      gitFailed
+        ? { ...result, success: false, stderr: `${result.stderr || ''}\n${git.error}` }
+        : result,
+      git
+    );
 
     console.log(
       result.success ? '[SHADOW] COMPLETE' : '[SHADOW] FAILED',
@@ -321,5 +410,6 @@ module.exports = {
   artifactDirForTask,
   contentTypeForFile,
   listArtifactFiles,
+  runTrustedGitFlow,
   uploadTaskArtifacts
 };
