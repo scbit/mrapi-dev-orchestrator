@@ -10,7 +10,9 @@ const {
   startExecutionRun,
   markTaskWaiting,
   addEvidence,
-  completeRun
+  completeRun,
+  completeManualCodexHandoff,
+  recoverAbandonedBrainRuns
 } = require('../services/orchestration');
 
 function createRunnerRouter({ db }) {
@@ -84,7 +86,13 @@ function createRunnerRouter({ db }) {
 
   router.post('/tasks/:taskId/waiting', async (req, res, next) => {
     try {
-      res.json(await markTaskWaiting(db, req.tenantId, req.params.taskId, req.body.message || ''));
+      res.json(await markTaskWaiting(
+        db,
+        req.tenantId,
+        req.params.taskId,
+        req.body.message || '',
+        req.body.handoff || null
+      ));
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });
       next(error);
