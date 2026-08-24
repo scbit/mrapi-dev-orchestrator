@@ -1,8 +1,14 @@
 {
   "name": "mrapi-shadow-runner",
-  "version": "0.2.0-alpha.0",
+  "version": "0.3.0-alpha.0",
   "private": true,
   "type": "commonjs",
   "engines": { "node": ">=20" },
-  "scripts": { "start": "node shadow-runner.js" }
+  "scripts": {
+    "start": "node shadow-runner.js",
+    "brain:setup": "node brain-setup.js"
+  },
+  "dependencies": {
+    "playwright-core": "^1.55.0"
+  }
 }

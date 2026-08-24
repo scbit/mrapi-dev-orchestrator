@@ -240,8 +240,10 @@ async function claimNextTask(db, tenantId, executorId) {
 
         tx.update(taskRef, {
           state: 'RUNNING',
+          phase: 'BRAIN_RUNNING',
           attempt_count: attempt,
           current_run_id: runRef.id,
+          brain_run_id: runRef.id,
           claimed_by_executor_id: executorId,
           claimed_at: timestamp(),
           updated_at: timestamp()
@@ -265,7 +267,7 @@ async function claimNextTask(db, tenantId, executorId) {
         tx.set(runRef, {
           id: runRef.id,
           tenant_id: tenantId,
-          run_type: 'EXECUTION_RUN',
+          run_type: 'BRAIN_RUN',
           mission_id: candidate.mission_id,
           task_id: candidate.id,
           worker_id: candidate.worker_id,
@@ -274,7 +276,7 @@ async function claimNextTask(db, tenantId, executorId) {
           state: 'RUNNING',
           attempt,
           progress_percent: 0,
-          progress_message: 'Claimed by executor',
+          progress_message: 'Task claimed; ChatGPT Web Brain Run started',
           started_at: timestamp(),
           created_at: timestamp(),
           updated_at: timestamp()
@@ -289,7 +291,7 @@ async function claimNextTask(db, tenantId, executorId) {
 
         claimed = {
           task: { ...candidate, state: 'RUNNING', current_run_id: runRef.id, attempt_count: attempt },
-          run: { id: runRef.id, run_type: 'EXECUTION_RUN', state: 'RUNNING', attempt }
+          run: { id: runRef.id, run_type: 'BRAIN_RUN', state: 'RUNNING', attempt }
         };
       });
 
@@ -429,6 +431,139 @@ async function addEvidence(db, tenantId, runId, input) {
   return evidence;
 }
 
+
+async function completeBrainRun(db, tenantId, runId, input) {
+  const runRef = db.collection('runs').doc(runId);
+  let result;
+
+  await db.runTransaction(async (tx) => {
+    const runSnap = await tx.get(runRef);
+    if (!runSnap.exists || runSnap.data().tenant_id !== tenantId) {
+      const error = new Error('RUN_NOT_FOUND'); error.status = 404; throw error;
+    }
+
+    const run = runSnap.data();
+    if (run.run_type !== 'BRAIN_RUN' || run.state !== 'RUNNING') {
+      const error = new Error('BRAIN_RUN_NOT_ACTIVE'); error.status = 409; throw error;
+    }
+
+    const taskRef = db.collection('tasks').doc(run.task_id);
+    const executorRef = db.collection('executors').doc(run.executor_id);
+    const outputText = String(input.output_text || '').slice(0, 100000);
+
+    tx.update(runRef, {
+      state: 'COMPLETED',
+      progress_percent: 100,
+      progress_message: 'Brain plan completed',
+      output_text: outputText,
+      brain_chat_url: input.brain_chat_url || null,
+      completed_at: timestamp(),
+      updated_at: timestamp()
+    });
+
+    tx.set(taskRef, {
+      phase: 'EXECUTION_PENDING',
+      brain_output: outputText,
+      current_run_id: null,
+      updated_at: timestamp()
+    }, { merge: true });
+
+    tx.set(executorRef, {
+      current_run_id: null,
+      updated_at: timestamp()
+    }, { merge: true });
+
+    result = { task_id: run.task_id, brain_run_id: runId };
+  });
+
+  await emitEvent(db, tenantId, 'BRAIN_RUN_COMPLETED', result, 'OPERATIVE');
+  return result;
+}
+
+async function startExecutionRun(db, tenantId, taskId, executorId) {
+  const taskRef = db.collection('tasks').doc(taskId);
+  const executorRef = db.collection('executors').doc(executorId);
+  const runRef = db.collection('runs').doc();
+  let result;
+
+  await db.runTransaction(async (tx) => {
+    const taskSnap = await tx.get(taskRef);
+    const executorSnap = await tx.get(executorRef);
+
+    if (!taskSnap.exists || taskSnap.data().tenant_id !== tenantId) {
+      const error = new Error('TASK_NOT_FOUND'); error.status = 404; throw error;
+    }
+    if (!executorSnap.exists || executorSnap.data().tenant_id !== tenantId) {
+      const error = new Error('EXECUTOR_NOT_FOUND'); error.status = 404; throw error;
+    }
+
+    const task = taskSnap.data();
+    if (task.phase !== 'EXECUTION_PENDING') {
+      const error = new Error('TASK_NOT_READY_FOR_EXECUTION'); error.status = 409; throw error;
+    }
+
+    tx.set(runRef, {
+      id: runRef.id,
+      tenant_id: tenantId,
+      run_type: 'EXECUTION_RUN',
+      mission_id: task.mission_id,
+      task_id: taskId,
+      worker_id: task.worker_id,
+      executor_id: executorId,
+      host_name: executorSnap.data().host_name || null,
+      state: 'RUNNING',
+      attempt: task.attempt_count || 1,
+      progress_percent: 0,
+      progress_message: 'Codex Execution Run started',
+      started_at: timestamp(),
+      created_at: timestamp(),
+      updated_at: timestamp()
+    });
+
+    tx.update(taskRef, {
+      phase: 'EXECUTION_RUNNING',
+      execution_run_id: runRef.id,
+      current_run_id: runRef.id,
+      updated_at: timestamp()
+    });
+
+    tx.set(executorRef, { current_run_id: runRef.id, updated_at: timestamp() }, { merge: true });
+
+    result = {
+      task: { id: taskId, ...task, phase: 'EXECUTION_RUNNING', execution_run_id: runRef.id },
+      run: { id: runRef.id, run_type: 'EXECUTION_RUN', state: 'RUNNING' }
+    };
+  });
+
+  await emitEvent(db, tenantId, 'EXECUTION_RUN_STARTED', {
+    task_id: taskId, execution_run_id: result.run.id, executor_id: executorId
+  }, 'OPERATIVE');
+
+  return result;
+}
+
+async function markTaskWaiting(db, tenantId, taskId, message) {
+  const taskRef = db.collection('tasks').doc(taskId);
+  const snap = await taskRef.get();
+  if (!snap.exists || snap.data().tenant_id !== tenantId) {
+    const error = new Error('TASK_NOT_FOUND'); error.status = 404; throw error;
+  }
+
+  const task = snap.data();
+  await taskRef.set({
+    state: 'WAITING',
+    waiting_reason: String(message || '').slice(0, 5000),
+    updated_at: timestamp()
+  }, { merge: true });
+
+  if (task.worker_id) {
+    await db.collection('workers').doc(task.worker_id).set({ state: 'WAITING', updated_at: timestamp() }, { merge: true });
+  }
+
+  await emitEvent(db, tenantId, 'TASK_WAITING', { task_id: taskId, reason: String(message || '').slice(0, 1000) }, 'WARNING');
+  return { ok: true, task_id: taskId, state: 'WAITING' };
+}
+
 async function completeRun(db, tenantId, runId, input) {
   const runRef = db.collection('runs').doc(runId);
 
@@ -531,6 +666,9 @@ module.exports = {
   heartbeatExecutor,
   claimNextTask,
   updateRunProgress,
+  completeBrainRun,
+  startExecutionRun,
+  markTaskWaiting,
   addEvidence,
   completeRun
 };

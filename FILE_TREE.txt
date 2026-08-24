@@ -7,6 +7,12 @@ MANUAL_DEPLOY.md
 README.md
 package.json
 runner/README.md
+runner/adapters/chatgpt-web.js
+runner/adapters/codex-command.js
+runner/brain-setup.js
+runner/lib/api.js
+runner/lib/config.js
+runner/lib/prompts.js
 runner/package.json
 runner/shadow-runner.js
 src/app.js
@@ -52,3 +58,4 @@ src/utils/firestore.js
 test/bootstrap.test.js
 test/constants.test.js
 test/orchestration.test.js
+test/v03.test.js

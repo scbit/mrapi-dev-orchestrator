@@ -1,30 +1,11 @@
-# MRAPI DEV v0.2-alpha — Manual Deploy
+# v0.3-alpha manual deploy
 
-Update the existing Cloud Run service `mrapi-dev-orchestrator` in GCP project:
+Deploy over existing Cloud Run service `mrapi-dev-orchestrator`.
 
-`ia-sentire-customs-broker`
+Keep all v0.2 Cloud Run environment variables unchanged.
 
-## Environment
-
-Keep:
-
-- `GOOGLE_CLOUD_PROJECT=ia-sentire-customs-broker`
-- `FIRESTORE_DATABASE=mrapi-dev`
-- `EVIDENCE_BUCKET=mrapi-dev-evidence`
-- `DEFAULT_TENANT_ID=tenant_facundo_group`
-- `BOOTSTRAP_ON_START=true`
-- `NODE_ENV=production`
-
-Add:
-
-- `RUNNER_SHARED_SECRET=<LONG RANDOM SECRET>`
-
-Do not create `PORT`.
-
-## After deploy
-
-1. Dashboard must still show the 5 workers.
-2. Existing mission must remain intact.
-3. A READY mission should now show a `Dispatch` button.
-4. Do not click Dispatch on a mission you want actually executed until Shadow v0.3 has the Codex adapter.
-5. Executors should remain 0 until Shadow registers.
+After deploy:
+1. Existing data remains.
+2. Shadow reconnects.
+3. New W01 claims create BRAIN_RUN first.
+4. Do not dispatch a new W01 mission until Shadow Runner is updated and W01 ChatGPT URL is configured.

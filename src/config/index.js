@@ -1,4 +1,4 @@
-const VERSION = 'v0.2-alpha';
+const VERSION = 'v0.3-alpha';
 
 function boolEnv(name, fallback) {
   const value = process.env[name];
@@ -11,10 +11,7 @@ const config = Object.freeze({
   version: VERSION,
   port: Number(process.env.PORT || 8080),
   nodeEnv: process.env.NODE_ENV || 'development',
-  googleCloudProject:
-    process.env.GOOGLE_CLOUD_PROJECT ||
-    process.env.GCLOUD_PROJECT ||
-    'ia-sentire-customs-broker',
+  googleCloudProject: process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT || 'ia-sentire-customs-broker',
   firestoreDatabase: process.env.FIRESTORE_DATABASE || 'mrapi-dev',
   evidenceBucket: process.env.EVIDENCE_BUCKET || 'mrapi-dev-evidence',
   defaultTenantId: process.env.DEFAULT_TENANT_ID || 'tenant_facundo_group',

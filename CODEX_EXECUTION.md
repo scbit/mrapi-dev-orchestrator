@@ -1,26 +1,12 @@
 # CODEX — EXECUTION ONLY
 
-ChatGPT already designed and programmed MRAPI DEV v0.2-alpha.
+ChatGPT already designed/programmed v0.3-alpha.
 
-Do not redesign architecture.
+- Work only in the local repository.
+- Install dependencies and run tests.
+- Fix only minor operational errors.
+- Do not redesign architecture.
+- Do not access GCP.
+- Do not deploy.
 
-## Backend
-
-1. Copy this package over the existing repo preserving unrelated valid infra files.
-2. Run:
-   ```bash
-   npm install
-   npm test
-   npm run test:syntax
-   ```
-3. Fix only minor operational errors.
-4. Do NOT change Firestore schema, state machine or runner protocol.
-5. Return test output.
-
-The user is doing the initial Cloud Run deploy manually.
-
-## Shadow
-
-Do not enable Shadow yet unless requested after Cloud Run v0.2 is verified.
-
-When requested, copy only `runner/` to Shadow and configure its environment.
+Human performs Cloud Run deployment manually.

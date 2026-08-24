@@ -1,94 +1,49 @@
-# MRAPI DEV ORCHESTRATOR
+# MRAPI DEV ORCHESTRATOR — v0.3-alpha
 
-Version: **v0.2-alpha**
-
-MRAPI DEV is a multi-tenant Control Room for autonomous workers.
-
-## Permanent architecture
-
-```text
-TENANT → WORKSPACE → PROJECT → MISSION → TASK → RUN → RESULT / EVIDENCE
-```
-
-```text
-Worker = role + capabilities + permissions + mission
-Brain = reasoning system
-Executor = execution system
-Host = execution environment
-```
-
-MRAPI DEV is the source of truth.
-
-## Infrastructure
-
-- GCP project: `ia-sentire-customs-broker`
-- Cloud Run service: `mrapi-dev-orchestrator`
-- Firestore database: `mrapi-dev`
-- Evidence bucket: `mrapi-dev-evidence`
-
-## v0.2 flow
+## Flow
 
 ```text
 Mission READY
-  ↓ Dispatch
-Task QUEUED
-  ↓ Shadow asks for work
-Task claimed atomically
-  ↓
-Worker BUSY
-Mission RUNNING
-EXECUTION_RUN RUNNING
-  ↓
-Progress + Evidence
-  ↓
-Run COMPLETED/FAILED
-Task DONE/FAILED
-Mission COMPLETED/FAILED
-Worker IDLE
+→ Dispatch
+→ Task QUEUED
+→ Shadow claims
+→ BRAIN_RUN / ChatGPT Web
+→ Brain plan + evidence
+→ EXECUTION_RUN / Codex
+→ logs + evidence
+→ Result
+→ Task DONE / Mission COMPLETED / Worker IDLE
 ```
 
-## Runner security
-
-Set a long random secret in Cloud Run:
+Permanent separation:
 
 ```text
-RUNNER_SHARED_SECRET=<random-secret>
+Worker != Brain != Executor != Host
+W01 = Software Engineer
+Brain = ChatGPT Web
+Executor = Codex
+Host = Shadow Windows 11
 ```
 
-Shadow must send the same value as `MRAPI_RUNNER_SECRET`.
+Infrastructure:
+- GCP project: `ia-sentire-customs-broker`
+- Cloud Run service: `mrapi-dev-orchestrator`
+- Firestore: `mrapi-dev`
+- Evidence bucket: `mrapi-dev-evidence`
 
-Runner endpoints reject unauthenticated calls in production.
+Shadow gets no GCP credentials. It only calls protected MRAPI DEV HTTPS endpoints.
 
-## Main API
+## v0.3
 
-- `GET /health`
-- `GET /api/dashboard`
-- `GET /api/workers`
-- `GET /api/missions`
-- `POST /api/missions`
-- `POST /api/missions/:missionId/dispatch`
-- `GET /api/tasks`
-- `GET /api/executors`
-- `GET /api/runs`
+v0.2 proved transport. v0.3 inserts the required Brain phase before Codex execution.
 
-Runner:
+The Runner uses a dedicated Chrome profile and a dedicated W01 ChatGPT Web chat. One worker = one chat.
 
-- `POST /api/runner/register`
-- `POST /api/runner/heartbeat`
-- `POST /api/runner/next-task`
-- `POST /api/runner/runs/:runId/progress`
-- `POST /api/runner/runs/:runId/evidence`
-- `POST /api/runner/runs/:runId/complete`
+If Codex command-line execution is not available, Task becomes WAITING after the Brain completes; no fake success is recorded.
 
-## Evidence
+## Cloud Run
 
-Evidence metadata lives in Firestore.
-
-Binary evidence sent by the Runner is uploaded by MRAPI DEV to:
-
-`gs://mrapi-dev-evidence/<tenant>/<mission>/<task>/<run>/<evidence>/<file>`
-
-v0.2 JSON uploads are intentionally limited to 10 MB per evidence item.
+Keep the same variables as v0.2. No new Cloud Run variable is required.
 
 ## Tests
 
@@ -98,35 +53,10 @@ npm test
 npm run test:syntax
 ```
 
-## Manual Cloud Run deploy
+## Shadow
 
-Do not manually define `PORT`.
+See `runner/README.md`.
 
-Add:
+## Deploy rule
 
-```text
-GOOGLE_CLOUD_PROJECT=ia-sentire-customs-broker
-FIRESTORE_DATABASE=mrapi-dev
-EVIDENCE_BUCKET=mrapi-dev-evidence
-DEFAULT_TENANT_ID=tenant_facundo_group
-BOOTSTRAP_ON_START=true
-NODE_ENV=production
-RUNNER_SHARED_SECRET=<LONG_RANDOM_SECRET>
-```
-
-Then deploy the existing Cloud Run service.
-
-## Shadow Runner
-
-The `runner/` directory is the local Shadow agent.
-
-**v0.2-alpha deliberately stops before launching Codex.**
-
-It validates register → heartbeat → claim → progress → evidence → close transport.
-
-The included executor stub marks a claimed Run as failed with
-`EXECUTOR_ADAPTER_NOT_IMPLEMENTED` instead of pretending the mission was executed.
-
-## Next milestone
-
-**v0.3-alpha: Codex executor adapter + actual W01 execution.**
+Cloud Run deployment is human/manual. Codex must not receive GCP credentials or deploy access.
