@@ -1,16 +1,18 @@
-MRAPI DEV v0.3.4-alpha.1 — TEST ALIGNMENT
+MRAPI DEV v0.3.4-alpha.2 — WINDOWS CODEX CMD FIX
 
 OBJECTIVE
-Align legacy tests with the new v0.3.4 automatic Codex CLI architecture.
+Fix Shadow automatic Codex execution on Windows.
 
-CHANGES
-- No production/runtime code changes.
-- Updates only obsolete tests that expected manual desktop handoff.
-- Keeps coverage for legacy manual server completion as backward compatibility.
-- Confirms execution Runner no longer owns Brain recovery.
+CAUSE
+`where codex` succeeds because the global npm install exposes codex.ps1,
+but spawning bare `codex` from Node fails with ENOENT / PowerShell policy issues.
+Shadow already verified `codex.cmd --version` works.
+
+IMPLEMENTATION
+Prefer `codex.cmd` first on Windows, then fall back to bare `codex`.
 
 TESTS
-node --test test/codex-cli-auto.test.js
+node --test test/codex-windows-command.test.js
 node --test
 
 SUCCESS
@@ -18,4 +20,4 @@ All tests pass.
 
 STOP
 Do not deploy.
-Do not modify runtime code unless a real failure is discovered.
+No Cloud Run changes.

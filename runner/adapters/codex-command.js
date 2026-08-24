@@ -7,8 +7,18 @@ function commandExists(command) {
 
 function resolveCommand(cfg) {
   if (cfg.codexCommand) return { shell: true, command: cfg.codexCommand, args: [] };
-  if (commandExists('codex')) return { shell: false, command: 'codex', args: ['exec', '-'] };
-  if (process.platform === 'win32' && commandExists('codex.cmd')) return { shell: false, command: 'codex.cmd', args: ['exec', '-'] };
+
+  // On Windows, prefer codex.cmd. `where codex` can resolve codex.ps1 first,
+  // but PowerShell execution policy may block it and child_process cannot spawn
+  // the bare `codex` shim reliably.
+  if (process.platform === 'win32' && commandExists('codex.cmd')) {
+    return { shell: false, command: 'codex.cmd', args: ['exec', '-'] };
+  }
+
+  if (commandExists('codex')) {
+    return { shell: false, command: 'codex', args: ['exec', '-'] };
+  }
+
   return null;
 }
 
