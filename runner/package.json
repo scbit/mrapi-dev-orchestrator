@@ -1,6 +1,6 @@
 {
   "name": "mrapi-shadow-runner",
-  "version": "0.3.3-alpha.0",
+  "version": "0.3.4-alpha.0",
   "private": true,
   "type": "commonjs",
   "engines": {

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 
-test('Codex desktop handoff contains full Brain instructions and identifiers', () => {
+test('Codex desktop handoff adapter remains available as optional fallback', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'runner', 'adapters', 'codex-desktop-handoff.js'),
     'utf8'
@@ -17,19 +17,20 @@ test('Codex desktop handoff contains full Brain instructions and identifiers', (
   assert.match(source, /Do not deploy/);
 });
 
-test('runner prepares desktop handoff instead of sending only Task ID', () => {
+test('v0.3.4 runner uses CLI auto instead of desktop handoff', () => {
   const source = fs.readFileSync(
     path.join(__dirname, '..', 'runner', 'shadow-runner.js'),
     'utf8'
   );
 
-  assert.match(source, /prepareCodexDesktopHandoff/);
-  assert.match(source, /Codex prompt copied to clipboard/);
-  assert.match(source, /handoff_file/);
-  assert.match(source, /clipboard_ready/);
+  assert.match(source, /CODEX_CLI_AUTO/);
+  assert.match(source, /runCodexCommand/);
+  assert.match(source, /buildCodexPrompt/);
+  assert.doesNotMatch(source, /prepareCodexDesktopHandoff/);
+  assert.doesNotMatch(source, /Codex prompt copied to clipboard/);
 });
 
-test('Codex app launch is configurable, not hardcoded', () => {
+test('Codex desktop fallback launch remains configurable, not hardcoded', () => {
   const config = fs.readFileSync(
     path.join(__dirname, '..', 'runner', 'lib', 'config.js'),
     'utf8'
