@@ -542,7 +542,7 @@ async function startExecutionRun(db, tenantId, taskId, executorId) {
   return result;
 }
 
-async function markTaskWaiting(db, tenantId, taskId, message) {
+async function markTaskWaiting(db, tenantId, taskId, message, handoff = null) {
   const taskRef = db.collection('tasks').doc(taskId);
   const snap = await taskRef.get();
   if (!snap.exists || snap.data().tenant_id !== tenantId) {
@@ -552,16 +552,31 @@ async function markTaskWaiting(db, tenantId, taskId, message) {
   const task = snap.data();
   await taskRef.set({
     state: 'WAITING',
+    phase: 'WAITING_FOR_CODEX',
     waiting_reason: String(message || '').slice(0, 5000),
-    updated_at: timestamp()
+    handoff: handoff || null,
+    updated_at: ts()
   }, { merge: true });
 
   if (task.worker_id) {
-    await db.collection('workers').doc(task.worker_id).set({ state: 'WAITING', updated_at: timestamp() }, { merge: true });
+    await db.collection('workers').doc(task.worker_id).set({
+      state: 'WAITING',
+      updated_at: ts()
+    }, { merge: true });
   }
 
-  await emitEvent(db, tenantId, 'TASK_WAITING', { task_id: taskId, reason: String(message || '').slice(0, 1000) }, 'WARNING');
-  return { ok: true, task_id: taskId, state: 'WAITING' };
+  await emitEvent(db, tenantId, 'TASK_WAITING_FOR_CODEX', {
+    task_id: taskId,
+    reason: String(message || '').slice(0, 1000),
+    handoff_type: handoff?.type || null
+  }, 'WARNING');
+
+  return {
+    ok: true,
+    task_id: taskId,
+    state: 'WAITING',
+    phase: 'WAITING_FOR_CODEX'
+  };
 }
 
 async function completeRun(db, tenantId, runId, input) {
@@ -655,6 +670,103 @@ async function completeRun(db, tenantId, runId, input) {
 
   await emitEvent(db, tenantId, result.success ? 'RUN_COMPLETED' : 'RUN_FAILED', result,
     result.success ? 'OPERATIVE' : 'WARNING');
+
+  return result;
+}
+
+async function completeManualCodexHandoff(db, tenantId, taskId, input) {
+  const taskRef = db.collection('tasks').doc(taskId);
+  let result;
+
+  await db.runTransaction(async (tx) => {
+    const taskSnap = await tx.get(taskRef);
+    if (!taskSnap.exists || taskSnap.data().tenant_id !== tenantId) {
+      const error = new Error('TASK_NOT_FOUND'); error.status = 404; throw error;
+    }
+
+    const task = taskSnap.data();
+    if (task.phase !== 'WAITING_FOR_CODEX') {
+      const error = new Error('TASK_NOT_WAITING_FOR_CODEX'); error.status = 409; throw error;
+    }
+
+    const success = input.success !== false;
+    const executionRunRef = db.collection('runs').doc();
+    const resultRef = db.collection('results').doc();
+    const missionRef = db.collection('missions').doc(task.mission_id);
+    const workerRef = db.collection('workers').doc(task.worker_id);
+
+    tx.set(executionRunRef, {
+      id: executionRunRef.id,
+      tenant_id: tenantId,
+      run_type: 'EXECUTION_RUN',
+      mission_id: task.mission_id,
+      task_id: taskId,
+      worker_id: task.worker_id,
+      executor_id: task.claimed_by_executor_id || null,
+      host_name: 'Shadow',
+      executor_mode: 'CODEX_APP_MANUAL',
+      state: success ? 'COMPLETED' : 'FAILED',
+      progress_percent: success ? 100 : 0,
+      progress_message: String(input.summary || '').slice(0, 2000),
+      error: success ? null : String(input.error || 'Manual Codex execution failed').slice(0, 5000),
+      started_at: ts(),
+      completed_at: ts(),
+      created_at: ts(),
+      updated_at: ts()
+    });
+
+    tx.set(taskRef, {
+      state: success ? 'DONE' : 'FAILED',
+      phase: success ? 'COMPLETED' : 'FAILED',
+      execution_run_id: executionRunRef.id,
+      current_run_id: executionRunRef.id,
+      completed_at: ts(),
+      updated_at: ts()
+    }, { merge: true });
+
+    tx.set(workerRef, {
+      state: 'IDLE',
+      current_mission_id: null,
+      current_task_id: null,
+      updated_at: ts()
+    }, { merge: true });
+
+    tx.set(missionRef, {
+      state: success ? 'COMPLETED' : 'FAILED',
+      completed_at: ts(),
+      updated_at: ts()
+    }, { merge: true });
+
+    tx.set(resultRef, {
+      id: resultRef.id,
+      tenant_id: tenantId,
+      mission_id: task.mission_id,
+      task_id: taskId,
+      run_id: executionRunRef.id,
+      worker_id: task.worker_id,
+      executor_id: task.claimed_by_executor_id || null,
+      status: success ? 'SUCCESS' : 'FAILED',
+      summary: String(input.summary || '').slice(0, 10000),
+      output: input.output || null,
+      created_at: ts()
+    });
+
+    result = {
+      success,
+      mission_id: task.mission_id,
+      task_id: taskId,
+      execution_run_id: executionRunRef.id,
+      result_id: resultRef.id
+    };
+  });
+
+  await emitEvent(
+    db,
+    tenantId,
+    result.success ? 'MANUAL_CODEX_COMPLETED' : 'MANUAL_CODEX_FAILED',
+    result,
+    result.success ? 'OPERATIVE' : 'WARNING'
+  );
 
   return result;
 }

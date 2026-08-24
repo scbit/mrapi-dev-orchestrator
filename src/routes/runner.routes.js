@@ -110,6 +110,21 @@ function createRunnerRouter({ db }) {
     }
   });
 
+
+  router.post('/tasks/:taskId/manual-codex-complete', async (req, res, next) => {
+    try {
+      res.json(await completeManualCodexHandoff(
+        db,
+        req.tenantId,
+        req.params.taskId,
+        req.body || {}
+      ));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
   return router;
 }
 

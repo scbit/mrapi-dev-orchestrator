@@ -179,7 +179,7 @@ async function loadAll() {
     $('#tasksList').innerHTML = tasks.total
       ? tasks.items.map((task) => `
           <div class="mission-item">
-            <div><h4>${escapeHtml(task.title || task.id)}</h4><div class="mission-meta">${escapeHtml(task.mission_id || '')}</div></div>
+            <div><h4>${escapeHtml(task.title || task.id)}</h4><div class="mission-meta">${escapeHtml(task.mission_id || '')}${task.phase ? ` · ${escapeHtml(task.phase)}` : ''}</div></div>
             ${stateBadge(task.state)}
           </div>
         `).join('')

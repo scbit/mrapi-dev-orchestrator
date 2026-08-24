@@ -1,11 +1,23 @@
-# v0.3-alpha manual deploy
+# v0.3.1-alpha Manual Deploy
 
-Deploy over existing Cloud Run service `mrapi-dev-orchestrator`.
+Deploy over the same Cloud Run service:
 
-Keep all v0.2 Cloud Run environment variables unchanged.
+`mrapi-dev-orchestrator`
+
+GCP project:
+
+`ia-sentire-customs-broker`
+
+No new Cloud Run variables are required.
 
 After deploy:
-1. Existing data remains.
-2. Shadow reconnects.
-3. New W01 claims create BRAIN_RUN first.
-4. Do not dispatch a new W01 mission until Shadow Runner is updated and W01 ChatGPT URL is configured.
+1. Existing data must remain.
+2. Shadow Runner must be updated to v0.3.1.
+3. Create a new W01 mission.
+4. Dispatch it.
+5. Expected result:
+   - BRAIN_RUN completes;
+   - Task becomes `WAITING`;
+   - phase becomes `WAITING_FOR_CODEX`;
+   - W01 becomes `WAITING`;
+   - no fake EXECUTION_RUN is created until Codex actually works.

@@ -1,62 +1,70 @@
-# MRAPI DEV ORCHESTRATOR — v0.3-alpha
+# MRAPI DEV ORCHESTRATOR — v0.3.1-alpha
 
-## Flow
+## Real Shadow flow
+
+This version matches the actual tools available on Shadow.
 
 ```text
 Mission READY
 → Dispatch
 → Task QUEUED
 → Shadow claims
-→ BRAIN_RUN / ChatGPT Web
-→ Brain plan + evidence
-→ EXECUTION_RUN / Codex
-→ logs + evidence
-→ Result
-→ Task DONE / Mission COMPLETED / Worker IDLE
+→ BRAIN_RUN
+→ ChatGPT Web W01 generates plan
+→ Brain plan stored as evidence
+→ Task WAITING / WAITING_FOR_CODEX
+→ Human opens Codex inside ChatGPT desktop app
+→ Codex executes locally on repo
+→ Manual completion is reported to MRAPI DEV
+→ EXECUTION_RUN recorded
+→ RESULT / EVIDENCE
+→ Worker IDLE
 ```
 
-Permanent separation:
+There is **no fake Codex CLI integration**.
 
-```text
-Worker != Brain != Executor != Host
-W01 = Software Engineer
-Brain = ChatGPT Web
-Executor = Codex
-Host = Shadow Windows 11
-```
+## Why hybrid
 
-Infrastructure:
-- GCP project: `ia-sentire-customs-broker`
-- Cloud Run service: `mrapi-dev-orchestrator`
-- Firestore: `mrapi-dev`
-- Evidence bucket: `mrapi-dev-evidence`
+On Shadow, Codex is available inside the ChatGPT desktop app, not as a local CLI command.
+Therefore the Runner automates the Brain phase and creates a structured handoff for Codex.
 
-Shadow gets no GCP credentials. It only calls protected MRAPI DEV HTTPS endpoints.
+## Security
 
-## v0.3
-
-v0.2 proved transport. v0.3 inserts the required Brain phase before Codex execution.
-
-The Runner uses a dedicated Chrome profile and a dedicated W01 ChatGPT Web chat. One worker = one chat.
-
-If Codex command-line execution is not available, Task becomes WAITING after the Brain completes; no fake success is recorded.
+Shadow has no GCP credentials.
+Codex has no GCP credentials.
+Cloud Run deploy remains human/manual.
 
 ## Cloud Run
 
-Keep the same variables as v0.2. No new Cloud Run variable is required.
+Same variables as v0.3:
 
-## Tests
+- `GOOGLE_CLOUD_PROJECT=ia-sentire-customs-broker`
+- `FIRESTORE_DATABASE=mrapi-dev`
+- `EVIDENCE_BUCKET=mrapi-dev-evidence`
+- `DEFAULT_TENANT_ID=tenant_facundo_group`
+- `BOOTSTRAP_ON_START=true`
+- `NODE_ENV=production`
+- `RUNNER_SHARED_SECRET=<secret>`
 
-```bash
-npm install
-npm test
-npm run test:syntax
+Do not set `PORT`.
+
+## Runner
+
+Install:
+
+```powershell
+cd C:\Users\Shadow\Documents\GitHub\mrapi-dev-orchestrator\runner
+npm.cmd install
 ```
 
-## Shadow
+Configure W01 chat URL and start:
 
-See `runner/README.md`.
+```powershell
+npm.cmd start
+```
 
-## Deploy rule
+When a W01 task is dispatched, the Runner opens the dedicated W01 ChatGPT Web chat, runs the Brain phase and then leaves the task in `WAITING_FOR_CODEX`.
 
-Cloud Run deployment is human/manual. Codex must not receive GCP credentials or deploy access.
+## Next milestone
+
+Add a small Control Room action to copy the Brain handoff and report Codex completion from the UI.
