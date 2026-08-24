@@ -1,15 +1,11 @@
-MRAPI DEV v0.3.4-alpha.2 — WINDOWS CODEX CMD FIX
+MRAPI DEV v0.3.4-alpha.4 — TEST FIX
 
 OBJECTIVE
-Fix Shadow automatic Codex execution on Windows.
+Align the stale Windows Codex command test with the current runtime.
 
-CAUSE
-`where codex` succeeds because the global npm install exposes codex.ps1,
-but spawning bare `codex` from Node fails with ENOENT / PowerShell policy issues.
-Shadow already verified `codex.cmd --version` works.
-
-IMPLEMENTATION
-Prefer `codex.cmd` first on Windows, then fall back to bare `codex`.
+CHANGE
+Only test/codex-windows-command.test.js changes.
+No runtime code changes.
 
 TESTS
 node --test test/codex-windows-command.test.js
@@ -18,6 +14,5 @@ node --test
 SUCCESS
 All tests pass.
 
-STOP
-Do not deploy.
-No Cloud Run changes.
+DEPLOY
+DO NOT DEPLOY.

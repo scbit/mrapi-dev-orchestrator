@@ -6,17 +6,29 @@ function commandExists(command) {
 }
 
 function resolveCommand(cfg) {
-  if (cfg.codexCommand) return { shell: true, command: cfg.codexCommand, args: [] };
+  if (cfg.codexCommand) {
+    return {
+      shell: true,
+      command: cfg.codexCommand,
+      args: []
+    };
+  }
 
-  // On Windows, prefer codex.cmd. `where codex` can resolve codex.ps1 first,
-  // but PowerShell execution policy may block it and child_process cannot spawn
-  // the bare `codex` shim reliably.
   if (process.platform === 'win32' && commandExists('codex.cmd')) {
-    return { shell: false, command: 'codex.cmd', args: ['exec', '-'] };
+    // npm global .cmd shims are most reliable via cmd.exe on Windows.
+    return {
+      shell: false,
+      command: 'cmd.exe',
+      args: ['/d', '/s', '/c', 'codex.cmd', 'exec', '-']
+    };
   }
 
   if (commandExists('codex')) {
-    return { shell: false, command: 'codex', args: ['exec', '-'] };
+    return {
+      shell: false,
+      command: 'codex',
+      args: ['exec', '-']
+    };
   }
 
   return null;
@@ -46,17 +58,32 @@ async function runCodexCommand({ cfg, prompt, onOutput, onProgress }) {
     }, cfg.codexTimeoutMs);
 
     child.stdout?.on('data', (chunk) => {
-      const text = chunk.toString(); stdout += text; if (onOutput) onOutput(text, 'stdout');
+      const text = chunk.toString();
+      stdout += text;
+      if (onOutput) onOutput(text, 'stdout');
     });
+
     child.stderr?.on('data', (chunk) => {
-      const text = chunk.toString(); stderr += text; if (onOutput) onOutput(text, 'stderr');
+      const text = chunk.toString();
+      stderr += text;
+      if (onOutput) onOutput(text, 'stderr');
     });
-    child.on('error', (error) => { clearTimeout(timer); reject(error); });
+
+    child.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+
     child.on('close', async (code) => {
       clearTimeout(timer);
       if (timedOut) return reject(new Error('CODEX_TIMEOUT'));
       if (onProgress) await onProgress(95, `Codex exited with code ${code}`);
-      resolve({ success: code === 0, exitCode: code, stdout, stderr });
+      resolve({
+        success: code === 0,
+        exitCode: code,
+        stdout,
+        stderr
+      });
     });
 
     child.stdin?.write(prompt);
