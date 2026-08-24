@@ -1,5 +1,8 @@
 const { cfg } = require('./lib/config');
 const { createApi } = require('./lib/api');
+const {
+  prepareCodexDesktopHandoff
+} = require('./adapters/codex-desktop-handoff');
 
 if (!cfg.baseUrl) throw new Error('MRAPI_BASE_URL is required.');
 if (!cfg.secret) throw new Error('MRAPI_RUNNER_SECRET is required.');
@@ -19,10 +22,11 @@ async function register() {
     executor_type: 'CODEX_APP_MANUAL',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.3.1-alpha.5',
+    runner_version: 'v0.3.3-alpha.0',
     capabilities: [
       'EXECUTION_RUN:CODEX_APP_MANUAL',
-      'CODEX_HANDOFF:MANUAL_APP',
+      'CODEX_HANDOFF:AUTO_CLIPBOARD',
+      'CODEX_HANDOFF:FILE',
       'LOG',
       'FILE',
       'SCREENSHOT',
@@ -48,17 +52,6 @@ async function progress(runId, percent, message) {
   });
 }
 
-async function addTextEvidence(runId, type, title, filename, text) {
-  const content = Buffer.from(String(text || ''), 'utf8').toString('base64');
-  return request(`/api/runner/runs/${encodeURIComponent(runId)}/evidence`, {
-    type,
-    title,
-    filename,
-    content_type: 'text/plain; charset=utf-8',
-    content_base64: content
-  });
-}
-
 async function markWaiting(taskId, message, handoff = null) {
   return request(`/api/runner/tasks/${encodeURIComponent(taskId)}/waiting`, {
     message,
@@ -72,13 +65,21 @@ async function executeClaim(claim) {
 
   try {
     console.log('[SHADOW] EXECUTION', task.id, executionRun.id);
-    await progress(executionRun.id, 10, 'Codex manual execution handoff prepared');
+    await progress(executionRun.id, 10, 'Preparing Codex desktop handoff');
 
-    const instructions = task.brain_output?.task_spec?.instructions ||
+    const prepared = prepareCodexDesktopHandoff({
+      task,
+      executionRun,
+      cfg
+    });
+
+    const instructions =
+      task.brain_output?.task_spec?.instructions ||
       task.brain_output?.task_spec?.objective ||
       task.brain_output?.objective ||
       task.objective ||
       '';
+
     const handoff = {
       type: 'CODEX_APP_MANUAL',
       worker_id: task.worker_id,
@@ -86,18 +87,26 @@ async function executeClaim(claim) {
       brain_run_id: task.brain_run_id || executionRun.brain_run_id || null,
       execution_run_id: executionRun.id,
       instructions,
-      operator_action:
-        'Open Codex inside the ChatGPT desktop app on Shadow, select the local repository, and paste the Brain output instructions. Do not deploy.'
+      handoff_file: prepared.handoffPath,
+      clipboard_ready: prepared.clipboard.copied,
+      app_launch_attempted: prepared.app.launched,
+      operator_action: prepared.app.launched
+        ? 'Codex handoff is in the Windows clipboard. Paste and send it in the opened ChatGPT/Codex app.'
+        : 'Codex handoff is in the Windows clipboard. Open Codex in the ChatGPT desktop app, paste, and send.'
     };
+
+    await progress(executionRun.id, 25, 'Codex handoff ready in clipboard');
 
     await markWaiting(
       task.id,
-      'Execution task claimed. Waiting for manual Codex execution in the ChatGPT desktop app on Shadow.',
+      'Execution task claimed. Full Brain instructions prepared for Codex desktop.',
       handoff
     );
 
     console.log('[SHADOW] WAITING_FOR_CODEX', task.id);
-    console.log('[SHADOW] Brain output is stored on the task handoff.');
+    console.log('[SHADOW] Codex handoff file', prepared.handoffPath);
+    console.log('[SHADOW] Codex prompt copied to clipboard', prepared.clipboard.copied);
+    console.log('[SHADOW] Codex app launch attempted', prepared.app.launched);
   } catch (error) {
     console.error('[SHADOW TASK ERROR]', error.message);
     try {
@@ -130,11 +139,15 @@ async function loop() {
   if (recovery?.recovered?.length) {
     console.log('[SHADOW] recovered abandoned Brain Runs', recovery.recovered.length);
   }
+
   console.log('[SHADOW] repo', cfg.repoPath);
-  console.log('[SHADOW] Codex mode: manual execution handoff');
+  console.log('[SHADOW] Codex mode: desktop handoff');
+  console.log('[SHADOW] clipboard automation', cfg.codexAutoClipboard);
 
   const heartbeatTimer = setInterval(() => {
-    heartbeat().catch((error) => console.error('[SHADOW HEARTBEAT ERROR]', error.message));
+    heartbeat().catch((error) =>
+      console.error('[SHADOW HEARTBEAT ERROR]', error.message)
+    );
   }, 30000);
 
   try {
@@ -146,7 +159,12 @@ async function loop() {
       });
 
       if (claim) {
-        console.log('[SHADOW] claimed', claim.task.id, claim.run.id, claim.run.run_type);
+        console.log(
+          '[SHADOW] claimed',
+          claim.task.id,
+          claim.run.id,
+          claim.run.run_type
+        );
         await executeClaim(claim);
       } else {
         await new Promise((resolve) => setTimeout(resolve, cfg.pollMs));

@@ -1,16 +1,17 @@
-OVERLAY v0.3.2-alpha.3
+OVERLAY v0.3.3-alpha.0
 
-Fix:
-- Do not detect a new ChatGPT response by assistant-message count.
-- Detect actual change in the latest assistant text.
-- Consider response complete after 4 seconds of text stability.
-- Add visible Brain Web debug logs.
+Copy this overlay over the CURRENT repository.
 
-Steps:
-1. Stop Brain Adapter (Ctrl+C, then S).
-2. Overlay this ZIP on the current repository.
-3. Run:
-   node --test test/brain-adapter-response-detection.test.js
-   node --test
-4. Commit + push only if tests pass.
-5. HUMAN MANUAL DEPLOY.
+Then ask Codex to run:
+
+node --test test/codex-desktop-handoff.test.js
+node --test
+
+Do not deploy from Codex.
+
+Expected:
+- full Brain output is passed into the generated Codex prompt;
+- prompt is written to a local file;
+- prompt is copied to Windows clipboard;
+- no hardcoded ChatGPT desktop app path;
+- existing tests remain passing.

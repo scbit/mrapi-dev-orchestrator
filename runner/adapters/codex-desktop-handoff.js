@@ -1,0 +1,128 @@
+const fs = require('fs');
+const path = require('path');
+const { spawn, spawnSync } = require('child_process');
+
+function sanitizeId(value) {
+  return String(value || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function buildCodexPrompt({ task, executionRun, cfg }) {
+  const brainInstructions =
+    task.brain_output?.task_spec?.instructions ||
+    task.brain_output?.task_spec?.objective ||
+    task.brain_output?.objective ||
+    task.objective ||
+    '';
+
+  return `MRAPI DEV ORCHESTRATOR — CODEX EXECUTION HANDOFF
+
+TASK ID
+${task.id}
+
+EXECUTION RUN ID
+${executionRun.id}
+
+BRAIN RUN ID
+${task.brain_run_id || executionRun.brain_run_id || ''}
+
+LOCAL REPOSITORY
+${cfg.repoPath}
+
+BRAIN INSTRUCTIONS
+${brainInstructions}
+
+EXECUTION RULES
+- You are the Executor, not the Brain.
+- Work only in the local repository shown above.
+- Follow the Brain instructions exactly.
+- Preserve multi-tenancy and existing functionality.
+- Run the requested tests.
+- Do not access GCP or Cloud Run.
+- Do not deploy.
+- Do not push unless explicitly instructed by the human.
+- Stop if the Brain stop conditions are met.
+
+RETURN
+- changed files
+- tests run + results
+- success/failure
+- concise summary
+- HUMAN MANUAL DEPLOY if deployment is required
+`;
+}
+
+function copyToWindowsClipboard(text) {
+  const ps = spawnSync(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      '$input | Out-String | Set-Clipboard'
+    ],
+    {
+      input: text,
+      encoding: 'utf8',
+      windowsHide: true,
+      timeout: 15000
+    }
+  );
+
+  if (ps.error) throw ps.error;
+  if (ps.status !== 0) {
+    throw new Error(`CLIPBOARD_FAILED: ${ps.stderr || `exit ${ps.status}`}`);
+  }
+}
+
+function launchConfiguredCodexApp(command) {
+  if (!command) return { launched: false, reason: 'MRAPI_CODEX_APP_COMMAND_NOT_SET' };
+
+  // The command is explicitly provided by the operator. We do not guess an
+  // installed-app identifier or hardcode ChatGPT/Codex paths.
+  const child = spawn(
+    'powershell.exe',
+    ['-NoProfile', '-Command', command],
+    {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false
+    }
+  );
+  child.unref();
+  return { launched: true };
+}
+
+function prepareCodexDesktopHandoff({ task, executionRun, cfg }) {
+  const prompt = buildCodexPrompt({ task, executionRun, cfg });
+
+  fs.mkdirSync(cfg.codexHandoffDir, { recursive: true });
+
+  const filename = [
+    new Date().toISOString().replace(/[:.]/g, '-'),
+    sanitizeId(task.id),
+    sanitizeId(executionRun.id)
+  ].join('_') + '.txt';
+
+  const handoffPath = path.join(cfg.codexHandoffDir, filename);
+  fs.writeFileSync(handoffPath, prompt, 'utf8');
+
+  let clipboard = { copied: false };
+  if (cfg.codexAutoClipboard) {
+    copyToWindowsClipboard(prompt);
+    clipboard = { copied: true };
+  }
+
+  const app = launchConfiguredCodexApp(cfg.codexAppCommand);
+
+  return {
+    prompt,
+    handoffPath,
+    clipboard,
+    app
+  };
+}
+
+module.exports = {
+  buildCodexPrompt,
+  prepareCodexDesktopHandoff
+};
