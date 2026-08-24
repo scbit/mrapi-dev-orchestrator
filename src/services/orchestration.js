@@ -1042,6 +1042,68 @@ function normalizeExecutionType(value, requiresExecution = true) {
   };
 }
 
+function executionTextForPermissionCheck(plan) {
+  return [
+    plan?.execution_spec?.instructions,
+    ...(Array.isArray(plan?.planned_actions) ? plan.planned_actions.map((item) => `${item?.title || ''} ${item?.description || ''}`) : []),
+    ...(Array.isArray(plan?.expected_deliverables) ? plan.expected_deliverables : [])
+  ].filter(Boolean).join('\n');
+}
+
+function stripNegatedPermissionLines(text) {
+  return String(text || '')
+    .split(/\r?\n|[.;]+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/(?:\bno\b|\bnot\b|do not|don't|without|forbidden|never|prohibited|must not|should not|no publicar|no desplegar|sin publicar|sin deploy)/i.test(line))
+    .join('\n');
+}
+
+function requiredPermissionBlocker(plan) {
+  const permissions = Array.isArray(plan?.permissions_required) ? plan.permissions_required : [];
+  if (!permissions.length) return null;
+
+  const positiveExecutionText = stripNegatedPermissionLines(executionTextForPermissionCheck(plan));
+  const checks = [
+    {
+      permission: 'allow_deploy',
+      permissionPattern: /(?:allow_deploy|deploy|deployment|desplegar)/i,
+      actionPattern: /(?:\bdeploy\b|\bdeployment\b|\bdesplegar\b)/i
+    },
+    {
+      permission: 'allow_publish',
+      permissionPattern: /(?:allow_publish|publish|publishing|publicar)/i,
+      actionPattern: /(?:\bpublish(?:ing)?\b|\bpublicar\b)/i
+    },
+    {
+      permission: 'allow_modify_production_data',
+      permissionPattern: /(?:allow_modify_production_data|production destructive|modify production|datos? de producci[oó]n)/i,
+      actionPattern: /(?:production destructive|modify production|delete production|datos? de producci[oó]n)/i
+    }
+  ];
+
+  for (const check of checks) {
+    const permissionLines = permissions
+      .map((item) => String(item || '').trim())
+      .filter((item) => check.permissionPattern.test(item));
+    if (!permissionLines.length) continue;
+
+    // A prohibition such as "Do not publish" is a stop condition, not a request
+    // for permission. Only block when the approved execution actually intends to
+    // perform the privileged action.
+    if (!check.actionPattern.test(positiveExecutionText)) continue;
+
+    return {
+      code: 'PERMISSION_REQUIRED',
+      message: `Execution requires explicit permission: ${check.permission}.`,
+      stage: 'APPROVAL',
+      permission: check.permission
+    };
+  }
+
+  return null;
+}
+
 function validateExecutionPlan(plan) {
   if (plan.requires_execution === false) return null;
   const executionType = normalizeExecutionType(plan.execution_type, true);
@@ -1874,17 +1936,16 @@ async function approveMissionPlan(db, tenantId, missionId, input = {}) {
       updated_at: timestamp()
     }, { merge: true });
 
-    if (plan.permissions_required?.some((item) => /deploy|publish|production destructive/i.test(String(item)))) {
-      blockMissionForApproval(tx, missionRef, plan, input, {
-        code: 'PERMISSION_REQUIRED',
-        message: 'Plan requires an explicit human permission before execution.',
-        stage: 'APPROVAL'
-      });
+    const permissionBlocker = requiredPermissionBlocker(plan);
+    if (permissionBlocker) {
+      blockMissionForApproval(tx, missionRef, plan, input, permissionBlocker);
       result = {
         success: false,
         blocked: true,
-        error: 'PERMISSION_REQUIRED',
-        blocker_code: 'PERMISSION_REQUIRED',
+        error: permissionBlocker.code,
+        blocker_code: permissionBlocker.code,
+        blocker_message: permissionBlocker.message,
+        required_permission: permissionBlocker.permission || null,
         mission_id: missionId,
         plan_revision_id: plan.id
       };

@@ -65,7 +65,9 @@ Planning rules:
 - contract must be MISSION_PLAN_V1.
 - Prefer one approved execution task for the Mission.
 - Brain plans; Executor executes only after user approval.
-- Include real permissions needed before execution.
+- permissions_required must contain ONLY permissions that need an affirmative human grant for an action the plan actually intends to perform.
+- Prohibitions such as "do not publish", "no deploy", or allow_publish=false belong in execution_spec.stop_conditions, NOT permissions_required.
+- If the Mission explicitly says not to publish/deploy, permissions_required must not request that permission.
 - If no Executor is required, set requires_execution false and execution_type BRAIN_ONLY.
 
 Return the MRAPI control block first. The control block must contain ONLY JSON:

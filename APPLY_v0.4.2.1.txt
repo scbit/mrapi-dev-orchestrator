@@ -1,0 +1,35 @@
+MRAPI DEV ORCHESTRATOR v0.4.2.1 — DIRECT FIX
+
+WHAT THIS FIXES
+- REQUEST CHANGES plans that say "do not publish / no deploy" no longer BLOCK just because those words appear in permissions_required.
+- Approval now blocks privileged actions only when the approved execution actually intends to publish/deploy/modify production and an affirmative permission is required.
+- Brain planning prompt now keeps prohibitions in stop_conditions instead of permissions_required.
+- Preserves v0.4.2.0 immutable execution snapshot / stale-payload protections.
+
+HOW TO APPLY
+1. Stop W01 Brain and Runner on Shadow.
+2. Back up the current mrapi-dev-orchestrator folder.
+3. Extract this ZIP over:
+   C:\Users\Shadow\Documents\GitHub\mrapi-dev-orchestrator
+   Choose Replace files when Windows asks.
+4. Commit + push with message:
+   v0.4.2.1 Fix Request Changes Permission Blocking
+5. Deploy Cloud Run manually.
+6. Restart W01 Brain and Runner.
+
+IMPORTANT
+- Do not delete brain-adapter/chrome-profiles on Shadow. They are runtime login data and are not included in this ZIP.
+- No new npm dependency was added.
+
+VALIDATION
+Create W01 Mission: "Crear un PDF que diga OK. No publicar."
+REQUEST CHANGES: "Cambiar el texto a OK MODIFICADO."
+APPROVE & EXECUTE.
+Expected: Mission runs, Runner claims it, PDF Evidence says OK MODIFICADO, and no false PERMISSION_REQUIRED block occurs.
+
+LOCAL VALIDATION PERFORMED HERE
+- node --check src/services/orchestration.js: PASS
+- node --check brain-adapter/lib/prompts.js: PASS
+- node --check test/planning-approval-v0410.test.js: PASS
+- Added 3 regression tests.
+- Full npm test could not be executed in this sandbox because dependency installation was unavailable/timed out; no dependency changes were introduced.

@@ -649,3 +649,52 @@ test('v0.4.1.0 planning approval is common to W01-W05', async () => {
     assert.equal(values(db, 'tasks')[0].worker_id, workerId);
   }
 });
+
+test('v0.4.2.1 prohibition text in permissions_required does not block artifact execution', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W01', 'mission_no_publish_pdf', planOutput({
+    objective: 'Crear un PDF que diga OK MODIFICADO',
+    instructions: 'Crear un PDF que diga OK MODIFICADO. No publicar. Guardar como Evidence.',
+    permissions_required: ['Do not publish unless allow_publish=true.']
+  }));
+  db.set('projects', 'project_1', {
+    id: 'project_1',
+    tenant_id: 'tenant_a',
+    workspace_id: 'workspace_1',
+    primary_worker_ids: ['W01']
+  });
+
+  const approval = await approveMissionPlan(db, 'tenant_a', 'mission_no_publish_pdf', {});
+  const mission = db.get('missions', 'mission_no_publish_pdf');
+
+  assert.equal(approval.success, true);
+  assert.equal(approval.blocked, undefined);
+  assert.equal(mission.state, 'RUNNING');
+  assert.equal(values(db, 'tasks').length, 1);
+  assert.match(values(db, 'tasks')[0].execution_snapshot.execution_spec.instructions, /OK MODIFICADO/);
+});
+
+test('v0.4.2.1 real publish action still requires explicit allow_publish permission', async () => {
+  const db = new FakeDb();
+  await readyPlan(db, 'W04', 'mission_real_publish', planOutput({
+    objective: 'Publicar la campaña aprobada',
+    instructions: 'Publish the approved campaign to Meta Ads.',
+    permissions_required: ['allow_publish']
+  }));
+
+  const approval = await approveMissionPlan(db, 'tenant_a', 'mission_real_publish', {});
+  const mission = db.get('missions', 'mission_real_publish');
+
+  assert.equal(approval.blocked, true);
+  assert.equal(approval.blocker_code, 'PERMISSION_REQUIRED');
+  assert.equal(approval.required_permission, 'allow_publish');
+  assert.equal(mission.state, 'BLOCKED');
+  assert.equal(values(db, 'tasks').length, 0);
+});
+
+test('v0.4.2.1 planning prompt keeps prohibitions out of permissions_required', () => {
+  const promptSource = read('brain-adapter/lib/prompts.js');
+  assert.match(promptSource, /permissions_required must contain ONLY permissions that need an affirmative human grant/i);
+  assert.match(promptSource, /Prohibitions such as/);
+  assert.match(promptSource, /NOT permissions_required/);
+});
