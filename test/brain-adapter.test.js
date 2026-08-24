@@ -28,3 +28,13 @@ test('brain route claims only BRAIN_RUN records', () => {
   assert.match(source, /run\.state === 'RUNNING'/);
   assert.match(source, /completeBrainRun/);
 });
+
+
+test('brain route enriches legacy Brain Run objective from Mission', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'routes', 'brain.routes.js'),
+    'utf8'
+  );
+  assert.match(source, /mission\\.objective/);
+  assert.match(source, /Brain Run missing mission objective; released/);
+});

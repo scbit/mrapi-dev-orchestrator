@@ -38,3 +38,7 @@ npm.cmd install
 - No GCP credentials are stored on Shadow.
 - No automatic Cloud Run deploy.
 - One worker still maps to one dedicated ChatGPT chat.
+
+## v0.3.2-alpha.1
+
+Compatibility fix: when a legacy/recovered BRAIN_RUN has no `objective`, the Brain API enriches it from the linked Mission before sending it to ChatGPT Web. If no objective can be resolved, the run is released instead of sending an empty mission.

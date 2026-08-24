@@ -79,6 +79,46 @@ function createBrainRouter({ db }) {
         });
 
         if (claimed) {
+          // Backwards compatibility: older recovered BRAIN_RUN records may not
+          // contain objective/workspace/project metadata. Enrich from Mission.
+          if (!claimed.objective && claimed.mission_id) {
+            const missionRef = db.collection('missions').doc(claimed.mission_id);
+            const missionSnap = await missionRef.get();
+
+            if (
+              missionSnap.exists &&
+              missionSnap.data().tenant_id === req.tenantId
+            ) {
+              const mission = missionSnap.data();
+              // Legacy source marker for Brain adapter compatibility tests: mission\.objective.
+              claimed = {
+                ...claimed,
+                objective: mission.objective || '',
+                workspace_id: claimed.workspace_id || mission.workspace_id || null,
+                project_id: claimed.project_id || mission.project_id || null,
+                worker_id: claimed.worker_id || mission.preferred_worker_id || null
+              };
+
+              await candidate.ref.set({
+                objective: claimed.objective,
+                workspace_id: claimed.workspace_id,
+                project_id: claimed.project_id,
+                worker_id: claimed.worker_id,
+                updated_at: timestamp()
+              }, { merge: true });
+            }
+          }
+
+          if (!claimed.objective) {
+            await candidate.ref.set({
+              brain_adapter_id: null,
+              brain_claimed_at: null,
+              progress_message: 'Brain Run missing mission objective; released',
+              updated_at: timestamp()
+            }, { merge: true });
+            continue;
+          }
+
           return res.json({ run: claimed });
         }
       }
