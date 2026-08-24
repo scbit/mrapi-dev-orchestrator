@@ -70,6 +70,12 @@ ${JSON.stringify(handoff?.execution_constraints || {
 EXECUTION RULES
 ${executionRules}
 
+ARTIFACT CONTRACT
+- Source code changes stay in the normal repository paths.
+- Final user-facing PDF/XLSX/CSV/image/ZIP/dataset deliverables go to .mrapi-artifacts/${sanitizeId(handoff?.task_id || task.id)}/.
+- Artifact files must be 10 MB or smaller.
+- Do not store generated deliverables directly in Firestore.
+
 RETURN
 - changed files
 - tests run + results

@@ -1,14 +1,18 @@
+const fs = require('fs');
+const path = require('path');
 const { cfg } = require('./lib/config');
 const { createApi } = require('./lib/api');
 const { buildCodexPrompt } = require('./adapters/codex-desktop-handoff');
 const { runCodexCommand } = require('./adapters/codex-command');
 
-if (!cfg.baseUrl) throw new Error('MRAPI_BASE_URL is required.');
-if (!cfg.secret) throw new Error('MRAPI_RUNNER_SECRET is required.');
+if (require.main === module && !cfg.baseUrl) throw new Error('MRAPI_BASE_URL is required.');
+if (require.main === module && !cfg.secret) throw new Error('MRAPI_RUNNER_SECRET is required.');
 
 const api = createApi(cfg);
 let currentRunId = null;
 let stopping = false;
+const MAX_ARTIFACT_FILES = 20;
+const MAX_ARTIFACT_BYTES = 10 * 1024 * 1024;
 
 async function request(path, body) {
   return api.request(path, body);
@@ -21,11 +25,12 @@ async function register() {
     executor_type: 'CODEX_CLI_AUTO',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.3.4-alpha.0',
+    runner_version: 'v0.3.7-alpha.0',
     capabilities: [
       'EXECUTION_RUN:CODEX_CLI_AUTO',
       'CODEX_HANDOFF:VALIDATED',
       'CODEX_EXEC:AUTO',
+      'ARTIFACT_UPLOAD:AUTO',
       'RESULT:AUTO',
       'LOG',
       'FILE',
@@ -34,6 +39,81 @@ async function register() {
     ],
     worker_ids: cfg.workerIds
   });
+}
+
+function sanitizeTaskId(value) {
+  return String(value || 'unknown').replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function artifactDirForTask(taskId) {
+  return path.join(cfg.repoPath, '.mrapi-artifacts', sanitizeTaskId(taskId));
+}
+
+function contentTypeForFile(filename) {
+  const ext = path.extname(filename).toLowerCase();
+  const types = {
+    '.csv': 'text/csv',
+    '.gif': 'image/gif',
+    '.jpeg': 'image/jpeg',
+    '.jpg': 'image/jpeg',
+    '.json': 'application/json',
+    '.pdf': 'application/pdf',
+    '.png': 'image/png',
+    '.svg': 'image/svg+xml',
+    '.tsv': 'text/tab-separated-values',
+    '.txt': 'text/plain; charset=utf-8',
+    '.webp': 'image/webp',
+    '.xls': 'application/vnd.ms-excel',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.zip': 'application/zip'
+  };
+  return types[ext] || 'application/octet-stream';
+}
+
+function listArtifactFiles(dir) {
+  if (!fs.existsSync(dir)) return [];
+  const files = [];
+
+  function walk(current) {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const entryPath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryPath);
+      } else if (entry.isFile()) {
+        files.push(entryPath);
+      }
+    }
+  }
+
+  walk(dir);
+  return files.sort();
+}
+
+async function uploadTaskArtifacts(runId, taskId) {
+  const dir = artifactDirForTask(taskId);
+  const files = listArtifactFiles(dir);
+  if (!files.length) return { uploaded: 0, dir, present: false };
+
+  const selected = files.slice(0, MAX_ARTIFACT_FILES);
+  for (const filePath of selected) {
+    const stat = fs.statSync(filePath);
+    if (stat.size > MAX_ARTIFACT_BYTES) {
+      throw new Error(`ARTIFACT_TOO_LARGE: ${path.relative(dir, filePath)}`);
+    }
+
+    const filename = path.basename(filePath);
+    await request(`/api/runner/runs/${encodeURIComponent(runId)}/evidence`, {
+      type: 'FILE',
+      title: filename,
+      description: `Codex artifact for task ${taskId}`,
+      filename,
+      content_type: contentTypeForFile(filename),
+      content_base64: fs.readFileSync(filePath).toString('base64')
+    });
+  }
+
+  fs.rmSync(dir, { recursive: true, force: true });
+  return { uploaded: selected.length, dir, present: true };
 }
 
 async function heartbeat() {
@@ -139,6 +219,11 @@ async function executeClaim(claim) {
       console.error('[SHADOW EVIDENCE ERROR]', evidenceError.message);
     }
 
+    const artifacts = await uploadTaskArtifacts(executionRun.id, task.id);
+    if (artifacts.uploaded) {
+      console.log('[SHADOW ARTIFACTS UPLOADED]', task.id, artifacts.uploaded);
+    }
+
     const completion = await completeExecution(executionRun.id, result);
 
     console.log(
@@ -225,7 +310,16 @@ async function loop() {
 process.on('SIGINT', () => { stopping = true; });
 process.on('SIGTERM', () => { stopping = true; });
 
-loop().catch((error) => {
-  console.error('[SHADOW FATAL]', error);
-  process.exit(1);
-});
+if (require.main === module) {
+  loop().catch((error) => {
+    console.error('[SHADOW FATAL]', error);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  artifactDirForTask,
+  contentTypeForFile,
+  listArtifactFiles,
+  uploadTaskArtifacts
+};

@@ -7,6 +7,7 @@
   <title>MRAPI DEV ORCHESTRATOR</title>
   <link rel="stylesheet" href="/styles.css">
   <link rel="stylesheet" href="/progress.css">
+  <link rel="stylesheet" href="/artifact-ui.css">
 </head>
 <body>
   <div class="app-shell">
@@ -27,7 +28,7 @@
         <button class="nav-item" data-view="connections">Connections</button>
         <button class="nav-item" data-view="settings">Settings</button>
       </nav>
-      <div class="sidebar-footer"><span class="version">v0.3.6-alpha.0</span></div>
+      <div class="sidebar-footer"><span class="version">v0.3.7-alpha.0</span></div>
     </aside>
 
     <main class="main">
@@ -80,7 +81,10 @@
       <section class="view placeholder-view" id="view-inbox"></section>
       <section class="view placeholder-view" id="view-workspaces"></section>
       <section class="view placeholder-view" id="view-projects"></section>
-      <section class="view placeholder-view" id="view-evidence"></section>
+      <section class="view" id="view-evidence">
+        <div class="section-heading"><div><span class="eyebrow">EVIDENCE</span><h2>Evidence</h2><p>Files and audit records persisted from execution runs.</p></div></div>
+        <div id="evidenceList" class="report-list"></div>
+      </section>
       <section class="view placeholder-view" id="view-notifications"></section>
       <section class="view placeholder-view" id="view-executors"></section>
       <section class="view placeholder-view" id="view-connections"></section>
@@ -113,5 +117,6 @@
 
   <div class="toast" id="toast" hidden></div>
   <script src="/app.js"></script>
+  <script src="/artifact-ui.js"></script>
 </body>
 </html>

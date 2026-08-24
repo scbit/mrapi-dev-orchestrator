@@ -13,6 +13,7 @@ const { createExecutorsRouter } = require('./routes/executors.routes');
 const { createRunsRouter } = require('./routes/runs.routes');
 const { createBrainRouter } = require('./routes/brain.routes');
 const { createResultsRouter } = require('./routes/results.routes');
+const { createEvidenceRouter } = require('./routes/evidence.routes');
 
 function createApp(options = {}) {
   const app = express();
@@ -32,6 +33,7 @@ function createApp(options = {}) {
   app.use('/api/executors', createExecutorsRouter({ repos }));
   app.use('/api/runs', createRunsRouter({ repos }));
   app.use('/api/results', createResultsRouter({ repos }));
+  app.use('/api/evidence', createEvidenceRouter({ repos }));
   app.use('/api/runner', createRunnerRouter({ db }));
   app.use('/api/brain', createBrainRouter({ db }));
 
