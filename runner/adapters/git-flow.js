@@ -19,17 +19,45 @@ function run(command, args, options = {}) {
   };
 }
 
-function resolveGitCommand() {
-  const probes = process.platform === 'win32'
-    ? [
-        ['git.exe'],
-        ['C:\\Program Files\\Git\\cmd\\git.exe'],
-        ['C:\\Program Files\\Git\\bin\\git.exe']
-      ]
-    : [['git']];
+function githubDesktopGitCandidates(env = process.env) {
+  const localAppData = env.LOCALAPPDATA;
+  if (!localAppData) return [];
 
-  for (const [command] of probes) {
-    const check = run(command, ['--version']);
+  const root = path.join(localAppData, 'GitHubDesktop');
+  if (!fs.existsSync(root)) return [];
+
+  let appDirs = [];
+  try {
+    appDirs = fs.readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && /^app-/i.test(entry.name))
+      .map((entry) => entry.name)
+      .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+  } catch {
+    return [];
+  }
+
+  const candidates = [];
+  for (const appDir of appDirs) {
+    candidates.push(
+      path.join(root, appDir, 'resources', 'app', 'git', 'cmd', 'git.exe'),
+      path.join(root, appDir, 'resources', 'app', 'git', 'mingw64', 'bin', 'git.exe')
+    );
+  }
+  return candidates;
+}
+
+function resolveGitCommand(env = process.env) {
+  const candidates = process.platform === 'win32'
+    ? [
+        'git.exe',
+        'C:\\Program Files\\Git\\cmd\\git.exe',
+        'C:\\Program Files\\Git\\bin\\git.exe',
+        ...githubDesktopGitCandidates(env)
+      ]
+    : ['git'];
+
+  for (const command of candidates) {
+    const check = run(command, ['--version'], { env });
     if (check.ok) return command;
   }
 
@@ -211,6 +239,7 @@ function runGitFlow({ repoPath, gitPermissions, missionId, objective, gitCommand
 
 module.exports = {
   run,
+  githubDesktopGitCandidates,
   resolveGitCommand,
   verifyPreconditions,
   getStatus,
