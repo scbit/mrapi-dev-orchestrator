@@ -16,6 +16,10 @@ function timestamp() {
   return FieldValue.serverTimestamp();
 }
 
+function isMissionCancelled(mission) {
+  return mission?.state === 'CANCELLED' || mission?.cancellation_requested === true;
+}
+
 async function emitEvent(db, tenantId, type, payload = {}, severity = 'INFO') {
   const ref = db.collection('events').doc();
   await ref.set({
@@ -191,7 +195,8 @@ async function retryMission(db, tenantId, missionId) {
       attempt,
       started_at: timestamp(),
       created_at: timestamp(),
-      updated_at: timestamp()
+      updated_at: timestamp(),
+      created_mission: false
     };
 
     tx.set(runRef, brainRun);
@@ -227,6 +232,15 @@ async function cancelMission(db, tenantId, missionId, input = {}) {
   }
 
   const mission = missionSnap.data();
+  if (mission.state === 'CANCELLED') {
+    return {
+      ok: true,
+      mission_id: missionId,
+      state: 'CANCELLED',
+      created_mission: false
+    };
+  }
+
   if (!['READY', 'PLANNING', 'RUNNING', 'BLOCKED'].includes(mission.state)) {
     const error = new Error('MISSION_CANCEL_NOT_ALLOWED');
     error.status = 409;
@@ -292,7 +306,7 @@ async function cancelMission(db, tenantId, missionId, input = {}) {
     reason: input.reason || null
   }, 'WARNING');
 
-  return { ok: true, mission_id: missionId, state: 'CANCELLED' };
+  return { ok: true, mission_id: missionId, state: 'CANCELLED', created_mission: false };
 }
 
 async function registerExecutor(db, tenantId, input) {
@@ -740,10 +754,34 @@ async function completeBrainRun(db, tenantId, runId, input) {
       const error = new Error('BRAIN_RUN_NOT_ACTIVE'); error.status = 409; throw error;
     }
 
+    const missionRef = db.collection('missions').doc(run.mission_id);
+    const missionSnap = await tx.get(missionRef);
+    if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+      const error = new Error('MISSION_NOT_FOUND'); error.status = 404; throw error;
+    }
+
+    if (isMissionCancelled(missionSnap.data())) {
+      tx.update(runRef, {
+        state: 'FAILED',
+        progress_percent: Number(run.progress_percent || 0),
+        progress_message: 'Brain completion ignored because Mission is cancelled',
+        error: 'MISSION_CANCELLED',
+        completed_at: timestamp(),
+        updated_at: timestamp()
+      });
+      result = {
+        cancelled: true,
+        success: false,
+        mission_id: run.mission_id,
+        brain_run_id: runId,
+        error: 'MISSION_CANCELLED'
+      };
+      return;
+    }
+
     const taskRef = run.task_id
       ? db.collection('tasks').doc(run.task_id)
       : db.collection('tasks').doc();
-    const missionRef = db.collection('missions').doc(run.mission_id);
     const resultRef = db.collection('results').doc();
     const executorRef = run.executor_id ? db.collection('executors').doc(run.executor_id) : null;
     const outputText = String(input.output_text || '').slice(0, 100000);
@@ -847,6 +885,16 @@ async function startExecutionRun(db, tenantId, taskId, executorId) {
     const task = taskSnap.data();
     if (task.phase !== 'EXECUTION_PENDING') {
       const error = new Error('TASK_NOT_READY_FOR_EXECUTION'); error.status = 409; throw error;
+    }
+    const missionSnap = await tx.get(db.collection('missions').doc(task.mission_id));
+    if (
+      !missionSnap.exists ||
+      missionSnap.data().tenant_id !== tenantId ||
+      isMissionCancelled(missionSnap.data())
+    ) {
+      const error = new Error('MISSION_CANCELLED');
+      error.status = 409;
+      throw error;
     }
 
     tx.set(runRef, {
@@ -953,6 +1001,32 @@ async function completeRun(db, tenantId, runId, input) {
     if (run.run_type === 'BRAIN_RUN') {
       const success = input.success !== false;
       const missionRef = db.collection('missions').doc(run.mission_id);
+      const missionSnap = await tx.get(missionRef);
+      if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+        const error = new Error('MISSION_NOT_FOUND');
+        error.status = 404;
+        throw error;
+      }
+
+      if (isMissionCancelled(missionSnap.data())) {
+        tx.update(runRef, {
+          state: 'FAILED',
+          progress_percent: Number(run.progress_percent || 0),
+          progress_message: 'Run completion ignored because Mission is cancelled',
+          error: 'MISSION_CANCELLED',
+          completed_at: timestamp(),
+          updated_at: timestamp()
+        });
+
+        result = {
+          success: false,
+          cancelled: true,
+          mission_id: run.mission_id,
+          brain_run_id: runId,
+          error: 'MISSION_CANCELLED'
+        };
+        return;
+      }
 
       if (!success) {
         tx.update(runRef, {
@@ -1070,19 +1144,26 @@ async function completeRun(db, tenantId, runId, input) {
     const missionRef = db.collection('missions').doc(run.mission_id);
     const executorRef = db.collection('executors').doc(run.executor_id);
     const resultRef = db.collection('results').doc();
+    const missionSnap = await tx.get(missionRef);
+    if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+      const error = new Error('MISSION_NOT_FOUND');
+      error.status = 404;
+      throw error;
+    }
+    const missionCancelled = isMissionCancelled(missionSnap.data());
 
     tx.update(runRef, {
-      state: success ? 'COMPLETED' : 'FAILED',
+      state: missionCancelled ? 'FAILED' : (success ? 'COMPLETED' : 'FAILED'),
       progress_percent: success ? 100 : Number(run.progress_percent || 0),
-      progress_message: String(input.summary || (success ? 'Completed' : 'Failed')).slice(0, 2000),
-      error: success ? null : String(input.error || 'Execution failed').slice(0, 5000),
+      progress_message: String(missionCancelled ? 'Execution completion ignored because Mission is cancelled' : (input.summary || (success ? 'Completed' : 'Failed'))).slice(0, 2000),
+      error: missionCancelled ? 'MISSION_CANCELLED' : (success ? null : String(input.error || 'Execution failed').slice(0, 5000)),
       completed_at: timestamp(),
       updated_at: timestamp()
     });
 
     tx.set(taskRef, {
-      state: taskState,
-      phase: success ? 'COMPLETED' : 'FAILED',
+      state: missionCancelled ? 'SKIPPED' : taskState,
+      phase: missionCancelled ? 'CANCELLED' : (success ? 'COMPLETED' : 'FAILED'),
       current_run_id: runId,
       completed_at: timestamp(),
       updated_at: timestamp()
@@ -1095,11 +1176,13 @@ async function completeRun(db, tenantId, runId, input) {
       updated_at: timestamp()
     }, { merge: true });
 
-    tx.set(missionRef, {
-      state: missionState,
-      completed_at: timestamp(),
-      updated_at: timestamp()
-    }, { merge: true });
+    if (!missionCancelled) {
+      tx.set(missionRef, {
+        state: missionState,
+        completed_at: timestamp(),
+        updated_at: timestamp()
+      }, { merge: true });
+    }
 
     tx.set(executorRef, {
       state: 'ONLINE',
@@ -1119,15 +1202,16 @@ async function completeRun(db, tenantId, runId, input) {
       brain_run_id: run.brain_run_id || run.parent_run_id || null,
       worker_id: run.worker_id,
       executor_id: run.executor_id,
-      status: success ? 'SUCCESS' : 'FAILED',
+      status: missionCancelled ? 'FAILED' : (success ? 'SUCCESS' : 'FAILED'),
       result_type: 'EXECUTION_OUTPUT',
-      summary: String(input.summary || '').slice(0, 10000),
+      summary: String(missionCancelled ? 'Execution ignored because Mission is cancelled' : (input.summary || '')).slice(0, 10000),
       output: input.output || null,
       created_at: timestamp()
     });
 
     result = {
-      success,
+      success: missionCancelled ? false : success,
+      cancelled: missionCancelled || undefined,
       mission_id: run.mission_id,
       task_id: run.task_id,
       run_id: runId,
@@ -1161,6 +1245,11 @@ async function completeManualCodexHandoff(db, tenantId, taskId, input) {
     const resultRef = db.collection('results').doc();
     const missionRef = db.collection('missions').doc(task.mission_id);
     const workerRef = db.collection('workers').doc(task.worker_id);
+    const missionSnap = await tx.get(missionRef);
+    if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+      const error = new Error('MISSION_NOT_FOUND'); error.status = 404; throw error;
+    }
+    const missionCancelled = isMissionCancelled(missionSnap.data());
 
     tx.set(executionRunRef, {
       id: executionRunRef.id,
@@ -1176,10 +1265,10 @@ async function completeManualCodexHandoff(db, tenantId, taskId, input) {
       executor_mode: 'CODEX_APP_MANUAL',
       brain_run_id: task.brain_run_id || null,
       parent_run_id: task.brain_run_id || null,
-      state: success ? 'COMPLETED' : 'FAILED',
+      state: missionCancelled ? 'FAILED' : (success ? 'COMPLETED' : 'FAILED'),
       progress_percent: success ? 100 : 0,
-      progress_message: String(input.summary || '').slice(0, 2000),
-      error: success ? null : String(input.error || 'Manual Codex execution failed').slice(0, 5000),
+      progress_message: String(missionCancelled ? 'Manual completion ignored because Mission is cancelled' : (input.summary || '')).slice(0, 2000),
+      error: missionCancelled ? 'MISSION_CANCELLED' : (success ? null : String(input.error || 'Manual Codex execution failed').slice(0, 5000)),
       started_at: timestamp(),
       completed_at: timestamp(),
       created_at: timestamp(),
@@ -1187,8 +1276,8 @@ async function completeManualCodexHandoff(db, tenantId, taskId, input) {
     });
 
     tx.set(taskRef, {
-      state: success ? 'DONE' : 'FAILED',
-      phase: success ? 'COMPLETED' : 'FAILED',
+      state: missionCancelled ? 'SKIPPED' : (success ? 'DONE' : 'FAILED'),
+      phase: missionCancelled ? 'CANCELLED' : (success ? 'COMPLETED' : 'FAILED'),
       execution_run_id: executionRunRef.id,
       current_run_id: executionRunRef.id,
       completed_at: timestamp(),
@@ -1202,11 +1291,13 @@ async function completeManualCodexHandoff(db, tenantId, taskId, input) {
       updated_at: timestamp()
     }, { merge: true });
 
-    tx.set(missionRef, {
-      state: success ? 'COMPLETED' : 'FAILED',
-      completed_at: timestamp(),
-      updated_at: timestamp()
-    }, { merge: true });
+    if (!missionCancelled) {
+      tx.set(missionRef, {
+        state: success ? 'COMPLETED' : 'FAILED',
+        completed_at: timestamp(),
+        updated_at: timestamp()
+      }, { merge: true });
+    }
 
     tx.set(resultRef, {
       id: resultRef.id,
@@ -1219,14 +1310,15 @@ async function completeManualCodexHandoff(db, tenantId, taskId, input) {
       brain_run_id: task.brain_run_id || null,
       worker_id: task.worker_id,
       executor_id: task.claimed_by_executor_id || null,
-      status: success ? 'SUCCESS' : 'FAILED',
-      summary: String(input.summary || '').slice(0, 10000),
+      status: missionCancelled ? 'FAILED' : (success ? 'SUCCESS' : 'FAILED'),
+      summary: String(missionCancelled ? 'Manual completion ignored because Mission is cancelled' : (input.summary || '')).slice(0, 10000),
       output: input.output || null,
       created_at: timestamp()
     });
 
     result = {
-      success,
+      success: missionCancelled ? false : success,
+      cancelled: missionCancelled || undefined,
       mission_id: task.mission_id,
       task_id: taskId,
       execution_run_id: executionRunRef.id,

@@ -119,9 +119,9 @@ function missionItem(mission) {
       </div>
       <div class="mission-actions">
         ${stateBadge(mission.state)}
-        ${canDispatch ? `<button class="ghost-button dispatch-button" data-mission-id="${escapeHtml(mission.id)}">Dispatch</button>` : ''}
-        ${canRetry ? `<button class="ghost-button retry-button" data-mission-id="${escapeHtml(mission.id)}">Retry</button>` : ''}
-        ${canCancel ? `<button class="ghost-button cancel-mission-button" data-mission-id="${escapeHtml(mission.id)}">Cancel</button>` : ''}
+        ${canDispatch ? `<button type="button" class="ghost-button dispatch-button" data-mission-id="${escapeHtml(mission.id)}">Dispatch</button>` : ''}
+        ${canRetry ? `<button type="button" class="ghost-button retry-button" data-mission-id="${escapeHtml(mission.id)}">Retry</button>` : ''}
+        ${canCancel ? `<button type="button" class="ghost-button cancel-mission-button" data-mission-id="${escapeHtml(mission.id)}">Cancel</button>` : ''}
       </div>
     </div>
   `;
@@ -314,8 +314,8 @@ function openMissionDetail(missionId) {
     <div class="modal-actions">
       <span>${escapeHtml(mission.state)}</span>
       <div>
-        ${canRetry ? `<button class="ghost-button retry-button" data-mission-id="${escapeHtml(mission.id)}">Retry</button>` : ''}
-        ${canCancel ? `<button class="ghost-button cancel-mission-button" data-mission-id="${escapeHtml(mission.id)}">Cancel</button>` : ''}
+        ${canRetry ? `<button type="button" class="ghost-button retry-button" data-mission-id="${escapeHtml(mission.id)}">Retry</button>` : ''}
+        ${canCancel ? `<button type="button" class="ghost-button cancel-mission-button" data-mission-id="${escapeHtml(mission.id)}">Cancel</button>` : ''}
       </div>
     </div>
     ${progressBar(progress)}
