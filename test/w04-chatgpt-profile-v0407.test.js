@@ -65,11 +65,14 @@ test('v0.4.0.7 configured W04 URL is returned explicitly', () => {
 
 test('v0.4.0.7 setup script and runtime use same W04 profile', () => {
   const setup = read('brain-adapter/setup-w04-chatgpt-profile.ps1');
+  const helper = read('brain-adapter/setup-chatgpt-profile.ps1');
   const start = read('brain-adapter/start-w04.cmd');
-  assert.match(setup, /chrome-profiles\\W04/);
+  assert.match(setup, /-WorkerId 'W04'/);
+  assert.match(setup, /\$env:MRAPI_W04_CHAT_URL/);
+  assert.match(helper, /chrome-profiles\\\$WorkerId/);
   assert.match(start, /chrome-profiles\\W04/);
   assert.match(chromeUserDataDirForWorker('W04'), /chrome-profiles[\\/]+W04$/);
-  assert.match(setup, /never requests, stores, or reads credentials/i);
+  assert.match(helper, /never requests, stores, or reads credentials/i);
 });
 
 test('v0.4.0.7 gitignore excludes persistent profile data', () => {
