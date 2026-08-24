@@ -773,16 +773,19 @@ async function completeManualCodexHandoff(db, tenantId, taskId, input) {
 
 async function recoverAbandonedBrainRuns(db, tenantId, executorId, staleMs = 120000) {
   const now = Date.now();
+  // Keep recovery index-free: use the existing tenant isolation query,
+  // then filter run_type/executor/state in application code. This avoids
+  // requiring a new Firestore composite index just for Runner recovery.
   const runsSnap = await db.collection('runs')
     .where('tenant_id', '==', tenantId)
-    .where('run_type', '==', 'BRAIN_RUN')
-    .where('executor_id', '==', executorId)
     .get();
 
   const recovered = [];
 
   for (const doc of runsSnap.docs) {
     const run = doc.data();
+    if (run.run_type !== 'BRAIN_RUN') continue;
+    if (run.executor_id !== executorId) continue;
     if (!['RUNNING', 'CLAIMED'].includes(run.state)) continue;
 
     const updated = run.updated_at?.toDate ? run.updated_at.toDate().getTime() : 0;

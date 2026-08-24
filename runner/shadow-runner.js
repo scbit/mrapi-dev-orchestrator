@@ -21,7 +21,7 @@ async function register() {
     executor_type: 'CODEX_APP_MANUAL',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.3.1-alpha.1',
+    runner_version: 'v0.3.1-alpha.2',
     capabilities: [
       'BRAIN_RUN:CHATGPT_WEB',
       'CODEX_HANDOFF:MANUAL_APP',

@@ -1,4 +1,4 @@
-# MRAPI DEV ORCHESTRATOR — v0.3.1-alpha.1
+# MRAPI DEV ORCHESTRATOR — v0.3.1-alpha.2
 
 ## Real Shadow flow
 
@@ -69,6 +69,10 @@ When a W01 task is dispatched, the Runner opens the dedicated W01 ChatGPT Web ch
 
 Add a small Control Room action to copy the Brain handoff and report Codex completion from the UI.
 
-## v0.3.1-alpha.1
+## v0.3.1-alpha.2
 
 On Runner startup, stale BRAIN_RUN attempts owned by the same executor are marked FAILED with `RUNNER_RESTARTED_OR_ABANDONED`, their Task is safely returned to `QUEUED`, and history is preserved.
+
+## v0.3.1-alpha.2
+
+Fix: abandoned Brain Run recovery no longer requires a Firestore composite index. Tenant isolation remains enforced and run filtering happens in application code.

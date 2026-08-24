@@ -1,4 +1,4 @@
-# v0.3.1-alpha.1 Manual Deploy
+# v0.3.1-alpha.2 Manual Deploy
 
 Deploy over the same Cloud Run service:
 
