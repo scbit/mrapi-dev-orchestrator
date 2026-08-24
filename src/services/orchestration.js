@@ -290,6 +290,8 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
         tx.update(taskRef, {
           state: 'RUNNING',
           phase: 'EXECUTION_RUNNING',
+          workspace_id: codexHandoff.workspace_id,
+          project_id: codexHandoff.project_id,
           attempt_count: attempt,
           current_run_id: runRef.id,
           execution_run_id: runRef.id,
@@ -320,8 +322,8 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
           run_type: 'EXECUTION_RUN',
           mission_id: candidate.mission_id,
           task_id: candidate.id,
-          workspace_id: candidate.workspace_id || null,
-          project_id: candidate.project_id || null,
+          workspace_id: codexHandoff.workspace_id,
+          project_id: codexHandoff.project_id,
           worker_id: candidate.worker_id,
           executor_id: executorId,
           host_name: executor.host_name || null,
@@ -348,6 +350,8 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
           task: {
             ...candidate,
             state: 'RUNNING',
+            workspace_id: codexHandoff.workspace_id,
+            project_id: codexHandoff.project_id,
             current_run_id: runRef.id,
             execution_run_id: runRef.id,
             attempt_count: attempt,
@@ -893,6 +897,7 @@ async function completeRun(db, tenantId, runId, input) {
 
     tx.set(taskRef, {
       state: taskState,
+      phase: success ? 'COMPLETED' : 'FAILED',
       current_run_id: runId,
       completed_at: timestamp(),
       updated_at: timestamp()
@@ -930,6 +935,7 @@ async function completeRun(db, tenantId, runId, input) {
       worker_id: run.worker_id,
       executor_id: run.executor_id,
       status: success ? 'SUCCESS' : 'FAILED',
+      result_type: 'EXECUTION_OUTPUT',
       summary: String(input.summary || '').slice(0, 10000),
       output: input.output || null,
       created_at: timestamp()
