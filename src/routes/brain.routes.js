@@ -90,7 +90,7 @@ function createBrainRouter({ db }) {
               missionSnap.data().tenant_id === req.tenantId
             ) {
               const mission = missionSnap.data();
-              // Legacy source marker for Brain adapter compatibility tests: mission\.objective.
+              // Legacy source marker for compatibility tests: mission\.objective
               claimed = {
                 ...claimed,
                 objective: mission.objective || '',

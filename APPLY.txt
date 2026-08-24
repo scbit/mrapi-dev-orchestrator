@@ -1,12 +1,9 @@
-OVERLAY PACKAGE v0.3.2-alpha.1
+OVERLAY PACKAGE v0.3.2-alpha.2
 
-Copy over the CURRENT mrapi-dev-orchestrator repository.
-
-Then run:
-  node --test test/brain-adapter.test.js
-  node --test
-
-Commit + push only if tests pass.
-
-DEPLOY:
-  HUMAN MANUAL DEPLOY — DO NOT DEPLOY FROM CODEX.
+1. Stop the Brain Adapter with Ctrl+C.
+2. Copy this overlay over the CURRENT repository.
+3. Run:
+   node --test test/brain-adapter.test.js
+   node --test
+4. Commit + push only if tests pass.
+5. HUMAN MANUAL DEPLOY — DO NOT DEPLOY FROM CODEX.

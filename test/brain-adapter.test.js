@@ -38,3 +38,15 @@ test('brain route enriches legacy Brain Run objective from Mission', () => {
   assert.match(source, /mission\\.objective/);
   assert.match(source, /Brain Run missing mission objective; released/);
 });
+
+
+test('ChatGPT adapter detects completed assistant response without relying on long text stability', () => {
+  const source = fs.readFileSync(
+    path.join(__dirname, '..', 'brain-adapter', 'adapters', 'chatgpt-web.js'),
+    'utf8'
+  );
+  assert.match(source, /waitForAssistantCompletion/);
+  assert.match(source, /stop-button/);
+  assert.match(source, /unchangedFor >= 2/);
+  assert.doesNotMatch(source, /waitForStableAssistant/);
+});
