@@ -1,18 +1,43 @@
-MRAPI DEV v0.3.4-alpha.4 — TEST FIX
+MRAPI DEV v0.3.6-alpha.0 — CONTROL ROOM RESULTS + LIVE PROGRESS
 
 OBJECTIVE
-Align the stale Windows Codex command test with the current runtime.
+Make autonomous work visible from Cloud Run without reading Shadow terminals.
 
-CHANGE
-Only test/codex-windows-command.test.js changes.
-No runtime code changes.
+IMPLEMENTATION
+- New GET /api/results
+- Mission cards show live progress
+- Tasks show run progress
+- Reports becomes a real view backed by Results
+- Mission click opens detail with Runs + Results
+- UI refreshes every 5 seconds
+- No architecture rewrite
+- Multi-tenant access remains through existing tenant middleware/repositories
+
+FILES / AREAS
+src/app.js
+src/routes/results.routes.js
+src/public/index.html
+src/public/app.js
+src/public/progress.css
+test/control-room-results-progress.test.js
 
 TESTS
-node --test test/codex-windows-command.test.js
+node --test test/control-room-results-progress.test.js
 node --test
 
-SUCCESS
-All tests pass.
+SUCCESS CRITERIA
+- All tests pass
+- Reports no longer says Coming soon
+- Completed Mission shows final Result
+- Running Mission shows current stage and %
+- Mission detail shows Brain/Execution Runs and Results
+- Existing v0.3.x functionality preserved
+
+STOP CONDITIONS
+- Do not redesign orchestration
+- Do not change tenant isolation
+- Do not access GCP/Cloud Run from Codex
+- Do not deploy from Codex
 
 DEPLOY
-DO NOT DEPLOY.
+HUMAN MANUAL DEPLOY — required after commit/push because backend + frontend change.
