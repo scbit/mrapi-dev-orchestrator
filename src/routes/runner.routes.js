@@ -50,6 +50,15 @@ function createRunnerRouter({ db }) {
       if (!claimed) return res.status(204).end();
       res.json(serializeFirestore(claimed));
     } catch (error) {
+      console.error('[RUNNER NEXT_TASK ERROR]', {
+        endpoint: '/api/runner/next-task',
+        action: 'claim_next_task',
+        tenant_id: req.tenantId,
+        executor_id: String(req.body?.executor_id || '').trim() || null,
+        worker_ids: Array.isArray(req.body?.worker_ids) ? req.body.worker_ids : undefined,
+        capabilities: Array.isArray(req.body?.capabilities) ? req.body.capabilities : undefined,
+        error: error.message
+      });
       if (error.status) return res.status(error.status).json({ error: error.message });
       next(error);
     }

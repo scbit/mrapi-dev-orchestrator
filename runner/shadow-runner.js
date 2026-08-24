@@ -19,6 +19,15 @@ async function request(path, body) {
   return api.request(path, body);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientPollError(error) {
+  const status = Number(error?.status || 0);
+  return status >= 500 && status < 600;
+}
+
 async function register() {
   return request('/api/runner/register', {
     executor_id: cfg.executorId,
@@ -26,7 +35,7 @@ async function register() {
     executor_type: 'CODEX_CLI_AUTO',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.4.0.2',
+    runner_version: 'v0.4.0.3',
     capabilities: [
       'EXECUTION_RUN:CODEX_CLI_AUTO',
       'CODEX_HANDOFF:VALIDATED',
@@ -405,24 +414,34 @@ async function loop() {
   }, 30000);
 
   try {
+    let pollFailures = 0;
     while (!stopping) {
-      await heartbeat();
+      try {
+        await heartbeat();
 
-      const claim = await request('/api/runner/next-task', {
-        executor_id: cfg.executorId,
-        repository_path: cfg.repoPath
-      });
+        const claim = await request('/api/runner/next-task', {
+          executor_id: cfg.executorId,
+          repository_path: cfg.repoPath
+        });
 
-      if (claim) {
-        console.log(
-          '[SHADOW] claimed',
-          claim.task.id,
-          claim.run.id,
-          claim.run.run_type
-        );
-        await executeClaim(claim);
-      } else {
-        await new Promise((resolve) => setTimeout(resolve, cfg.pollMs));
+        pollFailures = 0;
+        if (claim) {
+          console.log(
+            '[SHADOW] claimed',
+            claim.task.id,
+            claim.run.id,
+            claim.run.run_type
+          );
+          await executeClaim(claim);
+        } else {
+          await sleep(cfg.pollMs);
+        }
+      } catch (error) {
+        if (!isTransientPollError(error)) throw error;
+        pollFailures += 1;
+        const backoffMs = Math.min(60000, cfg.pollMs * pollFailures);
+        console.error('[SHADOW POLL ERROR]', error.message, `retrying in ${backoffMs}ms`);
+        await sleep(backoffMs);
       }
     }
   } finally {
@@ -445,5 +464,6 @@ module.exports = {
   contentTypeForFile,
   listArtifactFiles,
   runTrustedGitFlow,
-  uploadTaskArtifacts
+  uploadTaskArtifacts,
+  isTransientPollError
 };

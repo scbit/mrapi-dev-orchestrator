@@ -367,6 +367,37 @@ async function heartbeatExecutor(db, tenantId, executorId, payload = {}) {
   return { ok: true, executor_id: executorId };
 }
 
+function operationalLog(level, message, fields = {}) {
+  const clean = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (key.toLowerCase().includes('secret')) continue;
+    clean[key] = value;
+  }
+  const logger = level === 'error' ? console.error : console.warn;
+  logger(message, clean);
+}
+
+function normalizeWorkerIds(value) {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+}
+
+function isClaimCandidateError(error) {
+  return error?.retryCandidate === true ||
+    [
+      'TASK_ALREADY_CLAIMED',
+      'TASK_BRAIN_NOT_COMPLETE',
+      'WORKER_NOT_FOUND',
+      'WORKER_NOT_AVAILABLE',
+      'CODEX_HANDOFF_MISSION_REQUIRED',
+      'MISSION_CANCELLED',
+      'CODEX_HANDOFF_SCOPE_REQUIRED',
+      'CODEX_HANDOFF_EXECUTION_RUN_REQUIRED',
+      'CODEX_HANDOFF_REPOSITORY_PATH_REQUIRED'
+    ].includes(error?.message);
+}
+
 async function claimNextTask(db, tenantId, executorId, options = {}) {
   const executorRef = db.collection('executors').doc(executorId);
   const executorSnap = await executorRef.get();
@@ -378,16 +409,17 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
   }
 
   const executor = executorSnap.data();
-  const allowedWorkerIds = executor.worker_ids || [];
-  const queued = await db.collection('tasks')
+  const allowedWorkerIds = normalizeWorkerIds(executor.worker_ids);
+  const taskSnap = await db.collection('tasks')
     .where('tenant_id', '==', tenantId)
-    .where('state', '==', 'QUEUED')
-    .limit(100)
+    .limit(200)
     .get();
 
   const priorities = { CRITICAL: 4, HIGH: 3, NORMAL: 2, LOW: 1 };
-  const candidates = queued.docs
+  const candidates = taskSnap.docs
     .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((task) => ['QUEUED', 'ASSIGNED'].includes(task.state))
+    .filter((task) => !task.phase || ['EXECUTION_PENDING', 'WAITING_FOR_CODEX'].includes(task.phase))
     .filter((task) => allowedWorkerIds.length === 0 || allowedWorkerIds.includes(task.worker_id))
     .sort((a, b) => {
       const pd = (priorities[b.priority] || 0) - (priorities[a.priority] || 0);
@@ -413,7 +445,7 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
           brainRunRef ? tx.get(brainRunRef) : Promise.resolve(null)
         ]);
 
-        if (!taskSnap.exists || taskSnap.data().state !== 'QUEUED') {
+        if (!taskSnap.exists || !['QUEUED', 'ASSIGNED'].includes(taskSnap.data().state)) {
           const error = new Error('TASK_ALREADY_CLAIMED');
           error.retryCandidate = true;
           throw error;
@@ -445,7 +477,7 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
 
         if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
           const error = new Error('CODEX_HANDOFF_MISSION_REQUIRED');
-          error.status = 409;
+          error.retryCandidate = true;
           throw error;
         }
 
@@ -580,7 +612,20 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
         return claimed;
       }
     } catch (error) {
-      if (error.retryCandidate) continue;
+      if (isClaimCandidateError(error)) {
+        operationalLog('warn', '[RUNNER CLAIM SKIP]', {
+          endpoint: '/api/runner/next-task',
+          action: 'claim_candidate_skipped',
+          tenant_id: tenantId,
+          executor_id: executorId,
+          worker_ids: allowedWorkerIds,
+          task_id: candidate.id,
+          mission_id: candidate.mission_id || null,
+          worker_id: candidate.worker_id || null,
+          error: error.message
+        });
+        continue;
+      }
       throw error;
     }
   }

@@ -14,7 +14,13 @@ function createApi(cfg) {
     const text = await response.text();
     let data = {};
     try { data = text ? JSON.parse(text) : {}; } catch { data = { raw: text }; }
-    if (!response.ok) throw new Error(`${response.status} ${data.error || data.message || text}`);
+    if (!response.ok) {
+      const error = new Error(`${response.status} ${data.error || data.message || text}`);
+      error.status = response.status;
+      error.code = data.error || data.message || text || `HTTP_${response.status}`;
+      error.path = path;
+      throw error;
+    }
     return data;
   }
   return { request };

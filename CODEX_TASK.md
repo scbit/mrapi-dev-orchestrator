@@ -1,196 +1,182 @@
-# MRAPI DEV v0.4.0.2 — Brain-only Result Persistence Fix
+# MRAPI DEV v0.4.0.3 — Runner Claim 500 Fix
 
 ## OBJECTIVE
-Fix Brain-only Missions so the actual ChatGPT answer is persisted as a first-class MRAPI Result/Report.
+Fix the backend 500 that crashes the Shadow Runner immediately after successful executor registration.
 
-Observed real bug:
-- W04 Mission completed successfully.
-- `requires_execution=false`
-- `execution_type=BRAIN_ONLY`
-- `final_result=null`
-- The useful marketing answer was accidentally embedded inside `task_spec.instructions`
-- Mission became COMPLETED but Reports and Evidence showed nothing.
+Observed real runtime:
 
-This is incorrect.
+```text
+[SHADOW] registering executor_shadow_codex_01 [ 'W01', 'W02', 'W03', 'W04', 'W05' ]
+[SHADOW] registered
+[SHADOW] repo C:\Users\Shadow\Documents\GitHub\mrapi-dev-orchestrator
+[SHADOW] Codex mode: CLI AUTO
+[SHADOW] configured command auto-detect codex/codex.cmd
+[SHADOW FATAL] Error: 500 INTERNAL_SERVER_ERROR
+    at ...runner\lib\api.js:17:29
+    at async loop (...runner\shadow-runner.js:411:21)
+```
 
-## REQUIRED BEHAVIOR
+This started after v0.4.0.x multi-worker changes.
 
-For Brain-only Missions:
+The Runner registers correctly.
+Failure happens on the first work polling / claim operation.
 
-`Mission -> BRAIN_RUN -> BRAIN_OUTPUT -> RESULT -> COMPLETED`
+## CONTEXT
+Architecture remains:
 
-There is no Task, Execution Run, or Evidence requirement unless the Brain explicitly produced an artifact/source/evidence.
+- ChatGPT Web = Brain
+- Codex = Executor
+- Shadow = Host
+- MRAPI DEV = source of truth
 
-The final user-facing Brain answer MUST be persisted into `results` and visible in:
-- Mission detail
-- Reports
-- Result detail
+Executor:
+`executor_shadow_codex_01`
 
-## ROOT CAUSE TO INVESTIGATE
-The Brain response parser appears to expect a JSON control envelope, while ChatGPT may return:
-1. JSON envelope only
-2. JSON envelope followed by natural-language final answer
-3. Natural-language answer with embedded/partial JSON
+Allowed workers:
+`W01, W02, W03, W04, W05`
 
-The current parser appears to capture the prose in `task_spec.instructions` while leaving `final_result=null`.
+Do not reduce it back to W01-only.
 
-Do not solve this by forcing the user to manually copy output.
+## FILES / AREAS
+Inspect actual code before modifying.
+
+Likely areas:
+- `runner/shadow-runner.js` around line ~411
+- `runner/lib/api.js`
+- runner claim/poll endpoint
+- `src/routes/*runner*`
+- `src/services/orchestration.js`
+- Task claim query / Firestore query
+- multi-worker worker_id filtering
+- tests for executor registration/claim
 
 ## IMPLEMENTATION
 
-### 1. Separate control envelope from user-facing answer
-Define a robust Brain response contract.
+### 1. Identify exact failing request
+Determine which request is made immediately after registration at Runner line ~411.
 
-Preferred format for new prompts:
-
-```text
-<MRAPI_CONTROL>
-{
-  "requires_execution": false,
-  "execution_type": "BRAIN_ONLY",
-  "task_spec": {
-    "target_type": "MARKETING_STRATEGY",
-    "browser_required": false,
-    "evidence_required": false
-  }
-}
-</MRAPI_CONTROL>
-
-<MRAPI_RESULT>
-...final user-facing answer...
-</MRAPI_RESULT>
-```
-
-For execution-required Missions, result section may be empty/omitted if execution must happen first.
-
-Do not rely on the LLM returning a single pure JSON object containing long prose.
-
-### 2. Backward-compatible parser
-Support existing responses:
-- tagged control/result format
-- pure JSON
-- JSON followed by prose
-- existing `task_spec.instructions` malformed pattern
-
-Parser must return a normalized object like:
-
-```js
-{
-  requires_execution,
-  execution_type,
-  task_spec,
-  final_result_text,
-  raw_response
-}
-```
-
-Rules:
-- If `requires_execution=false`, final_result_text MUST be populated.
-- If tagged `<MRAPI_RESULT>` exists, use it.
-- Else if JSON has `final_result` string/object, normalize it.
-- Else if prose follows parsed JSON, use trailing prose.
-- Else, for backward compatibility only, if `task_spec.instructions` contains the control JSON plus substantive prose, extract the substantive prose.
-- If no meaningful result can be extracted, do NOT mark Mission COMPLETED. Mark BLOCKED/FAILED with a clear operational error such as `BRAIN_RESULT_MISSING`.
-
-Do not silently complete with null result.
-
-### 3. Persist first-class Result
-When Brain-only Mission succeeds:
-- create Result document
+Add/retain useful server-side operational logging so a future 500 records:
+- endpoint/action
+- executor_id
 - tenant_id
-- workspace_id
-- project_id
-- mission_id
-- worker_id
-- brain_run_id
-- run_type = BRAIN_RUN or source_run_type
-- result_type = BRAIN_RESULT / REPORT (use existing schema conventions)
-- title
-- content/text
-- created_at
-- status/success metadata
+- worker_ids/capabilities if applicable
+- error code/message
 
-Never overwrite previous attempt history.
+Never log secrets.
 
-### 4. Reports
-Ensure `/api/results` and Reports UI includes Brain-only Results.
+### 2. Fix multi-worker claim
+The Runner now serves five workers.
 
-Mission detail must show the content.
+The claim endpoint must safely accept an executor that is bound to:
+`['W01','W02','W03','W04','W05']`
 
-Do not require Evidence for a Brain-only text result.
+Do not assume a single `worker_id`.
 
-### 5. Do not create fake Task
-Preserve v0.4.0 behavior:
-- Brain-only = no fake Task
-- no Codex execution
-- no Execution Run
+Claim semantics:
+- tenant-scoped
+- only QUEUED/ASSIGNED eligible work according to existing model
+- task worker must be one of executor's allowed worker IDs
+- required capabilities/permissions must match
+- cancelled missions/tasks must not be claimed
+- one atomic claim at a time
+- preserve attempt/run history
 
-### 6. Execution-required Missions
-Do not change the existing W01/Codex flow except to use the improved control parser.
+### 3. Firestore query safety
+Pay special attention to Firestore query composition introduced by multi-worker support.
 
-For `requires_execution=true`:
-- create Task exactly as before
-- `task_spec.instructions` must contain ONLY concrete executor instructions
-- never stuff the Brain's final prose/report into executor instructions
+If the 500 is caused by an invalid query/index/operator combination:
+- use the simplest safe query compatible with existing indexes
+- filter the small candidate set in application code if that avoids brittle composite-index requirements
+- keep tenant isolation mandatory
+- do not query across tenants
 
-### 7. Brain prompt contract
-Update generic Brain prompt for W01-W05:
-- ChatGPT Web is Brain.
-- Return MRAPI control block separately from user-facing result.
-- If Brain-only, always provide `<MRAPI_RESULT>`.
-- If execution required, provide precise executor task in control block.
-- Codex remains Executor only.
+Prefer correctness and low operational complexity over a new index for this patch unless an index is clearly unavoidable.
 
-### 8. Existing malformed run safety
-No destructive migration required.
-Do not rewrite historical Brain Runs automatically.
+### 4. No-work response
+When there is no eligible Task, claim/poll must return a normal no-work response, never 500.
 
-Optional:
-If Mission detail renders an older malformed Brain Output with `final_result=null`, it may show a fallback extracted preview, but canonical Results are only created for new runs/retries unless there is an existing safe retry mechanism.
+Examples compatible with existing API:
+- HTTP 200 + `{ task: null }`
+or
+- HTTP 204
 
-### 9. Version
+Use existing project conventions.
+
+Runner must continue polling.
+
+### 5. Bad/stale task resilience
+One malformed/stale task must not crash the whole Runner.
+
+If a candidate:
+- references missing Mission
+- references missing Worker
+- is cancelled
+- has invalid execution metadata
+
+skip/block it according to existing conventions and continue safely.
+
+Do not silently execute invalid work.
+
+### 6. Runner error handling
+A transient backend 5xx should not permanently terminate the Shadow Runner.
+
+Implement bounded polling resilience:
+- log concise error
+- wait/backoff
+- retry polling
+- heartbeat continues/re-register if existing architecture requires it
+
+Do NOT create an open hot loop.
+Do NOT retry task execution automatically beyond existing retry rules.
+
+Fatal should remain for unrecoverable local configuration errors, not a single poll 500.
+
+### 7. Preserve W04 pending mission
+Do not invent a migration for the currently stuck W04 mission.
+After deployment and Runner restart, if its Task is still eligible, the normal claim flow should take it.
+If mission/task state is already inconsistent, surface Need Attention rather than creating duplicates.
+
+### 8. Version
 Bump to:
-`v0.4.0.2`
+`v0.4.0.3`
 
 ## TESTS
 
-Add focused tests:
+Add focused tests proving:
 
-1. Brain-only tagged response creates Result.
-2. Result content appears in `/api/results`.
-3. Mission detail can retrieve/render Brain-only Result.
-4. Brain-only does not create Task.
-5. Brain-only does not create Execution Run.
-6. JSON + trailing prose extracts prose as final result.
-7. `final_result` JSON field is accepted.
-8. malformed old `task_spec.instructions` pattern extracts substantive prose.
-9. missing Brain-only result does not mark Mission COMPLETED.
-10. execution-required flow still creates Task.
-11. executor instructions do not contain final-result prose.
-12. W01 existing Codex flow remains green.
-13. cancel/retry remains green.
-14. full suite passes.
+1. Executor registers with W01-W05.
+2. Multi-worker claim does not throw.
+3. W04 queued Task can be claimed by the common Codex executor.
+4. W01 Task still works.
+5. Task from a worker outside executor binding is not claimed.
+6. Tenant isolation is preserved.
+7. No eligible task returns normal no-work response.
+8. Cancelled Mission Task is not claimed.
+9. Malformed/stale candidate does not crash polling.
+10. A poll 500 does not terminate Runner loop permanently.
+11. Existing Brain-only path remains unaffected.
+12. Existing Git W01-only permissions remain unaffected.
+13. Full suite passes.
 
 Run:
 `node --test`
 
 ## SUCCESS CRITERIA
-A new W04 Brain-only Mission:
-- finishes COMPLETED
-- creates no Task
-- creates a Result
-- Reports shows the campaign concepts
-- Mission detail shows the campaign concepts
-- Evidence may remain empty, which is correct for text-only Brain output
+After human deploy and Runner restart, terminal stays alive and shows normal polling/claim behavior instead of:
+
+`[SHADOW FATAL] Error: 500 INTERNAL_SERVER_ERROR`
+
+The existing W04 execution Mission can proceed to Codex if its Task remains valid.
 
 ## STOP CONDITIONS
-- Do not make Codex analyze Brain-only Missions.
-- Do not create fake Tasks.
-- Do not require Evidence for text-only results.
-- Do not mark COMPLETED with `final_result=null`.
-- Do not redesign hierarchy.
-- Do not deploy.
+- Do not revert to W01-only.
+- Do not hardcode W04.
+- Do not weaken tenant isolation.
+- Do not let Codex become Brain.
+- Do not auto-deploy.
 - Do not push.
+- Do not delete pending Missions/Tasks.
+- Do not create duplicate Runs.
 
 ## DEPLOY
 Codex:
@@ -202,4 +188,4 @@ Codex:
 Human:
 - commit/push
 - manual Cloud Run deploy
-- restart Brain Adapter(s) if prompt/parser code changed
+- restart Shadow Runner

@@ -328,10 +328,9 @@ test('invalid Task cannot create a Codex handoff or EXECUTION_RUN', async () => 
     worker_ids: ['worker_1']
   });
 
-  await assert.rejects(
-    () => claimNextTask(db, 'tenant_a', 'executor_1', { repository_path: 'C:\\repo' }),
-    /CODEX_HANDOFF_MISSION_REQUIRED/
-  );
+  const claim = await claimNextTask(db, 'tenant_a', 'executor_1', { repository_path: 'C:\\repo' });
+
+  assert.equal(claim, null);
   assert.equal(values(db, 'runs').filter((run) => run.run_type === 'EXECUTION_RUN').length, 0);
 });
 
