@@ -1,0 +1,126 @@
+const crypto = require('crypto');
+const express = require('express');
+const { serializeFirestore } = require('../utils/firestore');
+const { normalizeRoadmapInput, nextMilestone, MILESTONE_STATES } = require('../services/roadmap');
+
+function now() {
+  return new Date();
+}
+
+async function requireProject(repos, tenantId, projectId) {
+  const project = await repos.projects.getById(projectId);
+  if (!project || project.tenant_id !== tenantId) return null;
+  return project;
+}
+
+function createRoadmapsRouter({ repos }) {
+  const router = express.Router();
+
+  router.get('/', async (req, res, next) => {
+    try {
+      const projectId = String(req.query.project_id || '').trim();
+      const items = projectId
+        ? await repos.roadmaps.listByProject(req.tenantId, projectId)
+        : await repos.roadmaps.listByTenant(req.tenantId);
+      items.sort((a, b) => String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || '')));
+      res.json({ items: serializeFirestore(items), total: items.length });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/', async (req, res, next) => {
+    try {
+      const projectId = String(req.body?.project_id || '').trim();
+      if (!projectId) return res.status(400).json({ error: 'PROJECT_ID_REQUIRED' });
+      const project = await requireProject(repos, req.tenantId, projectId);
+      if (!project) return res.status(404).json({ error: 'PROJECT_NOT_FOUND' });
+
+      const payload = normalizeRoadmapInput(req.body || {});
+      if (!payload.title || !payload.objective) {
+        return res.status(400).json({ error: 'ROADMAP_TITLE_OBJECTIVE_REQUIRED' });
+      }
+      const id = String(req.body?.id || '').trim() || `roadmap_${crypto.randomUUID()}`;
+      const created = await repos.roadmaps.upsert(id, {
+        ...payload,
+        tenant_id: req.tenantId,
+        workspace_id: project.workspace_id,
+        project_id: project.id,
+        created_at: now(),
+        updated_at: now()
+      });
+      res.status(201).json(serializeFirestore(created));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get('/:roadmapId', async (req, res, next) => {
+    try {
+      const roadmap = await repos.roadmaps.getById(req.params.roadmapId);
+      if (!roadmap || roadmap.tenant_id !== req.tenantId) {
+        return res.status(404).json({ error: 'ROADMAP_NOT_FOUND' });
+      }
+      res.json(serializeFirestore({ ...roadmap, next_milestone: nextMilestone(roadmap) }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.put('/:roadmapId', async (req, res, next) => {
+    try {
+      const roadmap = await repos.roadmaps.getById(req.params.roadmapId);
+      if (!roadmap || roadmap.tenant_id !== req.tenantId) {
+        return res.status(404).json({ error: 'ROADMAP_NOT_FOUND' });
+      }
+      const normalized = normalizeRoadmapInput(req.body || {}, roadmap);
+      const updated = await repos.roadmaps.upsert(roadmap.id, {
+        ...normalized,
+        tenant_id: req.tenantId,
+        updated_at: now()
+      });
+      res.json(serializeFirestore(updated));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post('/:roadmapId/milestones/:milestoneId/state', async (req, res, next) => {
+    try {
+      const roadmap = await repos.roadmaps.getById(req.params.roadmapId);
+      if (!roadmap || roadmap.tenant_id !== req.tenantId) {
+        return res.status(404).json({ error: 'ROADMAP_NOT_FOUND' });
+      }
+      const targetState = String(req.body?.state || '').trim().toUpperCase();
+      if (!MILESTONE_STATES.has(targetState)) {
+        return res.status(400).json({ error: 'INVALID_MILESTONE_STATE' });
+      }
+      let found = false;
+      const milestones = (roadmap.milestones || []).map((item) => {
+        if (item.id !== req.params.milestoneId) return item;
+        found = true;
+        return {
+          ...item,
+          state: targetState,
+          updated_at: now(),
+          ...(targetState === 'COMPLETED' ? { completed_at: now() } : {})
+        };
+      });
+      if (!found) return res.status(404).json({ error: 'MILESTONE_NOT_FOUND' });
+
+      const completed = milestones.length > 0 && milestones.every((item) => ['COMPLETED', 'SKIPPED'].includes(item.state));
+      const updated = await repos.roadmaps.upsert(roadmap.id, {
+        milestones,
+        state: completed ? 'COMPLETED' : roadmap.state,
+        updated_at: now()
+      });
+      res.json(serializeFirestore({ ...updated, next_milestone: nextMilestone(updated) }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  return router;
+}
+
+module.exports = { createRoadmapsRouter };

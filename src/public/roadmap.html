@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MRAPI DEV — Project Context & Roadmap</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/roadmap-page.css">
+</head>
+<body>
+  <main class="roadmap-shell">
+    <header class="roadmap-top">
+      <div><span class="eyebrow">MRAPI DEV v0.4.3.0</span><h1>Project Context + Roadmap</h1><p>Persistent context for W01 and the base for Autopilot.</p></div>
+      <a class="ghost-button roadmap-link" href="/">← Control Room</a>
+    </header>
+
+    <section class="roadmap-grid">
+      <article class="panel">
+        <div class="panel-header"><div><span class="eyebrow">PROJECT CONTEXT</span><h2>Projects</h2></div></div>
+        <label class="field"><span>Project</span><select id="projectSelect"></select></label>
+        <form id="contextForm">
+          <label class="field"><span>GitHub repository</span><input id="repositoryFullName" placeholder="owner/repository"></label>
+          <label class="field"><span>Repository URL</span><input id="repositoryUrl" placeholder="https://github.com/owner/repository"></label>
+          <label class="field"><span>Shadow local path</span><input id="localPath" placeholder="C:\\Users\\Shadow\\Documents\\GitHub\\..."></label>
+          <div class="roadmap-two"><label class="field"><span>Default branch</span><input id="defaultBranch" value="main"></label><label class="field"><span>Default Worker</span><input id="defaultWorker" placeholder="W01"></label></div>
+          <label class="field"><span>Reusable instructions</span><textarea id="reusableInstructions" rows="7" placeholder="Stable instructions and project rules. Do not store passwords or tokens."></textarea></label>
+          <button class="primary-button" type="submit">SAVE PROJECT CONTEXT</button>
+          <div id="contextMessage" class="roadmap-message"></div>
+        </form>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header"><div><span class="eyebrow">ROADMAP ENGINE</span><h2>Goals</h2></div><button class="ghost-button" id="newRoadmapButton">+ Goal</button></div>
+        <div id="roadmapList" class="roadmap-list"></div>
+      </article>
+    </section>
+
+    <section class="panel" id="roadmapEditor" hidden>
+      <div class="panel-header"><div><span class="eyebrow">GOAL</span><h2 id="roadmapEditorTitle">New roadmap</h2></div></div>
+      <form id="roadmapForm">
+        <input type="hidden" id="roadmapId">
+        <label class="field"><span>Title</span><input id="roadmapTitle" required placeholder="Finish W01 Autopilot"></label>
+        <label class="field"><span>Objective</span><textarea id="roadmapObjective" rows="4" required></textarea></label>
+        <div class="roadmap-two"><label class="field"><span>Owner Worker</span><input id="roadmapWorker" value="W01"></label><label class="field"><span>State</span><select id="roadmapState"><option>DRAFT</option><option>ACTIVE</option><option>PAUSED</option><option>BLOCKED</option><option>COMPLETED</option></select></label></div>
+        <label class="field"><span>Milestones — one per line</span><textarea id="roadmapMilestones" rows="9" placeholder="Project Context\nRoadmap Engine\nAutopilot Loop\nGit / Deploy Pipeline\nReporting / Notifications\nMission Conversation"></textarea></label>
+        <label class="roadmap-check"><input type="checkbox" id="autoAdvance"> <span>Auto-advance enabled (stored now; execution loop comes next)</span></label>
+        <button class="primary-button" type="submit">SAVE ROADMAP</button>
+        <div id="roadmapMessage" class="roadmap-message"></div>
+      </form>
+    </section>
+  </main>
+  <script src="/roadmap-page.js"></script>
+</body>
+</html>

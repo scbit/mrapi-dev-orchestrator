@@ -1,0 +1,24 @@
+MRAPI DEV v0.4.3.0 — Project Context + Roadmap Base
+
+1. Close W01 Brain and Runner on Shadow.
+2. Copy the contents of this ZIP over the repository root and replace matching files.
+3. In GitHub Desktop review the diff, then commit:
+   v0.4.3.0 Project Context Roadmap Base
+4. Push main.
+5. On Shadow: Fetch/Pull origin.
+6. Manual Cloud Run deploy is required because backend + public files changed.
+7. Restart W01 Brain + Runner after Shadow Pull.
+
+NEW UI
+After deploy open:
+  https://<YOUR-MRAPI-CLOUD-RUN>/roadmap.html
+
+Use it to:
+- select a Project
+- save repository/path/branch/default Worker/stable instructions
+- create the first persistent Goal/Roadmap
+
+IMPORTANT
+- Do not store passwords, tokens, API keys or cookies in Project Context.
+- auto_advance is stored in this version but DOES NOT execute milestones yet.
+  Autopilot Loop is the next release.
