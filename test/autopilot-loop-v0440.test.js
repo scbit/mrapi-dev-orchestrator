@@ -36,7 +36,7 @@ test('verification prompt makes Brain the programmer and Codex hands only', () =
   assert.match(prompt, /YOU define the exact correction/i);
   assert.match(prompt, /Codex is hands only/i);
   assert.match(prompt, /MRAPI_AUTOPILOT/);
-  assert.match(prompt, /COMPLETE \| RETRY \| BLOCKED/);
+  assert.match(prompt, /COMPLETE, RETRY, BLOCKED/);
 });
 
 test('roadmap UI exposes explicit start and real auto-advance language', () => {
@@ -46,5 +46,5 @@ test('roadmap UI exposes explicit start and real auto-advance language', () => {
   assert.match(html, /START NEXT MILESTONE/);
   assert.match(html, /Auto-advance: after Brain verifies COMPLETE/);
   assert.match(js, /\/advance/);
-  assert.match(html, /v0\.4\.4\.1/);
+  assert.match(html, /v0\.4\.4\.2/);
 });

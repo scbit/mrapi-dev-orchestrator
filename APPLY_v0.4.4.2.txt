@@ -1,0 +1,11 @@
+MRAPI DEV v0.4.4.2
+
+1. Replace repository files with this ZIP.
+2. GitHub Desktop: review, commit, push.
+3. Shadow: Fetch/Pull.
+4. Restart START MRAPI W01 + RUNNER.cmd.
+5. Manual Cloud Run deploy.
+6. Ctrl+F5.
+7. In Roadmap, set the blocked Autopilot Loop milestone back to PENDING and Goal state ACTIVE, save, then START NEXT MILESTONE.
+
+No automatic Cloud Run deploy.
