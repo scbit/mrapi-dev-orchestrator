@@ -30,6 +30,27 @@ async function assertLoggedIn(page) {
   }
 }
 
+function hasValidAutopilotDecision(text) {
+  const match = String(text || '').match(/<MRAPI_AUTOPILOT>\s*([\s\S]*?)\s*<\/MRAPI_AUTOPILOT>/i);
+  if (!match) return false;
+  try {
+    const parsed = JSON.parse(match[1]);
+    return ['COMPLETE', 'RETRY', 'BLOCKED'].includes(String(parsed?.action || '').toUpperCase());
+  } catch {
+    return false;
+  }
+}
+
+async function requestAutopilotFormatRepair(page, previousText, timeoutMs) {
+  const input = page.locator('#prompt-textarea').first();
+  await input.waitFor({ state: 'visible', timeout: 60000 });
+  await input.click();
+  await input.fill(`Your previous AUTOPILOT VERIFICATION response did not match the required machine-readable contract. Do not re-run Codex and do not add prose. Re-evaluate the same current executor report already provided in the immediately previous user message, then return ONLY one valid block exactly in this form:\n<MRAPI_AUTOPILOT>\n{\n  "action": "COMPLETE",\n  "reason": "concise verification reasoning",\n  "execution_spec": null\n}\n</MRAPI_AUTOPILOT>\nThe action must be exactly COMPLETE, RETRY, or BLOCKED. For RETRY include execution_spec with exact instructions; otherwise execution_spec must be null.`);
+  await input.press('Enter');
+  console.log('[BRAIN WEB] autopilot format repair requested');
+  return waitForAssistantCompletion(page, previousText, timeoutMs);
+}
+
 async function waitForAssistantCompletion(page, previousText, timeoutMs) {
   const started = Date.now();
   let detectedText = '';
@@ -120,13 +141,18 @@ async function runChatGPTWeb({ cfg, run, prompt, onProgress }) {
 
     if (onProgress) await onProgress(35, `Waiting for ${workerId} Brain plan`);
 
-    const outputText = await waitForAssistantCompletion(
+    let outputText = await waitForAssistantCompletion(
       page,
       previousText,
       cfg.brainTimeoutMs
     );
 
-    if (onProgress) await onProgress(95, 'Brain plan received');
+    if (run.autopilot_phase === 'VERIFY_EXECUTION' && !hasValidAutopilotDecision(outputText)) {
+      if (onProgress) await onProgress(80, 'Brain verification format invalid; requesting one self-repair');
+      outputText = await requestAutopilotFormatRepair(page, outputText, cfg.brainTimeoutMs);
+    }
+
+    if (onProgress) await onProgress(95, 'Brain response received');
 
     return {
       outputText,
