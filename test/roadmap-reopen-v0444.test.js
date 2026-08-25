@@ -25,7 +25,7 @@ test('roadmap UI exposes reopen action only for blocked work', () => {
   assert.match(js, /Next executable milestone/);
 });
 
-test('release version is v0.4.4.4', () => {
-  assert.match(read('src/config/index.js'), /v0\.4\.4\.4/);
-  assert.match(read('src/public/roadmap.html'), /v0\.4\.4\.4/);
+test('release version is v0.4.4.5', () => {
+  assert.match(read('src/config/index.js'), /v0\.4\.4\.5/);
+  assert.match(read('src/public/roadmap.html'), /v0\.4\.4\.5/);
 });

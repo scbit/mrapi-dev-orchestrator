@@ -1,0 +1,12 @@
+MRAPI DEV v0.4.4.5
+
+1. Replace/update the repository with this ZIP.
+2. Commit + Push from your local PC.
+3. Shadow: Pull.
+4. Restart W01 Brain + Runner.
+5. Manual Cloud Run deploy.
+6. Ctrl+F5.
+7. In Roadmap click REOPEN BLOCKED MILESTONE. Expected: Goal ACTIVE, Autopilot Loop PENDING.
+8. Keep Auto-advance OFF, then START NEXT MILESTONE.
+
+HUMAN MANUAL DEPLOY.

@@ -117,7 +117,8 @@ function createRoadmapsRouter({ repos, db }) {
         };
       });
 
-      if (!reopenedMilestoneId) {
+      const roadmapOnlyReopen = !reopenedMilestoneId && roadmap.state === 'BLOCKED';
+      if (!reopenedMilestoneId && !roadmapOnlyReopen) {
         return res.status(409).json({ error: 'NO_BLOCKED_MILESTONE_TO_REOPEN' });
       }
 
@@ -133,6 +134,7 @@ function createRoadmapsRouter({ repos, db }) {
       res.json(serializeFirestore({
         ...updated,
         reopened_milestone_id: reopenedMilestoneId,
+        reopened_roadmap_only: roadmapOnlyReopen,
         next_milestone: nextMilestone(updated)
       }));
     } catch (error) {
