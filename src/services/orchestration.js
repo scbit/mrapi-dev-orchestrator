@@ -1694,6 +1694,7 @@ async function completeBrainRun(db, tenantId, runId, input) {
       priority: input.priority || 'NORMAL',
       state: 'QUEUED',
       phase: 'EXECUTION_PENDING',
+      autopilot_phase: mission.autopilot_mode === true ? (mission.autopilot_phase || 'PROGRAM') : null,
       attempt_count: 0,
       brain_run_id: runId,
       brain_output: brainOutput,

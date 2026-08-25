@@ -237,6 +237,17 @@ function runGitFlow({ repoPath, gitPermissions, missionId, objective, gitCommand
   });
 }
 
+function normalizeRepoRelative(file) {
+  return String(file || '').trim().replace(/\\/g, '/').replace(/^\.\//, '');
+}
+
+function verifyAllowedChanges(statusText, allowedFiles = []) {
+  const allowed = new Set((allowedFiles || []).map(normalizeRepoRelative).filter(Boolean));
+  const changed = parseStatusFiles(statusText).map(normalizeRepoRelative);
+  const unauthorized = changed.filter((file) => !allowed.has(file));
+  return { ok: unauthorized.length === 0, changed_files: changed, unauthorized_files: unauthorized };
+}
+
 module.exports = {
   run,
   githubDesktopGitCandidates,
@@ -247,5 +258,7 @@ module.exports = {
   commitMessageFor,
   normalizePermissions,
   commitAndPush,
-  runGitFlow
+  runGitFlow,
+  parseStatusFiles,
+  verifyAllowedChanges
 };

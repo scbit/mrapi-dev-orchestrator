@@ -4,7 +4,7 @@ const { cfg } = require('./lib/config');
 const { createApi } = require('./lib/api');
 const { buildCodexPrompt } = require('./adapters/codex-desktop-handoff');
 const { runCodexCommand } = require('./adapters/codex-command');
-const { runGitFlow } = require('./adapters/git-flow');
+const { runGitFlow, resolveGitCommand, getStatus, verifyAllowedChanges } = require('./adapters/git-flow');
 
 if (require.main === module && !cfg.baseUrl) throw new Error('MRAPI_BASE_URL is required.');
 if (require.main === module && !cfg.secret) throw new Error('MRAPI_RUNNER_SECRET is required.');
@@ -40,14 +40,14 @@ async function register() {
     executor_type: 'CODEX_CLI_AUTO',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.4.4.2',
+    runner_version: 'v0.4.4.3',
     capabilities: [
       'EXECUTION_RUN:CODEX_CLI_AUTO',
       'CODEX_HANDOFF:VALIDATED',
       'CODEX_EXEC:AUTO',
       'ARTIFACT_UPLOAD:AUTO',
-      'GIT_COMMIT:AUTO',
-      'GIT_PUSH:AUTO',
+      'GIT_STAGE:SEPARATE',
+      'FILE_SCOPE:ENFORCED',
       'RESULT:AUTO',
       'LOG',
       'FILE',
@@ -227,6 +227,7 @@ async function completeExecution(runId, result, git = {}) {
       exit_code: result.exitCode,
       stdout_tail: stdoutTail,
       stderr_tail: stderrTail,
+      scope_check: result.scope_check || null,
       git
     }
   });
@@ -243,6 +244,18 @@ function gitMetadataFromError(error) {
   };
 }
 
+function workingTreeStatus(repoPath) {
+  const command = resolveGitCommand();
+  if (!command) return { available: false, text: '', command: null };
+  const status = getStatus(repoPath, command);
+  return { available: status.ok, text: status.stdout || '', command, error: status.ok ? null : (status.stderr || status.stdout) };
+}
+
+function allowedFilesFromClaim(claim) {
+  const handoff = claim.codex_handoff || claim.task?.codex_handoff || claim.run?.codex_handoff || {};
+  return Array.isArray(handoff.task_spec?.allowed_files) ? handoff.task_spec.allowed_files : [];
+}
+
 async function runTrustedGitFlow({ claim, result }) {
   if (result.success !== true) {
     return {
@@ -257,7 +270,20 @@ async function runTrustedGitFlow({ claim, result }) {
 
   const handoff = claim.codex_handoff || claim.task?.codex_handoff || claim.run?.codex_handoff || {};
   const permissions = handoff.git_permissions || {};
+  const phase = String(handoff.execution_constraints?.autopilot_phase || claim.task?.autopilot_phase || '').trim();
   const repositoryScope = String(handoff.execution_constraints?.repository_scope || '').trim();
+
+  if (permissions.allow_commit !== true && permissions.allow_push !== true) {
+    return {
+      changed: true,
+      committed: false,
+      pushed: false,
+      commit_sha: null,
+      branch: null,
+      reason: phase === 'GIT_STAGE' ? 'GIT_PERMISSION_NOT_GRANTED' : 'GIT_STAGE_REQUIRED',
+      error: null
+    };
+  }
   const repositoryPath = String(handoff.repository_path || '').trim();
 
   // Artifact-only work has no project repository. W01 may still have trusted
@@ -308,6 +334,13 @@ async function executeClaim(claim) {
     console.log('[SHADOW] EXECUTION', task.id, executionRun.id);
     await progress(executionRun.id, 10, 'Starting automatic Codex CLI execution');
 
+    const repositoryPath = String(codexHandoff?.repository_path || cfg.repoPath || '').trim();
+    const beforeStatus = workingTreeStatus(repositoryPath);
+    const autopilotPhase = String(codexHandoff?.execution_constraints?.autopilot_phase || '').trim();
+    if (autopilotPhase && autopilotPhase !== 'GIT_STAGE' && beforeStatus.available && String(beforeStatus.text || '').trim()) {
+      throw new Error('AUTOPILOT_REPO_DIRTY_BEFORE_EXECUTION');
+    }
+
     const prompt = buildCodexPrompt({
       task: handoffTask,
       executionRun: { ...executionRun, codex_handoff: codexHandoff },
@@ -317,6 +350,7 @@ async function executeClaim(claim) {
     const result = await runCodexCommand({
       cfg,
       prompt,
+      guardGitWrites: Boolean(autopilotPhase && autopilotPhase !== 'GIT_STAGE'),
       onOutput(text, stream) {
         const clean = String(text || '').trimEnd();
         if (clean) console.log(`[CODEX ${stream.toUpperCase()}]`, clean);
@@ -325,6 +359,20 @@ async function executeClaim(claim) {
         return progress(executionRun.id, Math.max(10, Math.min(95, percent)), message);
       }
     });
+
+    const allowedFiles = allowedFilesFromClaim(claim);
+    const afterStatus = workingTreeStatus(repositoryPath);
+    const scopeCheck = afterStatus.available
+      ? verifyAllowedChanges(afterStatus.text, allowedFiles)
+      : { ok: true, changed_files: [], unauthorized_files: [] };
+
+    if (!scopeCheck.ok) {
+      result.success = false;
+      result.stderr = `${result.stderr || ''}\nMRAPI_FILE_SCOPE_VIOLATION: ${scopeCheck.unauthorized_files.join(', ')}`;
+      result.scope_check = scopeCheck;
+    } else {
+      result.scope_check = scopeCheck;
+    }
 
     try {
       await addLogEvidence(executionRun.id, task.id, result);
@@ -495,5 +543,7 @@ module.exports = {
   runTrustedGitFlow,
   uploadTaskArtifacts,
   isTransientPollError,
-  isRunAlreadyTerminalError
+  isRunAlreadyTerminalError,
+  workingTreeStatus,
+  allowedFilesFromClaim
 };

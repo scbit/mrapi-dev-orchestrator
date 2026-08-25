@@ -48,6 +48,9 @@ EXECUTION RULES
 - Do not deploy.
 - Preserve working functionality.
 - Run requested tests.
+- Modify/create/delete ONLY files listed in the validated handoff task_spec.allowed_files.
+- Do NOT run git commit, push, pull, fetch, merge, rebase, reset, checkout, switch, or branch mutations.
+- If another file is required, STOP and report that file to the Brain; do not touch it.
 - If blocked, stop and report the blocker.
 - Return changed files, tests, result, and human manual deploy step.`;
 }

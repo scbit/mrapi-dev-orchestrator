@@ -49,6 +49,9 @@ function parseAutopilotDecision(text) {
     execution_spec: parsed.execution_spec && typeof parsed.execution_spec === 'object'
       ? {
           instructions: clean(parsed.execution_spec.instructions || '', 50000),
+          allowed_files: Array.isArray(parsed.execution_spec.allowed_files)
+            ? [...new Set(parsed.execution_spec.allowed_files.map((x) => clean(x, 1000).replace(/\\/g, '/')).filter(Boolean))].slice(0, 100)
+            : [],
           success_criteria: Array.isArray(parsed.execution_spec.success_criteria)
             ? parsed.execution_spec.success_criteria.map((x) => clean(x, 1000)).filter(Boolean).slice(0, 30)
             : [],
@@ -341,6 +344,7 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
             title: `Autopilot retry: ${milestone.title}`,
             objective: `Apply Brain correction for ${milestone.title}`,
             instructions: decision.execution_spec.instructions,
+            allowed_files: decision.execution_spec.allowed_files || [],
             success_criteria: decision.execution_spec.success_criteria,
             stop_conditions: decision.execution_spec.stop_conditions
           },
@@ -377,6 +381,7 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
           priority: mission.priority || 'NORMAL',
           state: 'QUEUED',
           phase: 'EXECUTION_PENDING',
+          autopilot_phase: 'RETRY',
           attempt_count: attempt + 1,
           brain_run_id: run.id,
           brain_completed_at: timestamp(),

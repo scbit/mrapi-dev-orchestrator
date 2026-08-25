@@ -1,0 +1,16 @@
+MRAPI DEV v0.4.4.3
+
+1. Replace/update the repository with this ZIP.
+2. GitHub Desktop: review, Commit, Push.
+3. Shadow: Fetch/Pull.
+4. Restart W01 Brain + Runner using tools\shadow\START MRAPI W01 + RUNNER.cmd.
+5. Manual Cloud Run deploy.
+6. Ctrl+F5 in MRAPI.
+
+TEST
+- Keep Goal Finish W01 Autopilot ACTIVE.
+- Reset Autopilot Loop to PENDING if needed.
+- Start Next Milestone.
+- Brain must declare allowed_files.
+- Runner must not commit/push during PROGRAM/RETRY.
+- If repo is dirty before execution, Autopilot blocks instead of mixing changes.

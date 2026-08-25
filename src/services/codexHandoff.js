@@ -1,4 +1,4 @@
-const CONTRACT_VERSION = 'CODEX_HANDOFF_V0_3_8';
+const CONTRACT_VERSION = 'CODEX_HANDOFF_V0_4_4_3';
 
 const EXECUTION_RULES = Object.freeze([
   'You are the Executor, not the Brain.',
@@ -11,8 +11,9 @@ const EXECUTION_RULES = Object.freeze([
   'Run local tests requested by the task_spec.',
   'Do not access GCP, Google Cloud credentials, or Cloud Run.',
   'Do not deploy.',
-  'Do not run git commit or git push; the Runner owns commit/push after successful Codex execution.',
-  'Runner may commit/push only when trusted MRAPI handoff git_permissions allow it.',
+  'Do not run git commit, push, pull, fetch, merge, rebase, reset, checkout, switch, or branch mutations.',
+  'Git write operations are disabled during PROGRAM/RETRY execution; Git is a separate GIT_STAGE.',
+  'Modify/create/delete ONLY files listed in task_spec.allowed_files. If another file is required, stop and report the blocker.',
   'Stop if the Brain stop conditions are met.'
 ]);
 
@@ -30,6 +31,14 @@ function snapshotOrNull(task) {
   return objectOrNull(task.execution_snapshot) || null;
 }
 
+function normalizeAllowedFiles(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value
+    .map((item) => String(item || '').trim().replace(/\\/g, '/').replace(/^\.\//, ''))
+    .filter((item) => item && !item.startsWith('/') && !item.includes('..'))
+  )].slice(0, 100);
+}
+
 function normalizeTaskSpec(task, brainRun) {
   const snapshot = snapshotOrNull(task);
   if (snapshot) {
@@ -42,7 +51,8 @@ function normalizeTaskSpec(task, brainRun) {
     return {
       title: String(spec.title || task.title || objective || 'Approved execution task').trim(),
       objective,
-      instructions
+      instructions,
+      allowed_files: normalizeAllowedFiles(spec.allowed_files || task.allowed_files)
     };
   }
 
@@ -71,7 +81,8 @@ function normalizeTaskSpec(task, brainRun) {
   return {
     title: String(sourceSpec.title || task.title || objective || 'Codex execution task').trim(),
     objective,
-    instructions
+    instructions,
+    allowed_files: normalizeAllowedFiles(sourceSpec.allowed_files || task.allowed_files)
   };
 }
 
@@ -85,6 +96,7 @@ function normalizeExecutionConstraints(task, brainRun) {
       no_deploy: true,
       deployment: 'HUMAN_MANUAL_DEPLOY',
       repository_scope: snapshot.repository_path ? 'PROJECT_REPOSITORY_ONLY' : 'ARTIFACT_WORKSPACE_ONLY',
+      autopilot_phase: task?.autopilot_phase || brainRun?.autopilot_phase || null,
       forbidden_actions: [
         'GCP_ACCESS',
         'CLOUD_RUN_ACCESS',
@@ -106,6 +118,7 @@ function normalizeExecutionConstraints(task, brainRun) {
     no_deploy: true,
     deployment: 'HUMAN_MANUAL_DEPLOY',
     repository_scope: 'LOCAL_REPOSITORY_ONLY',
+    autopilot_phase: task?.autopilot_phase || brainRun?.autopilot_phase || null,
     forbidden_actions: [
       'GCP_ACCESS',
       'CLOUD_RUN_ACCESS',
@@ -116,8 +129,12 @@ function normalizeExecutionConstraints(task, brainRun) {
   };
 }
 
-function normalizeGitPermissions(workerProfile) {
+function normalizeGitPermissions(workerProfile, mission) {
   const permissions = objectOrNull(workerProfile?.permissions) || {};
+  const gitStage = mission?.autopilot_mode === true && mission?.autopilot_phase === 'GIT_STAGE';
+  if (mission?.autopilot_mode === true && !gitStage) {
+    return { allow_commit: false, allow_push: false, allowed_branch: 'main', reason: 'AUTOPILOT_GIT_STAGE_REQUIRED' };
+  }
   return {
     allow_commit: permissions.allow_git_commit === true,
     allow_push: permissions.allow_git_push === true,
@@ -192,6 +209,9 @@ function buildCodexHandoff(input) {
   const scope = trustedScope({ tenantId, task, mission, brainRun });
   const taskSpec = normalizeTaskSpec(task, brainRun);
   const snapshot = snapshotOrNull(task);
+  if (mission?.autopilot_mode === true && taskSpec.allowed_files.length === 0) {
+    throw fail('CODEX_HANDOFF_ALLOWED_FILES_REQUIRED');
+  }
   const handoffRepositoryPath = snapshot
     ? (snapshot.repository_path || snapshot.task_workspace_path || 'NO_REPOSITORY_ARTIFACT_WORKSPACE')
     : String(repositoryPath || '').trim();
@@ -211,7 +231,7 @@ function buildCodexHandoff(input) {
     task_spec: taskSpec,
     execution_snapshot: snapshot || null,
     execution_constraints: normalizeExecutionConstraints(task, brainRun),
-    git_permissions: normalizeGitPermissions(workerProfile),
+    git_permissions: normalizeGitPermissions(workerProfile, mission),
     repository_path: handoffRepositoryPath,
     execution_rules: [...EXECUTION_RULES],
     return_contract: [
@@ -219,7 +239,8 @@ function buildCodexHandoff(input) {
       'tests run + results',
       'success/failure',
       'concise summary',
-      'HUMAN MANUAL DEPLOY if deployment is required'
+      'HUMAN MANUAL DEPLOY if deployment is required',
+      'changed_files must stay within task_spec.allowed_files'
     ]
   };
 }
@@ -227,5 +248,6 @@ function buildCodexHandoff(input) {
 module.exports = {
   CONTRACT_VERSION,
   EXECUTION_RULES,
-  buildCodexHandoff
+  buildCodexHandoff,
+  normalizeAllowedFiles
 };

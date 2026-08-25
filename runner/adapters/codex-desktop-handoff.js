@@ -65,6 +65,9 @@ ${handoff?.repository_path || cfg.repoPath}
 BRAIN INSTRUCTIONS
 ${brainInstructions}
 
+ALLOWED FILES — HARD SCOPE
+${JSON.stringify(handoff?.task_spec?.allowed_files || [], null, 2)}
+
 EXECUTION CONSTRAINTS
 ${JSON.stringify(handoff?.execution_constraints || {
   no_gcp: true,
