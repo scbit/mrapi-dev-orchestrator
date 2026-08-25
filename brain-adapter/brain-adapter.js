@@ -50,15 +50,10 @@ async function processRun(run) {
         })
     });
 
-    await api.request(`/api/brain/runs/${encodeURIComponent(run.id)}/complete`, {
+    const completionPayload = {
       output_text: brain.outputText,
       objective: run.objective || '',
       worker_id: run.worker_id,
-      task_spec: {
-        title: run.objective || 'Execution task',
-        objective: run.objective || '',
-        instructions: brain.outputText
-      },
       execution_constraints: {
         no_gcp: true,
         no_cloud_run: true,
@@ -66,7 +61,19 @@ async function processRun(run) {
         deployment: 'HUMAN_MANUAL_DEPLOY'
       },
       brain_chat_url: brain.chatUrl
-    });
+    };
+
+    // For normal Missions keep the legacy fallback task spec. For Autopilot,
+    // the structured MRAPI_CONTROL block from the Brain must be the sole task scope.
+    if (run.autopilot_mode !== true) {
+      completionPayload.task_spec = {
+        title: run.objective || 'Execution task',
+        objective: run.objective || '',
+        instructions: brain.outputText
+      };
+    }
+
+    await api.request(`/api/brain/runs/${encodeURIComponent(run.id)}/complete`, completionPayload);
 
     console.log('[BRAIN] COMPLETE', run.id);
   } catch (error) {

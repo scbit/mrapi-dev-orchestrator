@@ -1,0 +1,11 @@
+MRAPI DEV — Autopilot allowed_files fix
+
+1. Replace repo files with this ZIP.
+2. Commit + Push.
+3. Shadow: Pull.
+4. Restart START MRAPI W01 + RUNNER.cmd.
+5. Manual Cloud Run deploy.
+6. Ctrl+F5.
+7. Create/use a clean ACTIVE Goal with Autopilot Loop PENDING and START NEXT MILESTONE.
+
+Expected: W01 Brain returns allowed_files and Runner accepts the bounded Codex task.

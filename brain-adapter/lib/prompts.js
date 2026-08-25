@@ -33,6 +33,7 @@ Your response MUST describe the exact bounded executor work for this CURRENT mil
   "task_spec": {
     "title": "short current milestone execution title",
     "objective": "current milestone outcome",
+    "allowed_files": ["repo-relative/path.ext"],
     "instructions": "OBJECTIVE\\n...\\nCONTEXT\\n...\\nFILES / AREAS\\n...\\nIMPLEMENTATION\\n...\\nTESTS\\n...\\nSUCCESS CRITERIA\\n...\\nSTOP CONDITIONS\\n...\\nDEPLOY\\nHUMAN MANUAL DEPLOY - DO NOT DEPLOY"
   }
 }

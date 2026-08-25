@@ -902,11 +902,15 @@ function parseBrainResponse(rawResponse, input = {}) {
     decision.execution_type ||
     (requiresExecution ? 'CODEX' : 'BRAIN_ONLY');
 
-  const taskSpec = input.task_spec && typeof input.task_spec === 'object'
-    ? { ...input.task_spec }
-    : decision.task_spec && typeof decision.task_spec === 'object'
-      ? { ...decision.task_spec }
-      : {};
+  const inputTaskSpec = input.task_spec && typeof input.task_spec === 'object'
+    ? input.task_spec
+    : {};
+  const decisionTaskSpec = decision.task_spec && typeof decision.task_spec === 'object'
+    ? decision.task_spec
+    : {};
+  // The Brain response is authoritative. Adapter-supplied task_spec is only a fallback.
+  // This is critical for Autopilot fields such as allowed_files.
+  const taskSpec = { ...inputTaskSpec, ...decisionTaskSpec };
 
   let finalResultText = taggedResult ||
     normalizeFinalResult(input.final_result) ||
