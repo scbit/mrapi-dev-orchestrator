@@ -7,6 +7,7 @@ APPLY_v0.4.2.3.txt
 APPLY_v0.4.3.0.txt
 APPLY_v0.4.3.1.txt
 APPLY_v0.4.4.0.txt
+APPLY_v0.4.4.1.txt
 CODEX_EXECUTION.md
 CODEX_TASK.md
 Dockerfile
@@ -18,6 +19,7 @@ README.md
 RELEASE_NOTES_v0.4.3.0.md
 RELEASE_NOTES_v0.4.3.1.md
 RELEASE_NOTES_v0.4.4.0.md
+RELEASE_NOTES_v0.4.4.1.md
 brain-adapter/.env.example
 brain-adapter/adapters/chatgpt-web.js
 brain-adapter/brain-adapter.js
@@ -111,6 +113,7 @@ src/services/orchestration.js
 src/services/roadmap.js
 src/services/storage.js
 src/utils/firestore.js
+test/autopilot-firestore-nested-timestamp-v0441.test.js
 test/autopilot-loop-service-v0440.test.js
 test/autopilot-loop-v0440.test.js
 test/bootstrap.test.js

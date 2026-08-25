@@ -1,0 +1,11 @@
+MRAPI DEV v0.4.4.1 - Autopilot Firestore hotfix
+
+1. Replace/update the repository with this ZIP.
+2. GitHub Desktop: review, commit and push.
+3. Shadow: Fetch/Pull.
+4. Restart W01 Brain + Runner.
+5. Manual Cloud Run deploy.
+6. Ctrl+F5.
+7. Roadmap > Finish W01 Autopilot > START NEXT MILESTONE.
+
+Expected: Autopilot Loop moves from PENDING to PLANNING and a W01 Brain Run is created.

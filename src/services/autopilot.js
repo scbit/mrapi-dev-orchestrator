@@ -12,6 +12,13 @@ function timestamp() {
   }
 }
 
+// Firestore transform sentinels (serverTimestamp) cannot be stored inside array elements.
+// Roadmap milestones are persisted as an array, so nested milestone timestamps must be
+// concrete values. Top-level document timestamps continue using serverTimestamp().
+function milestoneTimestamp() {
+  return new Date();
+}
+
 function clean(value, max = 12000) {
   return String(value ?? '').trim().slice(0, max);
 }
@@ -58,7 +65,7 @@ function milestoneWithState(roadmap, milestoneId, state, extra = {}) {
   const milestones = (roadmap.milestones || []).map((item) => {
     if (item.id !== milestoneId) return item;
     found = true;
-    return { ...item, state, ...extra, updated_at: timestamp() };
+    return { ...item, state, ...extra, updated_at: milestoneTimestamp() };
   });
   if (!found) {
     const error = new Error('MILESTONE_NOT_FOUND');
@@ -152,7 +159,7 @@ async function startNextRoadmapMilestone(db, tenantId, roadmapId, options = {}) 
     tx.set(roadmapRef, {
       milestones: milestoneWithState(roadmap, milestone.id, 'PLANNING', {
         mission_id: missionRef.id,
-        started_at: timestamp()
+        started_at: milestoneTimestamp()
       }),
       updated_at: timestamp()
     }, { merge: true });
@@ -284,7 +291,7 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
 
     if (decision.action === 'COMPLETE') {
       const allMilestones = milestoneWithState(roadmap, milestone.id, 'COMPLETED', {
-        completed_at: timestamp(),
+        completed_at: milestoneTimestamp(),
         verification_brain_run_id: run.id
       });
       const roadmapCompleted = allMilestones.every((item) => ['COMPLETED', 'SKIPPED'].includes(item.state));
