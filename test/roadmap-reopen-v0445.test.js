@@ -17,6 +17,6 @@ test('reopen still rejects when neither roadmap nor milestone is blocked', () =>
   assert.match(route, /NO_BLOCKED_MILESTONE_TO_REOPEN/);
 });
 
-test('release version is v0.4.4.5', () => {
-  assert.equal(require(path.join(root, 'src/config')).VERSION, 'v0.4.4.5');
+test('release version is v0.4.4.6', () => {
+  assert.equal(require(path.join(root, 'src/config')).VERSION, 'v0.4.4.6');
 });

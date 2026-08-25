@@ -122,8 +122,29 @@ function createRoadmapsRouter({ repos, db }) {
         return res.status(409).json({ error: 'NO_BLOCKED_MILESTONE_TO_REOPEN' });
       }
 
+      // A previous blocked attempt can leave a stale mission_id on a milestone
+      // that has already been reset to PENDING. That state is inconsistent:
+      // PENDING means a fresh Mission may be created. Clear only stale runtime
+      // linkage from PENDING milestones when reopening the blocked roadmap; the
+      // historical Mission/Runs remain persisted independently for audit.
+      const reopenedMilestones = roadmapOnlyReopen
+        ? milestones.map((item) => item.state === 'PENDING' && item.mission_id
+          ? {
+              ...item,
+              mission_id: null,
+              verification_brain_run_id: null,
+              started_at: null,
+              completed_at: null,
+              blocked_at: null,
+              blocker_code: null,
+              blocker_message: null,
+              updated_at: now()
+            }
+          : item)
+        : milestones;
+
       const updated = await repos.roadmaps.upsert(roadmap.id, {
-        milestones,
+        milestones: reopenedMilestones,
         state: 'ACTIVE',
         blocker_code: null,
         blocker_message: null,

@@ -46,5 +46,5 @@ test('roadmap UI exposes explicit start and real auto-advance language', () => {
   assert.match(html, /START NEXT MILESTONE/);
   assert.match(html, /Auto-advance: after Brain verifies COMPLETE/);
   assert.match(js, /\/advance/);
-  assert.match(html, /v0\.4\.4\.5/);
+  assert.match(html, /v0\.4\.4\.6/);
 });
