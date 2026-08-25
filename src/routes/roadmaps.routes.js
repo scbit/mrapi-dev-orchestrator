@@ -88,6 +88,59 @@ function createRoadmapsRouter({ repos, db }) {
   });
 
 
+  router.post('/:roadmapId/reopen', async (req, res, next) => {
+    try {
+      const roadmap = await repos.roadmaps.getById(req.params.roadmapId);
+      if (!roadmap || roadmap.tenant_id !== req.tenantId) {
+        return res.status(404).json({ error: 'ROADMAP_NOT_FOUND' });
+      }
+
+      const requestedMilestoneId = String(req.body?.milestone_id || '').trim();
+      let reopenedMilestoneId = null;
+      const milestones = (roadmap.milestones || []).map((item) => {
+        const shouldReopen = requestedMilestoneId
+          ? item.id === requestedMilestoneId && item.state === 'BLOCKED'
+          : reopenedMilestoneId === null && item.state === 'BLOCKED';
+        if (!shouldReopen) return item;
+        reopenedMilestoneId = item.id;
+        return {
+          ...item,
+          state: 'PENDING',
+          mission_id: null,
+          verification_brain_run_id: null,
+          started_at: null,
+          completed_at: null,
+          blocked_at: null,
+          blocker_code: null,
+          blocker_message: null,
+          updated_at: now()
+        };
+      });
+
+      if (!reopenedMilestoneId) {
+        return res.status(409).json({ error: 'NO_BLOCKED_MILESTONE_TO_REOPEN' });
+      }
+
+      const updated = await repos.roadmaps.upsert(roadmap.id, {
+        milestones,
+        state: 'ACTIVE',
+        blocker_code: null,
+        blocker_message: null,
+        blocked_at: null,
+        updated_at: now()
+      });
+
+      res.json(serializeFirestore({
+        ...updated,
+        reopened_milestone_id: reopenedMilestoneId,
+        next_milestone: nextMilestone(updated)
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+
   router.post('/:roadmapId/advance', async (req, res, next) => {
     try {
       const started = await startNextRoadmapMilestone(db, req.tenantId, req.params.roadmapId, {

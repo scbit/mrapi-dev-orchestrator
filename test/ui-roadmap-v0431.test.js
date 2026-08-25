@@ -9,7 +9,7 @@ test('main control room exposes Projects and Roadmap navigation', () => {
   const html = read('src/public/index.html');
   assert.match(html, /id="projectsContextNav"/);
   assert.match(html, /id="roadmapNav"/);
-  assert.match(html, /v0\.4\.4\.2/);
+  assert.match(html, /v0\.4\.4\.4/);
 });
 
 test('control room navigation links to integrated context and roadmap page', () => {

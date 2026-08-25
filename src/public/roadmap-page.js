@@ -92,6 +92,10 @@ function editRoadmap(id) {
   $('#roadmapObjective').value = item.objective || '';
   $('#roadmapWorker').value = item.owner_worker_id || 'W01';
   $('#roadmapState').value = item.state || 'DRAFT';
+  const blockedMilestone = (item.milestones || []).find((m) => m.state === 'BLOCKED');
+  const reopenButton = $('#reopenRoadmapButton');
+  reopenButton.hidden = !(item.state === 'BLOCKED' || blockedMilestone);
+  reopenButton.dataset.milestoneId = blockedMilestone?.id || '';
   $('#autoAdvance').checked = Boolean(item.auto_advance);
   $('#roadmapMilestones').value = (item.milestones || []).sort((a,b)=>(a.order||0)-(b.order||0)).map((m) => m.title).join('\n');
   renderMilestoneStateEditor(item);
@@ -106,6 +110,8 @@ function openNewRoadmap() {
   $('#roadmapObjective').value = 'Make W01 able to advance an approved roadmap with Brain-led programming, Codex execution, verification and reporting, escalating only important decisions.';
   $('#roadmapWorker').value = 'W01';
   $('#roadmapState').value = 'ACTIVE';
+  $('#reopenRoadmapButton').hidden = true;
+  $('#reopenRoadmapButton').dataset.milestoneId = '';
   $('#autoAdvance').checked = false;
   $('#roadmapMilestones').value = ['Project Context','Roadmap Engine','Autopilot Loop','Git / Deploy Pipeline','Reporting / Notifications','Mission Conversation'].join('\n');
   renderMilestoneStateEditor(null);
@@ -177,6 +183,30 @@ $('#roadmapForm').addEventListener('submit', async (event) => {
     await loadRoadmaps();
     editRoadmap(saved.id);
   } catch (error) { message.textContent = `Error: ${error.message}`; }
+});
+
+
+$('#reopenRoadmapButton').addEventListener('click', async () => {
+  const id = $('#roadmapId').value;
+  if (!id) return;
+  const button = $('#reopenRoadmapButton');
+  button.disabled = true;
+  $('#roadmapMessage').textContent = 'Reopening blocked milestone…';
+  try {
+    const updated = await api(`/api/roadmaps/${encodeURIComponent(id)}/reopen`, {
+      method: 'POST',
+      body: JSON.stringify({ milestone_id: button.dataset.milestoneId || null })
+    });
+    $('#roadmapMessage').textContent = updated.next_milestone
+      ? `Reopened. Next executable milestone: ${updated.next_milestone.title}`
+      : 'Reopened.';
+    await loadRoadmaps();
+    editRoadmap(id);
+  } catch (error) {
+    $('#roadmapMessage').textContent = `Reopen failed: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
 });
 
 

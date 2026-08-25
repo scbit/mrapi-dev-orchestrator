@@ -1,0 +1,10 @@
+MRAPI DEV v0.4.4.4
+
+1. Replace repository files with this ZIP.
+2. Commit + Push from GitHub Desktop.
+3. Shadow: Fetch/Pull.
+4. Restart W01 Brain + Runner.
+5. Manual Cloud Run deploy.
+6. Ctrl+F5.
+7. Roadmap: click REOPEN BLOCKED MILESTONE, confirm Goal ACTIVE + Autopilot Loop PENDING.
+8. Keep Auto-advance OFF for the controlled E2E test.
