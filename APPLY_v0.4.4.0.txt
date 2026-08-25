@@ -1,0 +1,20 @@
+MRAPI DEV v0.4.4.0
+
+1. Extract this ZIP over the current mrapi-dev-orchestrator repository and replace files.
+2. GitHub Desktop: review changes, Commit to main, Push origin.
+3. Shadow PC: Fetch/Pull origin main.
+4. Restart W01 Brain Adapter and Runner so Shadow uses the new Autopilot protocol.
+5. Deploy Cloud Run manually from the updated repository.
+6. Ctrl+F5 in MRAPI.
+
+E2E TEST AFTER DEPLOY
+- Open Roadmap -> Finish W01 Autopilot.
+- Keep Auto-advance OFF for the first test.
+- Ensure W01 Brain + Runner are ONLINE on Shadow.
+- Click START NEXT MILESTONE.
+- Expected: milestone PLANNING -> RUNNING -> VERIFYING -> COMPLETED or bounded RETRY/BLOCKED.
+
+IMPORTANT
+- Brain designs/programs/decides corrections.
+- Codex only executes exact Brain instructions, tests, artifacts/browser/Git as permitted.
+- Codex must not deploy or access Cloud Run/GCP.

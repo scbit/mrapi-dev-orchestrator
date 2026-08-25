@@ -179,4 +179,29 @@ $('#roadmapForm').addEventListener('submit', async (event) => {
   } catch (error) { message.textContent = `Error: ${error.message}`; }
 });
 
+
+$('#startNextMilestoneButton').addEventListener('click', async () => {
+  const id = $('#roadmapId').value;
+  if (!id) {
+    $('#roadmapMessage').textContent = 'Save the roadmap first.';
+    return;
+  }
+  const button = $('#startNextMilestoneButton');
+  button.disabled = true;
+  $('#roadmapMessage').textContent = 'Starting next milestone…';
+  try {
+    const started = await api(`/api/roadmaps/${encodeURIComponent(id)}/advance`, {
+      method: 'POST',
+      body: JSON.stringify({ max_attempts: 3 })
+    });
+    $('#roadmapMessage').textContent = `Autopilot started. Mission ${started.mission_id} · Brain Run ${started.brain_run_id}`;
+    await loadRoadmaps();
+    editRoadmap(id);
+  } catch (error) {
+    $('#roadmapMessage').textContent = `Start failed: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
+});
+
 init().catch((error) => { document.body.insertAdjacentHTML('beforeend', `<pre>${esc(error.message)}</pre>`); });

@@ -10,7 +10,7 @@
 <body>
   <main class="roadmap-shell">
     <header class="roadmap-top">
-      <div><span class="eyebrow">MRAPI DEV v0.4.3.1</span><h1>Project Context + Roadmap</h1><p>Persistent context for W01 and the base for Autopilot.</p></div>
+      <div><span class="eyebrow">MRAPI DEV v0.4.4.0</span><h1>Project Context + Roadmap</h1><p>Persistent context for W01 and the base for Autopilot.</p></div>
       <a class="ghost-button roadmap-link" href="/">← Control Room</a>
     </header>
 
@@ -44,8 +44,8 @@
         <div class="roadmap-two"><label class="field"><span>Owner Worker</span><input id="roadmapWorker" value="W01"></label><label class="field"><span>State</span><select id="roadmapState"><option>DRAFT</option><option>ACTIVE</option><option>PAUSED</option><option>BLOCKED</option><option>COMPLETED</option></select></label></div>
         <label class="field"><span>Milestones — one per line</span><textarea id="roadmapMilestones" rows="9" placeholder="Project Context\nRoadmap Engine\nAutopilot Loop\nGit / Deploy Pipeline\nReporting / Notifications\nMission Conversation"></textarea></label>
         <div id="milestoneStateEditor" class="roadmap-milestones"></div>
-        <label class="roadmap-check"><input type="checkbox" id="autoAdvance"> <span>Auto-advance enabled (stored now; execution loop comes next)</span></label>
-        <button class="primary-button" type="submit">SAVE ROADMAP</button>
+        <label class="roadmap-check"><input type="checkbox" id="autoAdvance"> <span>Auto-advance: after Brain verifies COMPLETE, start the next executable milestone automatically.</span></label>
+        <div class="roadmap-action-row"><button class="primary-button" type="submit">SAVE ROADMAP</button><button class="ghost-button" type="button" id="startNextMilestoneButton">START NEXT MILESTONE</button></div>
         <div id="roadmapMessage" class="roadmap-message"></div>
       </form>
     </section>

@@ -2,6 +2,8 @@ const crypto = require('crypto');
 const express = require('express');
 const { serializeFirestore } = require('../utils/firestore');
 const { normalizeRoadmapInput, nextMilestone, MILESTONE_STATES } = require('../services/roadmap');
+const { startNextRoadmapMilestone } = require('../services/autopilot');
+const { dispatchMission } = require('../services/orchestration');
 
 function now() {
   return new Date();
@@ -13,7 +15,7 @@ async function requireProject(repos, tenantId, projectId) {
   return project;
 }
 
-function createRoadmapsRouter({ repos }) {
+function createRoadmapsRouter({ repos, db }) {
   const router = express.Router();
 
   router.get('/', async (req, res, next) => {
@@ -81,6 +83,27 @@ function createRoadmapsRouter({ repos }) {
       });
       res.json(serializeFirestore(updated));
     } catch (error) {
+      next(error);
+    }
+  });
+
+
+  router.post('/:roadmapId/advance', async (req, res, next) => {
+    try {
+      const started = await startNextRoadmapMilestone(db, req.tenantId, req.params.roadmapId, {
+        milestone_id: req.body?.milestone_id || null,
+        max_attempts: req.body?.max_attempts || 3
+      });
+      const brainRun = await dispatchMission(db, req.tenantId, started.mission.id);
+      res.status(201).json(serializeFirestore({
+        ok: true,
+        roadmap_id: started.roadmap.id,
+        milestone_id: started.milestone.id,
+        mission_id: started.mission.id,
+        brain_run_id: brainRun.id
+      }));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
       next(error);
     }
   });

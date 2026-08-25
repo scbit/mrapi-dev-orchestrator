@@ -7,6 +7,7 @@ try {
 const { RUN_TYPES } = require('../constants/runTypes');
 const { EVIDENCE_TYPES } = require('../constants/evidenceTypes');
 const { buildCodexHandoff } = require('./codexHandoff');
+const { queueVerificationBrainRun, completeVerificationBrainRun } = require('./autopilot');
 
 function getEvidenceBucket() {
   return require('./storage').getEvidenceBucket();
@@ -1449,6 +1450,10 @@ async function addEvidence(db, tenantId, runId, input) {
 
 async function completeBrainRun(db, tenantId, runId, input) {
   const runRef = db.collection('runs').doc(runId);
+  const preflight = await runRef.get();
+  if (preflight.exists && preflight.data().tenant_id === tenantId && preflight.data().autopilot_phase === 'VERIFY_EXECUTION') {
+    return completeVerificationBrainRun(db, tenantId, runId, input || {});
+  }
   let result;
 
   await db.runTransaction(async (tx) => {
@@ -2619,6 +2624,16 @@ async function completeRun(db, tenantId, runId, input) {
       result_id: resultRef.id
     };
   });
+
+  const verification = await queueVerificationBrainRun(db, tenantId, {
+    ...result,
+    summary: input.summary || '',
+    output: input.output || null,
+    error: input.error || null
+  });
+  if (verification) {
+    result = { ...result, autopilot_verification: verification };
+  }
 
   await emitEvent(db, tenantId, result.success ? 'RUN_COMPLETED' : 'RUN_FAILED', result,
     result.success ? 'OPERATIVE' : 'WARNING');

@@ -2,6 +2,40 @@ const { workerBrainProfile } = require('./worker-profiles');
 
 function brainPrompt(run, cfg) {
   const workerId = String(run.worker_id || 'W01').toUpperCase();
+  if (run.autopilot_phase === 'VERIFY_EXECUTION') {
+    const report = JSON.stringify(run.executor_report || {}, null, 2);
+    return `You are ${workerId} — the BRAIN for MRAPI DEV ORCHESTRATOR.
+
+AUTOPILOT VERIFICATION
+Roadmap: ${run.roadmap_id || ''}
+Milestone: ${run.milestone_id || ''}
+Mission: ${run.mission_id || ''}
+
+EXECUTOR REPORT
+${report}
+
+RULES
+- You are the Brain. Codex is hands only and does not design, program, debug strategy, or decide architecture.
+- Evaluate whether the executor result actually satisfies the milestone.
+- If a correction is needed, YOU define the exact correction and return it as execution_spec for Codex to apply.
+- Do not deploy Cloud Run. Human manual deploy only.
+- Use RETRY only when another bounded executor pass can fix/verify the issue.
+- Use BLOCKED when human input/permission is required or automatic retries should stop.
+- Use COMPLETE only when the result is genuinely verified.
+
+Return ONLY this block with valid JSON:
+<MRAPI_AUTOPILOT>
+{
+  "action": "COMPLETE | RETRY | BLOCKED",
+  "reason": "concise verification reasoning",
+  "execution_spec": {
+    "instructions": "exact executor instructions; required only for RETRY",
+    "success_criteria": ["verifiable criterion"],
+    "stop_conditions": ["HUMAN MANUAL DEPLOY - DO NOT DEPLOY"]
+  }
+}
+</MRAPI_AUTOPILOT>`;
+  }
   const profile = workerBrainProfile(workerId) || workerBrainProfile('W01');
   const contract = JSON.stringify(profile.output_contract, null, 2);
   const planningContract = JSON.stringify({
@@ -46,7 +80,7 @@ ${profile.permission_expectations.map((item) => `- ${item}`).join('\n')}
 
 RULES
 - You are the Brain. Codex is the Executor.
-- The Brain thinks. Codex executes.
+- The Brain thinks, designs, programs and defines corrections. Codex executes exact instructions only.
 - MRAPI DEV is the source of truth.
 - Preserve multi-tenancy and existing functionality.
 - Do not execute changes in the local repository.

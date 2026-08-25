@@ -2,8 +2,10 @@ const express = require('express');
 const { runnerAuth } = require('../middleware/runnerAuth');
 const {
   updateRunProgress,
-  completeBrainRun
+  completeBrainRun,
+  dispatchMission
 } = require('../services/orchestration');
+const { startNextRoadmapMilestone } = require('../services/autopilot');
 
 function timestamp() {
   try {
@@ -204,12 +206,31 @@ function createBrainRouter({ db }) {
 
   router.post('/runs/:runId/complete', async (req, res, next) => {
     try {
-      const result = await completeBrainRun(
+      let result = await completeBrainRun(
         db,
         req.tenantId,
         req.params.runId,
         req.body || {}
       );
+      if (result?.action === 'COMPLETE' && result.auto_advance === true && result.roadmap_id) {
+        try {
+          const started = await startNextRoadmapMilestone(db, req.tenantId, result.roadmap_id);
+          const brainRun = await dispatchMission(db, req.tenantId, started.mission.id);
+          result = {
+            ...result,
+            next_milestone_started: true,
+            next_milestone_id: started.milestone.id,
+            next_mission_id: started.mission.id,
+            next_brain_run_id: brainRun.id
+          };
+        } catch (advanceError) {
+          result = {
+            ...result,
+            next_milestone_started: false,
+            auto_advance_error: String(advanceError.message || advanceError).slice(0, 1000)
+          };
+        }
+      }
       res.json(result);
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });

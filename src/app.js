@@ -31,7 +31,7 @@ function createApp(options = {}) {
   app.use('/api/dashboard', createDashboardRouter({ db, repos }));
   app.use('/api/workers', createWorkersRouter({ repos }));
   app.use('/api/projects', createProjectsRouter({ repos }));
-  app.use('/api/roadmaps', createRoadmapsRouter({ repos }));
+  app.use('/api/roadmaps', createRoadmapsRouter({ repos, db }));
   app.use('/api/missions', createMissionsRouter({ repos }));
   app.use('/api/tasks', createTasksRouter({ repos }));
   app.use('/api/executors', createExecutorsRouter({ repos }));
