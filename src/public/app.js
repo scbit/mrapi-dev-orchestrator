@@ -709,3 +709,10 @@ function bindEvents() {
 bindEvents();
 loadAll();
 setInterval(loadAll, 5000);
+
+
+// v0.4.3.1 — Project Context / Roadmap entry points.
+const projectsContextNav = document.querySelector('#projectsContextNav');
+if (projectsContextNav) projectsContextNav.addEventListener('click', () => { window.location.href = '/roadmap.html#project-context'; });
+const roadmapNav = document.querySelector('#roadmapNav');
+if (roadmapNav) roadmapNav.addEventListener('click', () => { window.location.href = '/roadmap.html#roadmap'; });

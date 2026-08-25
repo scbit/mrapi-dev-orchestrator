@@ -10,12 +10,12 @@
 <body>
   <main class="roadmap-shell">
     <header class="roadmap-top">
-      <div><span class="eyebrow">MRAPI DEV v0.4.3.0</span><h1>Project Context + Roadmap</h1><p>Persistent context for W01 and the base for Autopilot.</p></div>
+      <div><span class="eyebrow">MRAPI DEV v0.4.3.1</span><h1>Project Context + Roadmap</h1><p>Persistent context for W01 and the base for Autopilot.</p></div>
       <a class="ghost-button roadmap-link" href="/">← Control Room</a>
     </header>
 
     <section class="roadmap-grid">
-      <article class="panel">
+      <article class="panel" id="project-context">
         <div class="panel-header"><div><span class="eyebrow">PROJECT CONTEXT</span><h2>Projects</h2></div></div>
         <label class="field"><span>Project</span><select id="projectSelect"></select></label>
         <form id="contextForm">
@@ -29,7 +29,7 @@
         </form>
       </article>
 
-      <article class="panel">
+      <article class="panel" id="roadmap">
         <div class="panel-header"><div><span class="eyebrow">ROADMAP ENGINE</span><h2>Goals</h2></div><button class="ghost-button" id="newRoadmapButton">+ Goal</button></div>
         <div id="roadmapList" class="roadmap-list"></div>
       </article>
@@ -43,6 +43,7 @@
         <label class="field"><span>Objective</span><textarea id="roadmapObjective" rows="4" required></textarea></label>
         <div class="roadmap-two"><label class="field"><span>Owner Worker</span><input id="roadmapWorker" value="W01"></label><label class="field"><span>State</span><select id="roadmapState"><option>DRAFT</option><option>ACTIVE</option><option>PAUSED</option><option>BLOCKED</option><option>COMPLETED</option></select></label></div>
         <label class="field"><span>Milestones — one per line</span><textarea id="roadmapMilestones" rows="9" placeholder="Project Context\nRoadmap Engine\nAutopilot Loop\nGit / Deploy Pipeline\nReporting / Notifications\nMission Conversation"></textarea></label>
+        <div id="milestoneStateEditor" class="roadmap-milestones"></div>
         <label class="roadmap-check"><input type="checkbox" id="autoAdvance"> <span>Auto-advance enabled (stored now; execution loop comes next)</span></label>
         <button class="primary-button" type="submit">SAVE ROADMAP</button>
         <div id="roadmapMessage" class="roadmap-message"></div>

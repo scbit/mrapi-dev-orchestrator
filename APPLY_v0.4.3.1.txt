@@ -1,0 +1,15 @@
+MRAPI DEV v0.4.3.1 — UI integration fix
+
+1. Replace/update the repository with this ZIP content.
+2. GitHub Desktop: review changes, Commit, Push.
+3. Shadow PC: Fetch origin / Pull.
+4. Deploy Cloud Run manually from the updated repo.
+5. Hard refresh (Ctrl+F5).
+
+VALIDATE
+- Bottom-left version: v0.4.3.1
+- Sidebar shows Projects and Roadmap.
+- Projects opens Project Context.
+- Roadmap opens Goal/Milestone UI.
+- After saving a roadmap, milestone states can be changed.
+- Mark Project Context COMPLETED and confirm UI reports Autopilot Loop as the next executable milestone (when ordered/dependencies allow it).

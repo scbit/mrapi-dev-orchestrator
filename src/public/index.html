@@ -20,7 +20,8 @@
         <button class="nav-item" data-view="tasks">Tasks</button>
         <button class="nav-item" data-view="workers">Workers</button>
         <button class="nav-item" data-view="workspaces">Workspaces</button>
-        <button class="nav-item" data-view="projects">Projects</button>
+        <button class="nav-item" id="projectsContextNav">Projects</button>
+        <button class="nav-item" id="roadmapNav">Roadmap</button>
         <button class="nav-item" data-view="reports">Reports</button>
         <button class="nav-item" data-view="evidence">Evidence</button>
         <button class="nav-item" data-view="notifications">Notifications</button>
@@ -28,7 +29,7 @@
         <button class="nav-item" data-view="connections">Connections</button>
         <button class="nav-item" data-view="settings">Settings</button>
       </nav>
-      <div class="sidebar-footer"><span class="version">v0.4.2.3</span></div>
+      <div class="sidebar-footer"><span class="version">v0.4.3.1</span></div>
     </aside>
 
     <main class="main">
@@ -84,7 +85,7 @@
 
       <section class="view placeholder-view" id="view-inbox"></section>
       <section class="view placeholder-view" id="view-workspaces"></section>
-      <section class="view placeholder-view" id="view-projects"></section>
+      
       <section class="view" id="view-evidence">
         <div class="section-heading"><div><span class="eyebrow">EVIDENCE</span><h2>Evidence</h2><p>Files and audit records persisted from execution runs.</p></div></div>
         <div id="evidenceList" class="report-list"></div>
