@@ -744,6 +744,45 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
         return claimed;
       }
     } catch (error) {
+      if (error.message === 'CODEX_HANDOFF_ALLOWED_FILES_REQUIRED') {
+        await taskRef.set({
+          state: 'BLOCKED',
+          phase: 'BLOCKED',
+          blocked_reason: 'CODEX_HANDOFF_ALLOWED_FILES_REQUIRED',
+          blocker_code: 'CODEX_HANDOFF_ALLOWED_FILES_REQUIRED',
+          blocker_message: 'Executor task is missing Brain-defined allowed_files. Stale or unsafe task was blocked before execution.',
+          blocker_stage: 'HANDOFF',
+          updated_at: timestamp()
+        }, { merge: true });
+        if (candidate.mission_id) {
+          await missionRef.set({
+            state: 'BLOCKED',
+            blocked_reason: 'CODEX_HANDOFF_ALLOWED_FILES_REQUIRED',
+            block_reason: 'CODEX_HANDOFF_ALLOWED_FILES_REQUIRED',
+            blocker_code: 'CODEX_HANDOFF_ALLOWED_FILES_REQUIRED',
+            blocker_message: 'Executor task is missing Brain-defined allowed_files. Create a fresh Brain run/milestone attempt.',
+            blocker_stage: 'HANDOFF',
+            blocker_task_id: candidate.id,
+            updated_at: timestamp()
+          }, { merge: true });
+        }
+        await emitEvent(db, tenantId, 'CODEX_HANDOFF_ALLOWED_FILES_REQUIRED', {
+          task_id: candidate.id,
+          mission_id: candidate.mission_id || null,
+          worker_id: candidate.worker_id || null,
+          executor_id: executorId
+        }, 'WARNING');
+        operationalLog('warn', '[RUNNER CLAIM BLOCKED]', {
+          endpoint: '/api/runner/next-task',
+          action: 'unsafe_stale_task_blocked',
+          tenant_id: tenantId,
+          executor_id: executorId,
+          task_id: candidate.id,
+          mission_id: candidate.mission_id || null,
+          error: error.message
+        });
+        continue;
+      }
       if (error.message === 'EXECUTION_SNAPSHOT_MISMATCH') {
         await taskRef.set({
           state: 'BLOCKED',
