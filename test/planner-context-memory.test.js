@@ -181,10 +181,12 @@ test('successful intake persists remembered context only after the accepted resp
   const html = await renderPlannerPage();
   const storage = createMemoryStorage();
   let durableBeforeResponse;
+  let submittedPayload;
   const { planner } = createHarness(html, {
     localStorage: storage,
-    fetchImpl: async () => {
+    fetchImpl: async (_url, fetchOptions = {}) => {
       durableBeforeResponse = storage.snapshot()['mrapi.planner.context.v1'];
+      submittedPayload = JSON.parse(fetchOptions.body);
       return response(true, {
         planner_request_id: 'request_1',
         mission_id: 'mission_1',
@@ -199,10 +201,53 @@ test('successful intake persists remembered context only after the accepted resp
   await planner.els.form.listeners.submit({ preventDefault() {} });
 
   assert.equal(durableBeforeResponse, undefined);
+  assert.deepEqual(submittedPayload, {
+    workspace_id: 'workspace_scb',
+    project_id: 'project_scb_development',
+    request: 'Build the Planner context behavior'
+  });
+  assert.equal(Object.hasOwn(submittedPayload, 'tenant_id'), false);
   assert.deepEqual(JSON.parse(storage.snapshot()['mrapi.planner.context.v1']), {
     workspaceId: 'workspace_scb',
     projectId: 'project_scb_development'
   });
+});
+
+test('successful intake is remembered and a later fresh page preloads only context', async () => {
+  const html = await renderPlannerPage();
+  const storage = createMemoryStorage();
+  const first = createHarness(html, {
+    localStorage: storage,
+    fetchImpl: async () => response(true, {
+      planner_request_id: 'request_1',
+      mission_id: 'mission_1',
+      brain_run_id: 'brain_1'
+    })
+  });
+
+  first.planner.els.workspace.value = ' workspace_scb ';
+  first.planner.els.project.value = ' project_scb_development ';
+  first.planner.els.request.value = ' Build the Planner context behavior ';
+  await first.planner.els.form.listeners.submit({ preventDefault() {} });
+
+  assert.deepEqual(JSON.parse(storage.snapshot()['mrapi.planner.context.v1']), {
+    workspaceId: 'workspace_scb',
+    projectId: 'project_scb_development'
+  });
+  assert.ok(storage.snapshot()['mrapi.planner.active.v1'], 'successful intake also leaves transient active Planner state');
+
+  storage.removeItem('mrapi.planner.active.v1');
+  const second = createHarness(html, { localStorage: storage });
+
+  assert.equal(second.planner.els.workspace.value, 'workspace_scb');
+  assert.equal(second.planner.els.project.value, 'project_scb_development');
+  assert.equal(second.planner.els.request.value, '');
+  assert.equal(second.planner.state.requestId, null);
+  assert.equal(second.planner.state.missionId, null);
+  assert.equal(second.planner.state.brainRunId, null);
+  assert.equal(second.planner.state.proposalId, null);
+  assert.equal(second.planner.els.proposalId.value, '');
+  assert.deepEqual(second.calls, []);
 });
 
 test('failed intake does not replace existing remembered context', async () => {
@@ -220,7 +265,31 @@ test('failed intake does not replace existing remembered context', async () => {
   await planner.els.form.listeners.submit({ preventDefault() {} });
 
   assert.equal(storage.snapshot()['mrapi.planner.context.v1'], existing);
+  assert.notDeepEqual(JSON.parse(storage.snapshot()['mrapi.planner.context.v1']), {
+    workspaceId: 'workspace_new',
+    projectId: 'project_old'
+  });
+  assert.notDeepEqual(JSON.parse(storage.snapshot()['mrapi.planner.context.v1']), {
+    workspaceId: 'workspace_old',
+    projectId: 'project_new'
+  });
   assert.match(planner.els.status.textContent, /Planner request failed/);
+});
+
+test('fresh Planner page with no preference starts empty and performs no automatic fetch', async () => {
+  const html = await renderPlannerPage();
+  const { planner, calls } = createHarness(html, { localStorage: createMemoryStorage() });
+
+  assert.equal(planner.els.workspace.value, '');
+  assert.equal(planner.els.project.value, '');
+  assert.equal(planner.els.request.value, '');
+  assert.equal(planner.els.proposalId.value, '');
+  assert.equal(planner.state.requestId, null);
+  assert.equal(planner.state.missionId, null);
+  assert.equal(planner.state.brainRunId, null);
+  assert.equal(planner.state.proposalId, null);
+  assert.equal(planner.state.proposal, null);
+  assert.deepEqual(calls, []);
 });
 
 test('remembered context prefills only workspace and project when no active Planner state exists', async () => {
@@ -241,7 +310,7 @@ test('remembered context prefills only workspace and project when no active Plan
   assert.deepEqual(calls, []);
 });
 
-test('remembered context alone does not call intake, refresh, approval, request-changes, or start endpoints', async () => {
+test('remembered context alone does not call intake, proposal, approval, revision, start, task, or run endpoints', async () => {
   const html = await renderPlannerPage();
   const storage = createMemoryStorage({
     'mrapi.planner.context.v1': JSON.stringify({ workspaceId: 'workspace_scb', projectId: 'project_scb_development' })
@@ -255,6 +324,7 @@ test('remembered context alone does not call intake, refresh, approval, request-
   });
 
   assert.equal(calls.length, 0);
+  assert.equal(calls.some((call) => /\/api\/(planner\/requests|planner\/proposals|planner\/roadmaps|missions|tasks|runs)/.test(call.url)), false);
 });
 
 test('active Planner state restores lifecycle values and takes precedence over remembered context', async () => {
@@ -306,10 +376,14 @@ test('Reset clears transient active state and repopulates workspace/project from
     }),
     'mrapi.planner.context.v1': durable
   });
-  const { planner } = createHarness(html, {
+  const { planner, calls } = createHarness(html, {
     localStorage: storage,
-    fetchImpl: async () => response(true, {})
+    fetchImpl: async (url, fetchOptions = {}) => {
+      calls.push({ url: String(url), options: fetchOptions });
+      return response(true, {});
+    }
   });
+  const callsBeforeReset = calls.length;
 
   planner.els.reset.listeners.click();
 
@@ -323,15 +397,29 @@ test('Reset clears transient active state and repopulates workspace/project from
   assert.equal(planner.els.project.value, 'project_scb_development');
   assert.equal(planner.els.request.value, '');
   assert.equal(planner.els.proposalId.value, '');
+  assert.equal(planner.els.revisionFeedback.value, '');
+  assert.equal(planner.state.proposal, null);
+  assert.equal(planner.state.submitting, false);
+  assert.equal(planner.state.revisionSubmitting, false);
+  assert.equal(calls.length, callsBeforeReset);
 });
 
 test('malformed, incomplete, and non-string remembered context is ignored safely', async () => {
   const html = await renderPlannerPage();
   for (const stored of [
     '{bad json',
+    'null',
+    JSON.stringify('workspace_scb'),
+    JSON.stringify(123),
+    JSON.stringify(['workspace_scb', 'project_scb_development']),
     JSON.stringify({ workspaceId: 'workspace_scb' }),
+    JSON.stringify({ projectId: 'project_scb_development' }),
+    JSON.stringify({ workspaceId: '', projectId: 'project_scb_development' }),
     JSON.stringify({ workspaceId: 'workspace_scb', projectId: '' }),
-    JSON.stringify({ workspaceId: 123, projectId: 'project_scb_development' })
+    JSON.stringify({ workspaceId: '   ', projectId: 'project_scb_development' }),
+    JSON.stringify({ workspaceId: 'workspace_scb', projectId: '   ' }),
+    JSON.stringify({ workspaceId: 123, projectId: 'project_scb_development' }),
+    JSON.stringify({ workspaceId: 'workspace_scb', projectId: { id: 'project_scb_development' } })
   ]) {
     const storage = createMemoryStorage({ 'mrapi.planner.context.v1': stored });
     const { planner } = createHarness(html, { localStorage: storage });
@@ -361,4 +449,74 @@ test('unavailable or throwing localStorage does not break Planner initialization
 
   assert.doesNotThrow(() => createHarness(html));
   assert.doesNotThrow(() => createHarness(html, { localStorage: throwingStorage }));
+});
+
+test('preloaded remembered context still goes through normal intake validation and rejection preserves memory', async () => {
+  const html = await renderPlannerPage();
+  const remembered = JSON.stringify({ workspaceId: 'workspace_old', projectId: 'project_old' });
+  const storage = createMemoryStorage({ 'mrapi.planner.context.v1': remembered });
+  const lifecycleWork = [];
+  const calls = [];
+  const { planner } = createHarness(html, {
+    localStorage: storage,
+    fetchImpl: async (url, fetchOptions = {}) => {
+      calls.push({ url: String(url), options: fetchOptions });
+      if (url === '/api/planner/requests') {
+        const body = JSON.parse(fetchOptions.body);
+        assert.deepEqual(body, {
+          workspace_id: 'workspace_old',
+          project_id: 'project_old',
+          request: 'Use remembered but unauthorized context'
+        });
+        assert.equal(Object.hasOwn(body, 'tenant_id'), false);
+        return response(false, { error: 'PROJECT_NOT_IN_WORKSPACE' });
+      }
+      lifecycleWork.push({ url: String(url), options: fetchOptions });
+      return response(true, {});
+    }
+  });
+
+  assert.equal(planner.els.workspace.value, 'workspace_old');
+  assert.equal(planner.els.project.value, 'project_old');
+  planner.els.request.value = 'Use remembered but unauthorized context';
+  await planner.els.form.listeners.submit({ preventDefault() {} });
+
+  assert.equal(calls.length, 1);
+  assert.deepEqual(lifecycleWork, []);
+  assert.equal(storage.snapshot()['mrapi.planner.context.v1'], remembered);
+  assert.equal(storage.snapshot()['mrapi.planner.active.v1'], undefined);
+  assert.equal(planner.state.requestId, null);
+  assert.equal(planner.state.missionId, null);
+  assert.equal(planner.state.brainRunId, null);
+  assert.equal(planner.state.proposalId, null);
+  assert.match(planner.els.status.textContent, /Planner request failed: PROJECT_NOT_IN_WORKSPACE/);
+});
+
+test('later successful valid context replaces remembered pair only after success response', async () => {
+  const html = await renderPlannerPage();
+  const remembered = JSON.stringify({ workspaceId: 'workspace_old', projectId: 'project_old' });
+  const storage = createMemoryStorage({ 'mrapi.planner.context.v1': remembered });
+  let durableBeforeSuccess;
+  const { planner } = createHarness(html, {
+    localStorage: storage,
+    fetchImpl: async () => {
+      durableBeforeSuccess = storage.snapshot()['mrapi.planner.context.v1'];
+      return response(true, {
+        planner_request_id: 'request_new',
+        mission_id: 'mission_new',
+        brain_run_id: 'brain_new'
+      });
+    }
+  });
+
+  planner.els.workspace.value = ' workspace_new ';
+  planner.els.project.value = ' project_new ';
+  planner.els.request.value = ' Valid request for new context ';
+  await planner.els.form.listeners.submit({ preventDefault() {} });
+
+  assert.equal(durableBeforeSuccess, remembered);
+  assert.deepEqual(JSON.parse(storage.snapshot()['mrapi.planner.context.v1']), {
+    workspaceId: 'workspace_new',
+    projectId: 'project_new'
+  });
 });
