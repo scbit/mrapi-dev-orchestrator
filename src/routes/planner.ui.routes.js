@@ -118,6 +118,7 @@ function plannerPageHtml() {
     };
 
     const plannerStorageKey = 'mrapi.planner.active.v1';
+    const plannerContextStorageKey = 'mrapi.planner.context.v1';
 
     function persistPlannerState() {
       try {
@@ -135,6 +136,42 @@ function plannerPageHtml() {
 
     function clearPersistedPlannerState() {
       try { localStorage.removeItem(plannerStorageKey); } catch {}
+    }
+
+    function readRememberedContext() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(plannerContextStorageKey) || 'null');
+        if (!saved || typeof saved !== 'object') return null;
+        if (typeof saved.workspaceId !== 'string' || typeof saved.projectId !== 'string') return null;
+        const workspaceId = saved.workspaceId.trim();
+        const projectId = saved.projectId.trim();
+        if (!workspaceId || !projectId) return null;
+        return { workspaceId, projectId };
+      } catch {
+        return null;
+      }
+    }
+
+    function persistRememberedContext(workspaceId, projectId) {
+      const remembered = {
+        workspaceId: typeof workspaceId === 'string' ? workspaceId.trim() : '',
+        projectId: typeof projectId === 'string' ? projectId.trim() : ''
+      };
+      if (!remembered.workspaceId || !remembered.projectId) return false;
+      try {
+        localStorage.setItem(plannerContextStorageKey, JSON.stringify(remembered));
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    function restoreRememberedContext() {
+      const remembered = readRememberedContext();
+      if (!remembered) return false;
+      els.workspace.value = remembered.workspaceId;
+      els.project.value = remembered.projectId;
+      return true;
     }
 
     function restorePlannerState() {
@@ -456,6 +493,7 @@ function plannerPageHtml() {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(body)
         }).then(parseResponse);
+        persistRememberedContext(body.workspace_id, body.project_id);
         state.requestId = created.planner_request_id || created.request_id || created.mission_id || null;
         state.missionId = created.mission_id || state.requestId;
         state.brainRunId = created.brain_run_id || null;
@@ -566,6 +604,7 @@ function plannerPageHtml() {
       state.requestId = null; state.missionId = null; state.brainRunId = null; state.proposalId = null; state.proposal = null; state.submitting = false; state.revisionSubmitting = false;
       clearPersistedPlannerState();
       els.form.reset();
+      restoreRememberedContext();
       els.revisionFeedback.value = '';
       els.proposalId.value = '';
       els.proposalView.classList.add('hidden');
@@ -584,6 +623,7 @@ function plannerPageHtml() {
       els.request.addEventListener(name, syncSubmitState);
     });
     const restoredPlanner = restorePlannerState();
+    if (!restoredPlanner) restoreRememberedContext();
     syncSubmitState();
     if (restoredPlanner) {
       setStatus('Restored active Planner request. Checking for the latest roadmap proposal...', 'success');
