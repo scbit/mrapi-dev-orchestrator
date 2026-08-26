@@ -380,6 +380,10 @@ function workingTreeStatus(repoPath) {
   return { available: status.ok, text: status.stdout || '', command, error: status.ok ? null : (status.stderr || status.stdout) };
 }
 
+function validateAllowedGitStatusChanges(statusText, allowedFiles = []) {
+  return verifyAllowedChanges(statusText, allowedFiles);
+}
+
 
 function validatePreExecutionWorktree({ autopilotPhase, beforeStatus, allowedFiles }) {
   const phase = String(autopilotPhase || '').trim();
@@ -394,7 +398,7 @@ function validatePreExecutionWorktree({ autopilotPhase, beforeStatus, allowedFil
     throw error;
   }
 
-  const priorScopeCheck = verifyAllowedChanges(beforeStatus.text, allowedFiles || []);
+  const priorScopeCheck = validateAllowedGitStatusChanges(beforeStatus.text, allowedFiles || []);
   if (!priorScopeCheck.ok) {
     const error = new Error('AUTOPILOT_REPO_DIRTY_OUTSIDE_RETRY_SCOPE');
     error.code = 'AUTOPILOT_REPO_DIRTY_OUTSIDE_RETRY_SCOPE';
@@ -598,7 +602,7 @@ async function executeClaim(claim) {
 
     const afterStatus = workingTreeStatus(repositoryPath);
     const scopeCheck = afterStatus.available
-      ? verifyAllowedChanges(afterStatus.text, allowedFiles)
+      ? validateAllowedGitStatusChanges(afterStatus.text, allowedFiles)
       : { ok: true, changed_files: [], unauthorized_files: [] };
 
     if (!scopeCheck.ok) {
@@ -781,6 +785,7 @@ module.exports = {
   isTransientPollError,
   isRunAlreadyTerminalError,
   workingTreeStatus,
+  validateAllowedGitStatusChanges,
   allowedFilesFromClaim,
   validateAutopilotHandoff,
   validatePreExecutionWorktree,
