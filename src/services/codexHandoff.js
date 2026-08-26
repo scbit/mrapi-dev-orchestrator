@@ -33,10 +33,29 @@ function snapshotOrNull(task) {
 
 function normalizeAllowedFiles(value) {
   if (!Array.isArray(value)) return [];
-  return [...new Set(value
-    .map((item) => String(item || '').trim().replace(/\\/g, '/').replace(/^\.\//, ''))
-    .filter((item) => item && !item.startsWith('/') && !item.includes('..'))
-  )].slice(0, 100);
+  const seen = new Set();
+  const normalized = [];
+  for (const raw of value) {
+    const item = String(raw || '').trim().replace(/\\/g, '/').replace(/^\.\//, '');
+    if (!item) continue;
+    if (
+      item.startsWith('/') ||
+      item.startsWith('//') ||
+      /^[a-zA-Z]:/.test(item) ||
+      item.split('/').includes('..') ||
+      item.includes('*') ||
+      item.includes('?') ||
+      item === '.' ||
+      item.endsWith('/')
+    ) {
+      continue;
+    }
+    const key = item.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    normalized.push(item);
+  }
+  return normalized.slice(0, 100);
 }
 
 function normalizeTaskSpec(task, brainRun) {

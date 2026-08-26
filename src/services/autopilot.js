@@ -220,6 +220,7 @@ async function queueVerificationBrainRun(db, tenantId, executionResult) {
     if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) return;
     const mission = { id: missionSnap.id, ...missionSnap.data() };
     if (!mission.autopilot_mode || !mission.roadmap_id || !mission.milestone_id) return;
+    if (mission.state === 'CANCELLED' || mission.cancellation_requested === true) return;
 
     const roadmapRef = db.collection('roadmaps').doc(mission.roadmap_id);
     const roadmapSnap = await tx.get(roadmapRef);
@@ -235,7 +236,34 @@ async function queueVerificationBrainRun(db, tenantId, executionResult) {
       result_id: executionResult.result_id,
       summary: clean(executionResult.summary || ''),
       output: executionResult.output || null,
-      error: executionResult.error || null
+      error: executionResult.error || null,
+      process_exit_code: executionResult.output?.process_exit_code ?? executionResult.output?.exit_code ?? null,
+      process_exited_cleanly: executionResult.output?.process_exited_cleanly ?? null,
+      verdict_source: executionResult.output?.verdict_source || executionResult.output?.executor_report?.verdict_source || null,
+      required_tests: Array.isArray(executionResult.output?.required_tests)
+        ? executionResult.output.required_tests
+        : Array.isArray(executionResult.output?.executor_report?.required_tests)
+          ? executionResult.output.executor_report.required_tests
+          : [],
+      diagnostic_tests: Array.isArray(executionResult.output?.diagnostic_tests)
+        ? executionResult.output.diagnostic_tests
+        : Array.isArray(executionResult.output?.executor_report?.diagnostic_tests)
+          ? executionResult.output.executor_report.diagnostic_tests
+          : [],
+      diagnostic_only_failure: executionResult.output?.diagnostic_only_failure === true ||
+        executionResult.output?.executor_report?.diagnostic_only_failure === true,
+      scope_check: executionResult.output?.scope_check || null,
+      executor_report: executionResult.output?.executor_report || null,
+      attempt: Number(mission.autopilot_attempt_count || 1),
+      max_attempts: Number(mission.autopilot_max_attempts || 3),
+      trusted_scope: {
+        tenant_id: tenantId,
+        workspace_id: mission.workspace_id || null,
+        project_id: mission.project_id || null,
+        roadmap_id: roadmap.id,
+        milestone_id: milestone.id,
+        mission_id: mission.id
+      }
     };
 
     tx.set(runRef, {

@@ -238,12 +238,18 @@ async function completeExecution(runId, result, git = {}) {
     output: {
       executor_mode: 'CODEX_CLI_AUTO',
       exit_code: result.exitCode,
+      process_exit_code: result.exitCode,
       process_exited_cleanly: processExitedCleanly,
+      success,
+      verdict_source: result.executor_report?.verdict_source || 'PROCESS_AND_SCOPE',
       validation_failed_after_clean_exit: validationFailedAfterCleanExit,
       stdout_tail: stdoutTail,
       stderr_tail: stderrTail,
       scope_check: result.scope_check || null,
       executor_report: result.executor_report || null,
+      required_tests: result.executor_report?.required_tests || [],
+      diagnostic_tests: result.executor_report?.diagnostic_tests || [],
+      diagnostic_only_failure: result.diagnostic_only_failure === true,
       required_tests_failed: result.required_tests_failed === true,
       git
     }
@@ -263,16 +269,70 @@ function parseExecutorReport(stdout) {
   }
 }
 
-function applyExecutorTestVerdict(result) {
+function stringArray(value) {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+}
+
+function commandKey(value) {
+  return String(value || '').trim().replace(/\s+/g, ' ');
+}
+
+function normalizeTestEvidence(items, declared = []) {
+  const declaredKeys = new Set(stringArray(declared).map(commandKey));
+  return (Array.isArray(items) ? items : []).map((item) => {
+    const command = commandKey(item?.command);
+    return {
+      command,
+      passed: item?.passed === true,
+      failed: item?.failed === true || item?.passed === false,
+      executed: item?.executed !== false && Boolean(command),
+      declared: declaredKeys.size ? declaredKeys.has(command) : true,
+      classification: item?.classification || null,
+      output: item?.output || null,
+      error: item?.error || null
+    };
+  });
+}
+
+function requiredTestsSatisfied(declared, evidence) {
+  const declaredCommands = stringArray(declared).map(commandKey);
+  if (declaredCommands.length === 0) return false;
+  return declaredCommands.every((command) => {
+    const matches = evidence.filter((item) => item.command === command && item.declared && item.executed);
+    return matches.length === 1 && matches[0].passed === true;
+  });
+}
+
+function applyExecutorTestVerdict(result, options = {}) {
   const report = parseExecutorReport(result?.stdout);
   result.executor_report = report;
   if (!report) return result;
 
-  const requiredTests = Array.isArray(report.required_tests) ? report.required_tests : [];
-  const hasRequiredTests = requiredTests.length > 0;
-  const everyRequiredPassed = hasRequiredTests && requiredTests.every((item) => item && item.passed === true);
+  const declaredRequiredTests = stringArray(
+    options.required_tests ||
+    result.required_tests ||
+    report.declared_required_tests ||
+    (Array.isArray(report.required_tests) ? report.required_tests.map((item) => item?.command) : [])
+  );
+  const declaredDiagnosticTests = stringArray(options.diagnostic_tests || result.diagnostic_tests || report.declared_diagnostic_tests || []);
+  const requiredTests = normalizeTestEvidence(report.required_tests, declaredRequiredTests);
+  const diagnosticTests = normalizeTestEvidence(report.diagnostic_tests, declaredDiagnosticTests);
+  const everyRequiredPassed = requiredTestsSatisfied(declaredRequiredTests, requiredTests);
+  const diagnosticFailures = diagnosticTests.filter((item) => item.failed);
 
-  if (report.required_tests_passed === false || (hasRequiredTests && !everyRequiredPassed)) {
+  result.executor_report = {
+    ...report,
+    process_exit_code: Number(result.exitCode),
+    process_exited_cleanly: Number(result.exitCode) === 0,
+    verdict_source: 'REQUIRED_TEST_POLICY',
+    required_tests: requiredTests,
+    diagnostic_tests: diagnosticTests,
+    diagnostic_only_failure: false
+  };
+
+  if (report.required_tests_passed !== true || !everyRequiredPassed) {
     result.success = false;
     result.stderr = `${result.stderr || ''}\nMRAPI_REQUIRED_TESTS_FAILED`;
     result.required_tests_failed = true;
@@ -283,11 +343,22 @@ function applyExecutorTestVerdict(result) {
   // For Autopilot, the explicit machine-readable required-test verdict is authoritative
   // only when it contains at least one required test and every required test passed.
   // File-scope validation still runs afterwards and can independently fail execution.
-  if (report.required_tests_passed === true && everyRequiredPassed) {
+  const nonZero = Number(result.exitCode) !== 0;
+  const diagnosticOnlyFailure = nonZero &&
+    diagnosticFailures.length > 0 &&
+    (report.diagnostic_only_failure === true || diagnosticFailures.every((item) => item.classification));
+
+  if (!nonZero || diagnosticOnlyFailure) {
     result.success = true;
     result.required_tests_failed = false;
-    result.diagnostic_only_failure = Number(result.exitCode) !== 0;
+    result.diagnostic_only_failure = diagnosticOnlyFailure;
+    result.executor_report.diagnostic_only_failure = diagnosticOnlyFailure;
+    return result;
   }
+
+  result.success = false;
+  result.stderr = `${result.stderr || ''}\nMRAPI_CODEX_NONZERO_UNCLASSIFIED`;
+  result.required_tests_failed = false;
   return result;
 }
 
@@ -342,6 +413,71 @@ function validatePreExecutionWorktree({ autopilotPhase, beforeStatus, allowedFil
 function allowedFilesFromClaim(claim) {
   const handoff = claim.codex_handoff || claim.task?.codex_handoff || claim.run?.codex_handoff || {};
   return Array.isArray(handoff.task_spec?.allowed_files) ? handoff.task_spec.allowed_files : [];
+}
+
+function sameStringArray(a, b) {
+  const left = stringArray(a);
+  const right = stringArray(b);
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+function validateAutopilotHandoff(claim) {
+  const handoff = claim?.codex_handoff || claim?.task?.codex_handoff || claim?.run?.codex_handoff || null;
+  const phase = String(
+    handoff?.execution_constraints?.autopilot_phase ||
+    claim?.task?.autopilot_phase ||
+    ''
+  ).trim();
+  if (!['PROGRAM', 'RETRY'].includes(phase)) {
+    return { ok: true, autopilot: false };
+  }
+
+  const taskSpec = handoff?.task_spec;
+  if (!taskSpec || typeof taskSpec !== 'object' || Array.isArray(taskSpec)) {
+    const error = new Error('MRAPI_RUNNER_AUTOPILOT_TASK_SPEC_REQUIRED');
+    error.code = 'MRAPI_RUNNER_AUTOPILOT_TASK_SPEC_REQUIRED';
+    throw error;
+  }
+
+  const allowedFiles = stringArray(taskSpec.allowed_files);
+  if (!Array.isArray(taskSpec.allowed_files)) {
+    const error = new Error('MRAPI_RUNNER_AUTOPILOT_ALLOWED_FILES_REQUIRED');
+    error.code = 'MRAPI_RUNNER_AUTOPILOT_ALLOWED_FILES_REQUIRED';
+    throw error;
+  }
+  if (allowedFiles.length === 0) {
+    const error = new Error('MRAPI_RUNNER_AUTOPILOT_ALLOWED_FILES_EMPTY');
+    error.code = 'MRAPI_RUNNER_AUTOPILOT_ALLOWED_FILES_EMPTY';
+    throw error;
+  }
+
+  const requiredTests = stringArray(taskSpec.required_tests);
+  if (!Array.isArray(taskSpec.required_tests)) {
+    const error = new Error('MRAPI_RUNNER_AUTOPILOT_REQUIRED_TESTS_REQUIRED');
+    error.code = 'MRAPI_RUNNER_AUTOPILOT_REQUIRED_TESTS_REQUIRED';
+    throw error;
+  }
+  if (requiredTests.length === 0) {
+    const error = new Error('MRAPI_RUNNER_AUTOPILOT_REQUIRED_TESTS_EMPTY');
+    error.code = 'MRAPI_RUNNER_AUTOPILOT_REQUIRED_TESTS_EMPTY';
+    throw error;
+  }
+
+  const snapshotSpec = handoff?.execution_snapshot?.execution_spec;
+  if (snapshotSpec && typeof snapshotSpec === 'object') {
+    if (Array.isArray(snapshotSpec.allowed_files) && !sameStringArray(snapshotSpec.allowed_files, taskSpec.allowed_files)) {
+      const error = new Error('MRAPI_RUNNER_AUTOPILOT_ALLOWED_FILES_SNAPSHOT_MISMATCH');
+      error.code = 'MRAPI_RUNNER_AUTOPILOT_ALLOWED_FILES_SNAPSHOT_MISMATCH';
+      throw error;
+    }
+    if (Array.isArray(snapshotSpec.required_tests) && !sameStringArray(snapshotSpec.required_tests, taskSpec.required_tests)) {
+      const error = new Error('MRAPI_RUNNER_AUTOPILOT_REQUIRED_TESTS_SNAPSHOT_MISMATCH');
+      error.code = 'MRAPI_RUNNER_AUTOPILOT_REQUIRED_TESTS_SNAPSHOT_MISMATCH';
+      throw error;
+    }
+  }
+
+  return { ok: true, autopilot: true, allowed_files: allowedFiles, required_tests: requiredTests };
 }
 
 async function runTrustedGitFlow({ claim, result }) {
@@ -423,6 +559,7 @@ async function executeClaim(claim) {
     await progress(executionRun.id, 10, 'Starting automatic Codex CLI execution');
 
     const repositoryPath = String(codexHandoff?.repository_path || cfg.repoPath || '').trim();
+    validateAutopilotHandoff(claim);
     const beforeStatus = workingTreeStatus(repositoryPath);
     const autopilotPhase = String(codexHandoff?.execution_constraints?.autopilot_phase || '').trim();
     const allowedFiles = allowedFilesFromClaim(claim);
@@ -454,7 +591,10 @@ async function executeClaim(claim) {
       }
     });
 
-    applyExecutorTestVerdict(result);
+    applyExecutorTestVerdict(result, {
+      required_tests: codexHandoff?.task_spec?.required_tests,
+      diagnostic_tests: codexHandoff?.task_spec?.diagnostic_tests
+    });
 
     const afterStatus = workingTreeStatus(repositoryPath);
     const scopeCheck = afterStatus.available
@@ -560,7 +700,8 @@ async function executeClaim(claim) {
         error: String(error.stack || error.message).slice(0, 5000),
         output: {
           executor_mode: 'CODEX_CLI_AUTO',
-          runner_error: error.message
+          runner_error: error.message,
+          runner_error_code: error.code || error.message
         }
       });
     } catch (secondary) {
@@ -641,6 +782,7 @@ module.exports = {
   isRunAlreadyTerminalError,
   workingTreeStatus,
   allowedFilesFromClaim,
+  validateAutopilotHandoff,
   validatePreExecutionWorktree,
   parseExecutorReport,
   applyExecutorTestVerdict

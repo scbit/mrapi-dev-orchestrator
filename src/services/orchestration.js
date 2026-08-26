@@ -1100,6 +1100,9 @@ function normalizeMissionPlan(rawResponse, input = {}, brainOutput = {}) {
     execution_type_error: executionType.error,
     execution_spec: {
       instructions: String(executionSpec.instructions || taskSpec.instructions || brainOutput.final_result_text || '').trim(),
+      allowed_files: arrayOfStrings(executionSpec.allowed_files || taskSpec.allowed_files),
+      required_tests: arrayOfStrings(executionSpec.required_tests || taskSpec.required_tests),
+      diagnostic_tests: arrayOfStrings(executionSpec.diagnostic_tests || taskSpec.diagnostic_tests),
       success_criteria: arrayOfStrings(executionSpec.success_criteria),
       stop_conditions: arrayOfStrings(executionSpec.stop_conditions)
     },
@@ -1336,7 +1339,12 @@ function taskSpecFromExecutionSnapshot(snapshot) {
   return {
     title: String(spec.title || snapshot.objective || 'Approved execution task').trim(),
     objective: String(snapshot.objective || '').trim(),
-    instructions: String(spec.instructions || '').trim()
+    instructions: String(spec.instructions || '').trim(),
+    allowed_files: Array.isArray(spec.allowed_files) ? [...spec.allowed_files] : [],
+    required_tests: Array.isArray(spec.required_tests) ? [...spec.required_tests] : [],
+    diagnostic_tests: Array.isArray(spec.diagnostic_tests) ? [...spec.diagnostic_tests] : [],
+    success_criteria: Array.isArray(spec.success_criteria) ? [...spec.success_criteria] : [],
+    stop_conditions: Array.isArray(spec.stop_conditions) ? [...spec.stop_conditions] : []
   };
 }
 
@@ -1364,6 +1372,11 @@ function taskSpecFromPlan(plan, mission) {
     title: plan.planned_actions?.[0]?.title || mission.objective || 'Approved Mission execution',
     objective: plan.objective || mission.objective || '',
     instructions,
+    allowed_files: Array.isArray(plan.execution_spec?.allowed_files) ? [...plan.execution_spec.allowed_files] : [],
+    required_tests: Array.isArray(plan.execution_spec?.required_tests) ? [...plan.execution_spec.required_tests] : [],
+    diagnostic_tests: Array.isArray(plan.execution_spec?.diagnostic_tests) ? [...plan.execution_spec.diagnostic_tests] : [],
+    success_criteria: Array.isArray(plan.execution_spec?.success_criteria) ? [...plan.execution_spec.success_criteria] : [],
+    stop_conditions: Array.isArray(plan.execution_spec?.stop_conditions) ? [...plan.execution_spec.stop_conditions] : [],
     approved_plan: plan
   };
 }
