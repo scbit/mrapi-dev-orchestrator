@@ -64,11 +64,11 @@ function plannerPageHtml() {
 
     <section class="grid">
       <form class="panel" id="plannerForm">
-        <h2>Planner</h2>
+        <h2>New Planner Request</h2>
         <p>Submit a high-level request for a W01 roadmap proposal. Review and approve the roadmap before any Autopilot execution can start.</p>
         <label class="field"><span>Workspace ID</span><input id="workspaceId" name="workspace_id" autocomplete="off" required></label>
         <label class="field"><span>Project ID</span><input id="projectId" name="project_id" autocomplete="off" required></label>
-        <label class="field"><span>Natural-language request</span><textarea id="plannerRequest" name="request" required minlength="1" placeholder="Describe the outcome you want planned..."></textarea></label>
+        <label class="field"><span>Natural-language product/software request</span><textarea id="plannerRequest" name="request" required minlength="1" placeholder="Describe the product or software outcome you want. Example: Build an intake dashboard that lets operators review pending customer setup requests across workspaces."></textarea></label>
         <div class="actions">
           <button class="primary" id="submitPlannerRequest" type="submit">Submit to Planner</button>
           <button class="secondary" id="resetPlanner" type="button">Reset</button>
@@ -96,7 +96,8 @@ function plannerPageHtml() {
       missionId: null,
       brainRunId: null,
       proposalId: null,
-      proposal: null
+      proposal: null,
+      submitting: false
     };
 
     const els = {
@@ -151,6 +152,8 @@ function plannerPageHtml() {
 
     function syncSubmitState() {
       els.submit.disabled = !canSubmit();
+      if (state.submitting) els.submit.disabled = true;
+      els.submit.textContent = state.submitting ? 'Submitting to Planner...' : 'Submit to Planner';
     }
 
     function isApproved(proposal) {
@@ -228,12 +231,14 @@ function plannerPageHtml() {
 
     els.form.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (state.submitting) return;
       if (!canSubmit()) {
         setStatus('Workspace, project, and request are required before submission.', 'error');
         return;
       }
-      els.submit.disabled = true;
-      setStatus('Planning: Planner request accepted. Waiting for W01 roadmap proposal generation.', '');
+      state.submitting = true;
+      syncSubmitState();
+      setStatus('Submitting Planner request. W01 roadmap proposal generation will begin after intake is accepted.', '');
       try {
         const body = {
           workspace_id: els.workspace.value.trim(),
@@ -249,15 +254,16 @@ function plannerPageHtml() {
         state.missionId = created.mission_id || state.requestId;
         state.brainRunId = created.brain_run_id || null;
         state.proposalId = created.roadmap_id || created.proposal_id || created.planner_roadmap_id || null;
-        if (state.proposalId) {
+        if (state.proposalId && (created.milestones || created.title || created.objective || created.summary)) {
           els.proposalId.value = state.proposalId;
           renderProposal(created);
         } else {
-          setStatus('Planning: request ' + text(state.requestId || '') + ' is pending. Refresh proposal after W01 completes the proposal.', '');
+          setStatus('Planning: Planner request accepted' + (state.requestId ? ': ' + text(state.requestId) : '') + '. Waiting for W01 roadmap proposal generation. W01 is preparing the roadmap proposal. Refresh proposal after planning completes.', 'success');
         }
       } catch (error) {
         setStatus('Planner request failed: ' + error.message, 'error');
       } finally {
+        state.submitting = false;
         syncSubmitState();
       }
     });
@@ -300,7 +306,7 @@ function plannerPageHtml() {
     });
 
     els.reset.addEventListener('click', () => {
-      state.requestId = null; state.missionId = null; state.brainRunId = null; state.proposalId = null; state.proposal = null;
+      state.requestId = null; state.missionId = null; state.brainRunId = null; state.proposalId = null; state.proposal = null; state.submitting = false;
       els.form.reset();
       els.proposalId.value = '';
       els.proposalView.classList.add('hidden');
