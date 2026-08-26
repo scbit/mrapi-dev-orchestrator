@@ -1555,6 +1555,10 @@ async function completeBrainRun(db, tenantId, runId, input) {
   if (preflight.exists && preflight.data().tenant_id === tenantId && preflight.data().autopilot_phase === 'VERIFY_EXECUTION') {
     return completeVerificationBrainRun(db, tenantId, runId, input || {});
   }
+  if (preflight.exists && preflight.data().tenant_id === tenantId && preflight.data().planning_mode === 'PLANNER_ROADMAP_PROPOSAL') {
+    const { completePlannerBrainRun } = require('./planner');
+    return completePlannerBrainRun(db, tenantId, runId, input || {});
+  }
   let result;
 
   await db.runTransaction(async (tx) => {
