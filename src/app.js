@@ -17,6 +17,7 @@ const { createBrainRouter } = require('./routes/brain.routes');
 const { createResultsRouter } = require('./routes/results.routes');
 const { createEvidenceRouter } = require('./routes/evidence.routes');
 const { createPlannerRouter } = require('./routes/planner.routes');
+const { createPlannerUiRouter } = require('./routes/planner.ui.routes');
 
 function createApp(options = {}) {
   const app = express();
@@ -42,6 +43,7 @@ function createApp(options = {}) {
   app.use('/api/planner', createPlannerRouter({ db, repos }));
   app.use('/api/runner', createRunnerRouter({ db }));
   app.use('/api/brain', createBrainRouter({ db }));
+  app.use(createPlannerUiRouter());
 
   app.use(express.static(path.join(__dirname, 'public')));
 
