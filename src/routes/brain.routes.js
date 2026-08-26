@@ -92,8 +92,7 @@ function createBrainRouter({ db }) {
 
       // Index-free MVP query: preserve tenant isolation, filter in app.
       const snapshot = await db.collection('runs')
-        .where('tenant_id', '==', req.tenantId)
-        .limit(100)
+        .where('tenant_id', '==', req.tenantId)
         .get();
 
       const candidates = snapshot.docs
