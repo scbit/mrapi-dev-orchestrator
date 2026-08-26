@@ -1769,6 +1769,10 @@ async function completeBrainRun(db, tenantId, runId, input) {
       state: 'PLANNING',
       brain_run_id: runId,
       brain_output_result_id: resultRef.id,
+      current_task_id: taskRef.id,
+      ...(mission.autopilot_mode === true ? {
+        autopilot_allowed_files: Array.isArray(taskSpec.allowed_files) ? taskSpec.allowed_files : []
+      } : {}),
       updated_at: timestamp()
     }, { merge: true });
 

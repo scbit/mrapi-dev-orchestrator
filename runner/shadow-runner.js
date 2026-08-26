@@ -40,7 +40,7 @@ async function register() {
     executor_type: 'CODEX_CLI_AUTO',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.4.4.3',
+    runner_version: 'v0.4.4.11',
     capabilities: [
       'EXECUTION_RUN:CODEX_CLI_AUTO',
       'CODEX_HANDOFF:VALIDATED',
@@ -266,6 +266,36 @@ function workingTreeStatus(repoPath) {
   return { available: status.ok, text: status.stdout || '', command, error: status.ok ? null : (status.stderr || status.stdout) };
 }
 
+
+function validatePreExecutionWorktree({ autopilotPhase, beforeStatus, allowedFiles }) {
+  const phase = String(autopilotPhase || '').trim();
+  const dirty = Boolean(beforeStatus?.available && String(beforeStatus?.text || '').trim());
+  if (!phase || phase === 'GIT_STAGE' || !dirty) {
+    return { ok: true, resumed_retry: false, changed_files: [], unauthorized_files: [] };
+  }
+
+  if (phase !== 'RETRY') {
+    const error = new Error('AUTOPILOT_REPO_DIRTY_BEFORE_EXECUTION');
+    error.code = 'AUTOPILOT_REPO_DIRTY_BEFORE_EXECUTION';
+    throw error;
+  }
+
+  const priorScopeCheck = verifyAllowedChanges(beforeStatus.text, allowedFiles || []);
+  if (!priorScopeCheck.ok) {
+    const error = new Error('AUTOPILOT_REPO_DIRTY_OUTSIDE_RETRY_SCOPE');
+    error.code = 'AUTOPILOT_REPO_DIRTY_OUTSIDE_RETRY_SCOPE';
+    error.unauthorized_files = priorScopeCheck.unauthorized_files;
+    throw error;
+  }
+
+  return {
+    ok: true,
+    resumed_retry: true,
+    changed_files: priorScopeCheck.changed_files,
+    unauthorized_files: []
+  };
+}
+
 function allowedFilesFromClaim(claim) {
   const handoff = claim.codex_handoff || claim.task?.codex_handoff || claim.run?.codex_handoff || {};
   return Array.isArray(handoff.task_spec?.allowed_files) ? handoff.task_spec.allowed_files : [];
@@ -352,8 +382,14 @@ async function executeClaim(claim) {
     const repositoryPath = String(codexHandoff?.repository_path || cfg.repoPath || '').trim();
     const beforeStatus = workingTreeStatus(repositoryPath);
     const autopilotPhase = String(codexHandoff?.execution_constraints?.autopilot_phase || '').trim();
-    if (autopilotPhase && autopilotPhase !== 'GIT_STAGE' && beforeStatus.available && String(beforeStatus.text || '').trim()) {
-      throw new Error('AUTOPILOT_REPO_DIRTY_BEFORE_EXECUTION');
+    const allowedFiles = allowedFilesFromClaim(claim);
+    const preExecutionWorktree = validatePreExecutionWorktree({
+      autopilotPhase,
+      beforeStatus,
+      allowedFiles
+    });
+    if (preExecutionWorktree.resumed_retry) {
+      console.log('[SHADOW] RETRY continuing with prior allowlisted worktree changes', preExecutionWorktree.changed_files);
     }
 
     const prompt = buildCodexPrompt({
@@ -375,7 +411,6 @@ async function executeClaim(claim) {
       }
     });
 
-    const allowedFiles = allowedFilesFromClaim(claim);
     const afterStatus = workingTreeStatus(repositoryPath);
     const scopeCheck = afterStatus.available
       ? verifyAllowedChanges(afterStatus.text, allowedFiles)
@@ -560,5 +595,6 @@ module.exports = {
   isTransientPollError,
   isRunAlreadyTerminalError,
   workingTreeStatus,
-  allowedFilesFromClaim
+  allowedFilesFromClaim,
+  validatePreExecutionWorktree
 };

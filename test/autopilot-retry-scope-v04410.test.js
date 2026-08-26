@@ -34,3 +34,24 @@ test('RETRY without allowed_files blocks instead of queuing an unsafe executor t
   assert.match(out.reason,/allowed_files/i);
   assert.equal(Object.keys(db.data.tasks || {}).length,0);
 });
+
+
+test('RETRY carries forward prior attempt allowed_files so same-mission dirty worktree remains in scope', async () => {
+  const db = seed();
+  db.set('tasks','task_prev',{
+    id:'task_prev',tenant_id:'t1',mission_id:'mission1',
+    task_spec:{allowed_files:['src/services/autopilot.js','src/services/orchestration.js']},
+    brain_output:{task_spec:{allowed_files:['src/services/autopilot.js','src/services/orchestration.js']}}
+  });
+  db.set('missions','mission1',{
+    ...db.get('missions','mission1'),
+    current_task_id:'task_prev'
+  });
+  const out = await completeVerificationBrainRun(db,'t1','verify1',{output_text:`<MRAPI_AUTOPILOT>${JSON.stringify({action:'RETRY',reason:'bounded fix',execution_spec:{instructions:'Apply follow-up fix',allowed_files:['test/autopilot-v3-loop.test.js'],success_criteria:['focused tests pass'],stop_conditions:['NO DEPLOY']}})}</MRAPI_AUTOPILOT>`});
+  assert.equal(out.action,'RETRY');
+  const task = db.get('tasks',out.task_id);
+  const expected = ['src/services/autopilot.js','src/services/orchestration.js','test/autopilot-v3-loop.test.js'];
+  assert.deepEqual(task.task_spec.allowed_files, expected);
+  assert.deepEqual(task.brain_output.task_spec.allowed_files, expected);
+  assert.deepEqual(db.get('missions','mission1').autopilot_allowed_files, expected);
+});

@@ -277,6 +277,20 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
       const error = new Error('MILESTONE_NOT_FOUND'); error.status = 404; throw error;
     }
 
+    let priorAllowedFiles = [];
+    if (mission.current_task_id) {
+      const priorTaskSnap = await tx.get(db.collection('tasks').doc(mission.current_task_id));
+      if (priorTaskSnap.exists && priorTaskSnap.data().tenant_id === tenantId) {
+        const priorTask = priorTaskSnap.data();
+        const source = Array.isArray(priorTask.task_spec?.allowed_files)
+          ? priorTask.task_spec.allowed_files
+          : Array.isArray(priorTask.brain_output?.task_spec?.allowed_files)
+            ? priorTask.brain_output.task_spec.allowed_files
+            : [];
+        priorAllowedFiles = source.map((x) => clean(x, 1000).replace(/\\/g, '/')).filter(Boolean);
+      }
+    }
+
     const outputText = clean(input.output_text || input.summary || '', 100000);
     const decision = parseAutopilotDecision(outputText);
     const attempt = Number(mission.autopilot_attempt_count || 1);
@@ -334,6 +348,10 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
         decision.reason = `${decision.reason} RETRY requires Brain-defined execution_spec.allowed_files.`.trim();
       } else {
         const taskRef = db.collection('tasks').doc();
+        const cumulativeAllowedFiles = [...new Set([
+          ...priorAllowedFiles,
+          ...(decision.execution_spec.allowed_files || [])
+        ].map((x) => clean(x, 1000).replace(/\\/g, '/')).filter(Boolean))].slice(0, 100);
         tx.set(taskRef, {
           id: taskRef.id,
           tenant_id: tenantId,
@@ -347,7 +365,7 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
             title: `Autopilot retry: ${milestone.title}`,
             objective: `Apply Brain correction for ${milestone.title}`,
             instructions: decision.execution_spec.instructions,
-            allowed_files: decision.execution_spec.allowed_files || [],
+            allowed_files: cumulativeAllowedFiles,
             success_criteria: decision.execution_spec.success_criteria,
             stop_conditions: decision.execution_spec.stop_conditions
           },
@@ -360,7 +378,7 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
               title: `Autopilot retry: ${milestone.title}`,
               objective: `Apply Brain correction for ${milestone.title}`,
               instructions: decision.execution_spec.instructions,
-              allowed_files: decision.execution_spec.allowed_files || [],
+              allowed_files: cumulativeAllowedFiles,
               success_criteria: decision.execution_spec.success_criteria,
               stop_conditions: decision.execution_spec.stop_conditions
             },
@@ -399,6 +417,7 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
           autopilot_phase: 'RETRY_EXECUTION',
           autopilot_attempt_count: attempt + 1,
           current_task_id: taskRef.id,
+          autopilot_allowed_files: cumulativeAllowedFiles,
           updated_at: timestamp()
         }, { merge: true });
         tx.set(roadmapRef, {
