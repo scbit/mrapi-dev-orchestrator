@@ -13,7 +13,11 @@ function run(command, args, options = {}) {
   return {
     ok: result.status === 0,
     status: result.status,
-    stdout: String(result.stdout || '').trim(),
+    // IMPORTANT: git status --porcelain uses leading spaces as status bytes.
+    // trim() corrupts the first line by removing a leading space, e.g.
+    // " M runner/shadow-runner.js" -> "M runner/shadow-runner.js".
+    // parseStatusFiles() then drops the first real filename character.
+    stdout: String(result.stdout || '').trimEnd(),
     stderr: String(result.stderr || '').trim(),
     error: result.error || null
   };
