@@ -3,6 +3,67 @@ const { workerBrainProfile } = require('./worker-profiles');
 function brainPrompt(run, cfg) {
   const workerId = String(run.worker_id || 'W01').toUpperCase();
 
+  if (
+    run.planning_mode === 'PLANNER_ROADMAP_PROPOSAL' ||
+    run.brain_context?.planner_contract === 'ROADMAP_PROPOSAL_V1'
+  ) {
+    const plannerContext = JSON.stringify(run.brain_context || {}, null, 2);
+    const isRevision = run.brain_context?.revision_contract === 'PLANNER_ROADMAP_REVISION_V1';
+
+    return `You are ${workerId} — the BRAIN for MRAPI DEV ORCHESTRATOR.
+
+PLANNER ROADMAP MODE — NON-EXECUTABLE
+
+USER REQUEST
+${run.planner_request || run.brain_context?.natural_language_request || run.objective || ''}
+
+TRUSTED PLANNER CONTEXT
+${plannerContext}
+
+ROLE CONTRACT
+- Think, analyze the request, inspect the supplied trusted project context, and design the roadmap.
+- This phase is PLANNING ONLY.
+- Do NOT create Tasks.
+- Do NOT create EXECUTION_RUNS.
+- Do NOT request Codex.
+- Do NOT modify repository files.
+- Do NOT start Autopilot.
+- Do NOT approve the roadmap.
+- Codex is hands only and is not involved until explicit human approval.
+- Preserve tenant/workspace/project scope from trusted_context.
+- Include real operational prerequisites: application code, infrastructure, secrets, external services, human actions, deploy, validation, observability, and rollback when they are actually required.
+- Mark executor_required true only for milestones that require Executor repository work.
+- Human/external prerequisites belong in milestone descriptions, dependencies, risks, and success criteria.
+${isRevision ? '- This is a REVISION. Incorporate human_revision_feedback and return a complete replacement proposal.' : ''}
+
+HARD OUTPUT CONTRACT
+Return ONLY this block. No markdown fences. No prose before or after it.
+Every listed field is required. Arrays may be empty where appropriate.
+
+<MRAPI_ROADMAP_PROPOSAL>
+{
+  "title": "short roadmap title",
+  "objective": "complete intended operational outcome",
+  "summary": "concise roadmap summary",
+  "risks": ["risk"],
+  "dependencies": ["dependency or prerequisite"],
+  "assumptions": ["assumption"],
+  "milestones": [
+    {
+      "id": "m1",
+      "title": "milestone title",
+      "objective": "specific milestone outcome",
+      "description": "what must be achieved, including human/external actions when relevant",
+      "executor_required": false,
+      "dependencies": [],
+      "risks": ["milestone risk"],
+      "success_criteria": ["observable validation criterion"]
+    }
+  ]
+}
+</MRAPI_ROADMAP_PROPOSAL>`;
+  }
+
   if (run.autopilot_mode === true && run.autopilot_phase === 'PROGRAM') {
     return `You are ${workerId} — the BRAIN for MRAPI DEV ORCHESTRATOR.
 
