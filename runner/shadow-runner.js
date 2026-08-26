@@ -40,7 +40,7 @@ async function register() {
     executor_type: 'CODEX_CLI_AUTO',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.4.4.16',
+    runner_version: 'v0.4.4.17',
     capabilities: [
       'EXECUTION_RUN:CODEX_CLI_AUTO',
       'CODEX_HANDOFF:VALIDATED',
@@ -267,10 +267,26 @@ function applyExecutorTestVerdict(result) {
   const report = parseExecutorReport(result?.stdout);
   result.executor_report = report;
   if (!report) return result;
-  if (report.required_tests_passed === false) {
+
+  const requiredTests = Array.isArray(report.required_tests) ? report.required_tests : [];
+  const hasRequiredTests = requiredTests.length > 0;
+  const everyRequiredPassed = hasRequiredTests && requiredTests.every((item) => item && item.passed === true);
+
+  if (report.required_tests_passed === false || (hasRequiredTests && !everyRequiredPassed)) {
     result.success = false;
     result.stderr = `${result.stderr || ''}\nMRAPI_REQUIRED_TESTS_FAILED`;
     result.required_tests_failed = true;
+    return result;
+  }
+
+  // Codex CLI may exit non-zero because a diagnostic/full-suite command failed.
+  // For Autopilot, the explicit machine-readable required-test verdict is authoritative
+  // only when it contains at least one required test and every required test passed.
+  // File-scope validation still runs afterwards and can independently fail execution.
+  if (report.required_tests_passed === true && everyRequiredPassed) {
+    result.success = true;
+    result.required_tests_failed = false;
+    result.diagnostic_only_failure = Number(result.exitCode) !== 0;
   }
   return result;
 }

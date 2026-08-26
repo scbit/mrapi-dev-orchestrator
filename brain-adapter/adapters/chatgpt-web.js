@@ -62,7 +62,7 @@ async function requestAutopilotFormatRepair(page, previousText, timeoutMs) {
   const input = page.locator('#prompt-textarea').first();
   await input.waitFor({ state: 'visible', timeout: 60000 });
   await input.click();
-  await input.fill(`Your previous AUTOPILOT VERIFICATION response did not match the required machine-readable contract. Do not re-run Codex and do not add prose. Re-evaluate the same current executor report already provided in the immediately previous user message, then return ONLY one valid block exactly in this form:\n<MRAPI_AUTOPILOT>\n{\n  "action": "COMPLETE",\n  "reason": "concise verification reasoning",\n  "execution_spec": null\n}\n</MRAPI_AUTOPILOT>\nThe action must be exactly COMPLETE, RETRY, or BLOCKED. For RETRY include execution_spec with exact instructions; otherwise execution_spec must be null.`);
+  await input.fill(`Your previous AUTOPILOT VERIFICATION response did not match the required machine-readable contract. Do not re-run Codex and do not add prose. Re-evaluate the same current executor report already provided in the immediately previous user message, then return ONLY one valid block exactly in this form:\n<MRAPI_AUTOPILOT>\n{\n  "action": "COMPLETE",\n  "reason": "concise verification reasoning",\n  "execution_spec": null\n}\n</MRAPI_AUTOPILOT>\nThe action must be exactly COMPLETE, RETRY, or BLOCKED. For RETRY include execution_spec with exact instructions, non-empty allowed_files, and non-empty required_tests; otherwise execution_spec must be null.`);
   await input.press('Enter');
   console.log('[BRAIN WEB] autopilot format repair requested');
   return waitForAssistantCompletion(page, previousText, timeoutMs);

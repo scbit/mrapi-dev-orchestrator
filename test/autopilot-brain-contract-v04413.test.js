@@ -5,11 +5,13 @@ const {
   hasValidAutopilotDecision
 } = require('../brain-adapter/lib/autopilot-contract');
 
-test('PROGRAM contract requires non-empty allowed_files', () => {
-  const valid = '<MRAPI_CONTROL>{"requires_execution":true,"execution_type":"EXECUTOR","task_spec":{"instructions":"apply exact change","allowed_files":["src/a.js"]}}</MRAPI_CONTROL>';
-  const missing = '<MRAPI_CONTROL>{"requires_execution":true,"execution_type":"EXECUTOR","task_spec":{"instructions":"apply exact change"}}</MRAPI_CONTROL>';
+test('PROGRAM contract requires non-empty allowed_files and required_tests', () => {
+  const valid = '<MRAPI_CONTROL>{"requires_execution":true,"execution_type":"EXECUTOR","task_spec":{"instructions":"apply exact change","allowed_files":["src/a.js"],"required_tests":["node --test test/a.test.js"]}}</MRAPI_CONTROL>';
+  const missingAllowed = '<MRAPI_CONTROL>{"requires_execution":true,"execution_type":"EXECUTOR","task_spec":{"instructions":"apply exact change","required_tests":["node --test test/a.test.js"]}}</MRAPI_CONTROL>';
+  const missingTests = '<MRAPI_CONTROL>{"requires_execution":true,"execution_type":"EXECUTOR","task_spec":{"instructions":"apply exact change","allowed_files":["src/a.js"]}}</MRAPI_CONTROL>';
   assert.equal(hasValidAutopilotProgramControl(valid), true);
-  assert.equal(hasValidAutopilotProgramControl(missing), false);
+  assert.equal(hasValidAutopilotProgramControl(missingAllowed), false);
+  assert.equal(hasValidAutopilotProgramControl(missingTests), false);
 });
 
 test('verification contract still accepts COMPLETE RETRY BLOCKED', () => {

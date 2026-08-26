@@ -220,6 +220,9 @@ function buildCodexHandoff(input) {
   if (mission?.autopilot_mode === true && taskSpec.allowed_files.length === 0) {
     throw fail('CODEX_HANDOFF_ALLOWED_FILES_REQUIRED');
   }
+  if (mission?.autopilot_mode === true && taskSpec.required_tests.length === 0) {
+    throw fail('CODEX_HANDOFF_REQUIRED_TESTS_REQUIRED');
+  }
   const handoffRepositoryPath = snapshot
     ? (snapshot.repository_path || snapshot.task_workspace_path || 'NO_REPOSITORY_ARTIFACT_WORKSPACE')
     : String(repositoryPath || '').trim();

@@ -1789,6 +1789,39 @@ async function completeBrainRun(db, tenantId, runId, input) {
         };
         return;
       }
+      const requiredTests = Array.isArray(taskSpec.required_tests)
+        ? taskSpec.required_tests.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+      if (requiredTests.length === 0) {
+        tx.update(runRef, {
+          state: 'FAILED',
+          progress_percent: Number(run.progress_percent || 0),
+          progress_message: 'Autopilot Brain package missing required_tests',
+          error: 'BRAIN_AUTOPILOT_REQUIRED_TESTS_REQUIRED',
+          output_text: outputText,
+          brain_output: brainOutput,
+          brain_chat_url: input.brain_chat_url || null,
+          completed_at: timestamp(),
+          updated_at: timestamp()
+        });
+        tx.set(missionRef, {
+          state: 'BLOCKED',
+          block_reason: 'BRAIN_AUTOPILOT_REQUIRED_TESTS_REQUIRED',
+          blocked_reason: 'BRAIN_AUTOPILOT_REQUIRED_TESTS_REQUIRED',
+          blocker_code: 'BRAIN_AUTOPILOT_REQUIRED_TESTS_REQUIRED',
+          blocker_message: 'W01 Brain did not provide non-empty task_spec.required_tests after automatic contract repair. No Executor task was created.',
+          blocker_stage: 'BRAIN_CONTRACT',
+          updated_at: timestamp()
+        }, { merge: true });
+        result = {
+          success: false,
+          mission_id: run.mission_id,
+          task_id: null,
+          brain_run_id: runId,
+          error: 'BRAIN_AUTOPILOT_REQUIRED_TESTS_REQUIRED'
+        };
+        return;
+      }
     }
 
     tx.update(runRef, {
@@ -1811,6 +1844,7 @@ async function completeBrainRun(db, tenantId, runId, input) {
       worker_id: brainOutput.worker_id,
       title: taskSpec.title || brainOutput.objective,
       objective: taskSpec.objective || brainOutput.objective,
+      task_spec: taskSpec,
       priority: input.priority || 'NORMAL',
       state: 'QUEUED',
       phase: 'EXECUTION_PENDING',

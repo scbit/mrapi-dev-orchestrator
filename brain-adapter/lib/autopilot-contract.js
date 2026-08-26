@@ -49,7 +49,9 @@ function hasValidAutopilotProgramControl(text) {
   const spec = parsed.task_spec && typeof parsed.task_spec === 'object' ? parsed.task_spec : null;
   if (!spec) return false;
   if (!String(spec.instructions || '').trim()) return false;
-  return Array.isArray(spec.allowed_files) && spec.allowed_files.some((item) => String(item || '').trim());
+  const hasAllowedFiles = Array.isArray(spec.allowed_files) && spec.allowed_files.some((item) => String(item || '').trim());
+  const hasRequiredTests = Array.isArray(spec.required_tests) && spec.required_tests.some((item) => String(item || '').trim());
+  return hasAllowedFiles && hasRequiredTests;
 }
 
 function hasValidAutopilotDecision(text) {
