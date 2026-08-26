@@ -16,3 +16,18 @@ test('verification contract still accepts COMPLETE RETRY BLOCKED', () => {
   assert.equal(hasValidAutopilotDecision('<MRAPI_AUTOPILOT>{"action":"COMPLETE","reason":"ok","execution_spec":null}</MRAPI_AUTOPILOT>'), true);
   assert.equal(hasValidAutopilotDecision('<MRAPI_AUTOPILOT>{"action":"NOPE"}</MRAPI_AUTOPILOT>'), false);
 });
+
+test('PROGRAM contract accepts ChatGPT markdown-escaped tags and keys', () => {
+  const escaped = String.raw`\<MRAPI\_CONTROL>
+{
+  "requires\_execution": true,
+  "execution\_type": "EXECUTOR",
+  "task\_spec": {
+    "allowed\_files": ["src/services/autopilot.js"],
+    "required\_tests": ["node --test test\autopilot-v6-loop.test.js"],
+    "instructions": "apply exact change"
+  }
+}
+\</MRAPI\_CONTROL>`;
+  assert.equal(hasValidAutopilotProgramControl(escaped), true);
+});

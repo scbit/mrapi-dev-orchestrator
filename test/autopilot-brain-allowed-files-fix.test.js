@@ -26,3 +26,29 @@ test('autopilot PROGRAM prompt includes mandatory allowed_files in returned cont
   assert.match(prompt, /task_spec\.allowed_files is REQUIRED/);
   assert.match(prompt, /"allowed_files": \["repo-relative\/path\.ext"\]/);
 });
+
+test('parseBrainResponse accepts escaped ChatGPT MRAPI_CONTROL and preserves allowed_files', () => {
+  const output = String.raw`\<MRAPI\_CONTROL>
+{
+  "requires\_execution": true,
+  "execution\_type": "EXECUTOR",
+  "task\_spec": {
+    "title": "Escaped contract",
+    "objective": "Parse escaped transport",
+    "allowed\_files": ["src/services/autopilot.js", "test/autopilot-v6-loop.test.js"],
+    "required\_tests": ["node --test test\autopilot-v6-loop.test.js"],
+    "instructions": "OBJECTIVE\nApply exact change"
+  }
+}
+\</MRAPI\_CONTROL>`;
+  const parsed = parseBrainResponse(output);
+  assert.equal(parsed.requires_execution, true);
+  assert.equal(parsed.execution_type, 'EXECUTOR');
+  assert.deepEqual(parsed.task_spec.allowed_files, [
+    'src/services/autopilot.js',
+    'test/autopilot-v6-loop.test.js'
+  ]);
+  assert.deepEqual(parsed.task_spec.required_tests, [
+    'node --test test\\autopilot-v6-loop.test.js'
+  ]);
+});

@@ -852,9 +852,17 @@ function normalizeFinalResult(value) {
   return String(value).trim();
 }
 
+function normalizeBrainTransportText(text) {
+  return String(text || '').replace(/\\([<>_])/g, '$1');
+}
+
+function escapeInvalidJsonBackslashes(text) {
+  return String(text || '').replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+}
+
 function extractTaggedBlock(text, tagName) {
   const pattern = new RegExp(`<${tagName}>\\s*([\\s\\S]*?)\\s*</${tagName}>`, 'i');
-  const match = String(text || '').match(pattern);
+  const match = normalizeBrainTransportText(text).match(pattern);
   return match ? match[1].trim() : '';
 }
 
@@ -922,11 +930,18 @@ function hasMeaningfulText(text) {
 }
 
 function parseBrainResponse(rawResponse, input = {}) {
-  const raw = String(rawResponse || input.output_text || input.summary || '');
+  const rawOriginal = String(rawResponse || input.output_text || input.summary || '');
+  const raw = normalizeBrainTransportText(rawOriginal);
   const taggedControl = extractTaggedBlock(raw, 'MRAPI_CONTROL');
   const taggedResult = extractTaggedBlock(raw, 'MRAPI_RESULT');
-  const parsedTagged = taggedControl ? findFirstJsonObject(taggedControl) : null;
-  const parsedRaw = parsedTagged || findFirstJsonObject(raw);
+  let parsedTagged = taggedControl ? findFirstJsonObject(taggedControl) : null;
+  if (!parsedTagged && taggedControl) {
+    parsedTagged = findFirstJsonObject(escapeInvalidJsonBackslashes(taggedControl));
+  }
+  let parsedRaw = parsedTagged || findFirstJsonObject(raw);
+  if (!parsedRaw) {
+    parsedRaw = findFirstJsonObject(escapeInvalidJsonBackslashes(raw));
+  }
   const decision = parsedRaw?.parsed || {};
 
   const inputRequiresExecution = parseBoolean(input.requires_execution);
@@ -975,7 +990,7 @@ function parseBrainResponse(rawResponse, input = {}) {
     execution_type: executionType,
     task_spec: taskSpec,
     final_result_text: hasMeaningfulText(finalResultText) ? String(finalResultText).trim() : '',
-    raw_response: raw
+    raw_response: rawOriginal
   };
 }
 

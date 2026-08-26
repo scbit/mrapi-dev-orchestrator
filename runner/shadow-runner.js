@@ -40,7 +40,7 @@ async function register() {
     executor_type: 'CODEX_CLI_AUTO',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.4.4.12',
+    runner_version: 'v0.4.4.14',
     capabilities: [
       'EXECUTION_RUN:CODEX_CLI_AUTO',
       'CODEX_HANDOFF:VALIDATED',
