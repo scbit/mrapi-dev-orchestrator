@@ -392,7 +392,7 @@ test('PROPOSED exposes review actions while Start remains unavailable before app
 
   planner.renderProposal(proposedProposal());
 
-  assert.match(planner.els.status.textContent, /Plan listo/);
+  assert.match(planner.els.status.textContent, /Waiting for approval/);
   assert.equal(planner.els.approve.classList.contains('hidden'), false);
   assert.equal(planner.els.requestChanges.classList.contains('hidden'), false);
   assert.equal(planner.els.start.classList.contains('hidden'), true);

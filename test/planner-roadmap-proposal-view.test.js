@@ -215,7 +215,7 @@ test('PROPOSED state explains approval boundary, enables approval, and hides Sta
   const { planner } = createHarness(html);
   planner.renderProposal(proposal());
 
-  assert.match(planner.els.proposalView.innerHTML, /Todav/);
+  assert.match(planner.els.proposalView.innerHTML, /Waiting for approval/);
   assert.match(planner.els.proposalView.innerHTML, /Awaiting explicit approval/);
   assert.equal(planner.els.approve.classList.contains('hidden'), false);
   assert.equal(planner.els.start.classList.contains('hidden'), true);

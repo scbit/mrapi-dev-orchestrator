@@ -226,7 +226,7 @@ test('milestones are collapsed by default with human-facing headers and advanced
   assert.doesNotMatch(rendered, /<details class="milestone" open/);
   assert.match(collapsedHeader, /Human Checkpoint/);
   assert.match(collapsedHeader, /Confirm the user-facing plan/);
-  assert.match(collapsedHeader, /Waiting/);
+  assert.match(collapsedHeader, /Need human action/);
   assert.doesNotMatch(collapsedHeader, /m-human|executor_required|Executor requirement|Dependencies|Reviewer may miss|Approval remains explicit|PROPOSED/);
 
   assert.match(rendered, /The reviewer checks the summary before approving/);
@@ -289,7 +289,11 @@ test('malformed proposals still block approval and existing action gates are pre
   assert.equal(planner.els.requestChanges.classList.contains('hidden'), false);
   assert.equal(planner.els.start.classList.contains('hidden'), true);
 
-  planner.renderProposal(proposal({ state: 'ACTIVE', approval_status: 'APPROVED' }));
+  planner.renderProposal(proposal({
+    state: 'ACTIVE',
+    approval_status: 'APPROVED',
+    milestones: proposal().milestones.map((milestone) => ({ ...milestone, state: 'PENDING' }))
+  }));
   assert.equal(planner.els.approve.classList.contains('hidden'), true);
   assert.equal(planner.els.requestChanges.classList.contains('hidden'), true);
   assert.equal(planner.els.start.classList.contains('hidden'), false);

@@ -393,8 +393,98 @@ function plannerPageHtml() {
       return text(proposal?.state || proposal?.lifecycle_state || '').trim().toUpperCase();
     }
 
+    function rawLifecycleState(item) {
+      return text(item?.state || item?.lifecycle_state || '').trim();
+    }
+
     function approvalStatus(proposal) {
       return text(proposal?.approval_status || proposal?.approval?.status || '').trim().toUpperCase();
+    }
+
+    function explicitHumanActionMarker(value) {
+      const marker = text(value).trim().toUpperCase();
+      return [
+        'NEEDS_HUMAN_ACTION',
+        'HUMAN_ACTION_REQUIRED',
+        'WAITING_FOR_HUMAN',
+        'HUMAN_ACTION',
+        'HUMAN_CHECKPOINT',
+        'MANUAL_ACTION',
+        'MANUAL_REVIEW',
+        'REVIEW_CHECKPOINT',
+        'APPROVAL_CHECKPOINT'
+      ].includes(marker);
+    }
+
+    function requiresHumanAction(item) {
+      if (!item || typeof item !== 'object') return false;
+      if (item.human_action_required === true || item.requires_human_action === true) return true;
+      if (explicitHumanActionMarker(item.state || item.lifecycle_state || item.revision_status || item.status)) return true;
+      if (explicitHumanActionMarker(item.action_type || item.checkpoint_type || item.type)) return true;
+      if (item.action && typeof item.action === 'object' && explicitHumanActionMarker(item.action.type || item.action.kind || item.action.state)) return true;
+      if (item.checkpoint && typeof item.checkpoint === 'object' && explicitHumanActionMarker(item.checkpoint.type || item.checkpoint.kind || item.checkpoint.state)) return true;
+      return item.executor_required === false && (
+        explicitHumanActionMarker(item.handoff_type) ||
+        explicitHumanActionMarker(item.review_type)
+      );
+    }
+
+    function titleCaseState(value, emptyText = 'Pending') {
+      const raw = text(value).trim();
+      if (!raw) return emptyText;
+      return raw.toLowerCase().replace(/[_-]+/g, ' ').replace(/(^|\\s)\\w/g, (match) => match.toUpperCase());
+    }
+
+    function currentMilestone(proposal) {
+      if (!proposal || typeof proposal !== 'object') return null;
+      if (proposal.current_milestone && typeof proposal.current_milestone === 'object') return proposal.current_milestone;
+      const currentId = text(proposal.current_milestone_id || proposal.milestone_id).trim();
+      const milestones = Array.isArray(proposal.milestones) ? proposal.milestones : [];
+      if (currentId) {
+        const byId = milestones.find((milestone) => text(milestone?.id).trim() === currentId);
+        if (byId) return byId;
+      }
+      return milestones.find((milestone) => ['RUNNING', 'EXECUTING', 'VERIFYING', 'PLANNING'].includes(lifecycleState(milestone))) || null;
+    }
+
+    function relatedMilestones(item) {
+      const milestones = [];
+      if (item?.current_milestone && typeof item.current_milestone === 'object') milestones.push(item.current_milestone);
+      if (Array.isArray(item?.milestones)) milestones.push(...item.milestones.filter((milestone) => milestone && typeof milestone === 'object'));
+      return milestones;
+    }
+
+    function hasState(item, states) {
+      if (states.includes(lifecycleState(item))) return true;
+      return relatedMilestones(item).some((milestone) => states.includes(lifecycleState(milestone)));
+    }
+
+    function hasHumanActionEvidence(item) {
+      const current = currentMilestone(item);
+      return requiresHumanAction(item) || (current && requiresHumanAction(current));
+    }
+
+    function friendlyLifecycle(item, options = {}) {
+      const kind = options.kind || 'roadmap';
+      const raw = lifecycleState(item);
+      const rawDisplay = rawLifecycleState(item);
+      const status = approvalStatus(item);
+      const isMilestone = kind === 'milestone';
+      const proposedIsAwaitingApproval = !isMilestone && raw === 'PROPOSED' && (status === 'PENDING' || status === 'AWAITING_APPROVAL' || !status);
+
+      if (['COMPLETED', 'COMPLETE', 'DONE'].includes(raw)) return 'Completed';
+      if (['CANCELLED', 'CANCELED'].includes(raw)) return 'Cancelled';
+      if (raw === 'BLOCKED' || (isMilestone && hasState(item, ['BLOCKED']))) return 'Blocked';
+      if (hasHumanActionEvidence(item)) return 'Need human action';
+      if (hasState(item, ['RUNNING', 'EXECUTING', 'VERIFYING'])) return 'Running';
+      if (raw === 'PLANNING') return 'Planning';
+      if (raw === 'PENDING') return isMilestone ? 'Pending' : (status === 'APPROVED' ? 'Approved' : 'Planning');
+      if (proposedIsAwaitingApproval) return 'Waiting for approval';
+      if ((raw === 'ACTIVE' || raw === 'APPROVED') && status === 'APPROVED') return 'Approved';
+      if (raw === 'APPROVED' && !status) return 'Approved';
+      if (raw === 'PROPOSED') return isMilestone ? 'Pending' : 'Waiting for approval';
+      if (rawDisplay) return titleCaseState(rawDisplay) + (!isMilestone && status ? ' / ' + titleCaseState(status) : '');
+      return isMilestone ? 'Pending' : 'Planning';
     }
 
     function isApproved(proposal) {
@@ -414,7 +504,11 @@ function plannerPageHtml() {
     }
 
     function isTerminal(proposal) {
-      return ['BLOCKED', 'CANCELLED', 'CANCELED', 'COMPLETED'].includes(lifecycleState(proposal));
+      return ['BLOCKED', 'CANCELLED', 'CANCELED', 'COMPLETED', 'COMPLETE', 'DONE'].includes(lifecycleState(proposal));
+    }
+
+    function isRunning(proposal) {
+      return friendlyLifecycle(proposal) === 'Running';
     }
 
     function isReviewComplete(proposal) {
@@ -438,23 +532,15 @@ function plannerPageHtml() {
     }
 
     function stateClass(proposal) {
-      const roadmapState = text(proposal?.state).toUpperCase();
-      if (roadmapState === 'ACTIVE' || roadmapState === 'APPROVED') return 'active';
-      if (roadmapState === 'BLOCKED') return 'blocked';
-      if (roadmapState === 'CANCELLED' || roadmapState === 'CANCELED') return 'cancelled';
-      if (roadmapState === 'COMPLETED') return 'complete';
+      const label = friendlyLifecycle(proposal);
+      if (label === 'Approved' || label === 'Running' || label === 'Completed') return label === 'Completed' ? 'complete' : 'active';
+      if (label === 'Blocked') return 'blocked';
+      if (label === 'Cancelled') return 'cancelled';
       return 'awaiting';
     }
 
     function stateLabel(proposal) {
-      const roadmapState = lifecycleState(proposal) || 'UNKNOWN';
-      const status = approvalStatus(proposal);
-      if (roadmapState === 'PROPOSED') return 'Plan listo para revisar';
-      if ((roadmapState === 'ACTIVE' || roadmapState === 'APPROVED') && status === 'APPROVED') return 'Aprobado';
-      if (roadmapState === 'COMPLETED') return 'COMPLETED';
-      if (roadmapState === 'BLOCKED') return 'BLOCKED';
-      if (roadmapState === 'CANCELLED' || roadmapState === 'CANCELED') return 'CANCELLED';
-      return roadmapState + (status ? ' / ' + status : '');
+      return friendlyLifecycle(proposal);
     }
 
     function approvalLabel(proposal) {
@@ -464,37 +550,12 @@ function plannerPageHtml() {
       return status || 'Not recorded';
     }
 
-    function titleCaseState(value) {
-      const raw = text(value).trim();
-      if (!raw) return 'Waiting';
-      return raw.toLowerCase().replace(/[_-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
-    }
-
     function friendlyMilestoneState(milestone) {
-      const raw = text(milestone?.state || 'PROPOSED').trim().toUpperCase();
-      if (raw === 'PROPOSED') return 'Waiting';
-      if (raw === 'PENDING') return 'Pending';
-      if (raw === 'PLANNING') return 'Planning';
-      if (raw === 'RUNNING' || raw === 'EXECUTING' || raw === 'VERIFYING') return 'Running';
-      if (raw === 'COMPLETED' || raw === 'COMPLETE' || raw === 'DONE') return 'Completed';
-      if (raw === 'BLOCKED') return 'Blocked';
-      if (raw === 'CANCELLED' || raw === 'CANCELED') return 'Cancelled';
-      return titleCaseState(raw);
+      return friendlyLifecycle(milestone, { kind: 'milestone' });
     }
 
     function friendlyPlannerState(item) {
-      const roadmapState = lifecycleState(item) || 'UNKNOWN';
-      const status = approvalStatus(item);
-      const revisionStatus = text(item?.revision_status).trim().toUpperCase();
-      if (roadmapState === 'PLANNING') return 'Planning';
-      if (roadmapState === 'PROPOSED' && (status === 'PENDING' || status === 'AWAITING_APPROVAL' || !status)) return 'Waiting for approval';
-      if ((roadmapState === 'ACTIVE' || roadmapState === 'APPROVED') && status === 'APPROVED') return 'Approved';
-      if (roadmapState === 'RUNNING' || roadmapState === 'EXECUTING' || roadmapState === 'VERIFYING') return 'Running';
-      if (roadmapState === 'NEEDS_HUMAN_ACTION' || roadmapState === 'HUMAN_ACTION_REQUIRED' || revisionStatus === 'NEEDS_HUMAN_ACTION') return 'Need human action';
-      if (roadmapState === 'COMPLETED' || roadmapState === 'COMPLETE' || roadmapState === 'DONE') return 'Completed';
-      if (roadmapState === 'BLOCKED') return 'Blocked';
-      if (roadmapState === 'CANCELLED' || roadmapState === 'CANCELED') return 'Cancelled';
-      return titleCaseState(roadmapState + (status ? ' ' + status : ''));
+      return friendlyLifecycle(item);
     }
 
     function friendlyTimestamp(item) {
@@ -556,30 +617,6 @@ function plannerPageHtml() {
       await loadProposal();
     }
 
-    function explicitHumanActionMarker(value) {
-      const marker = text(value).trim().toUpperCase();
-      return [
-        'HUMAN_ACTION',
-        'HUMAN_CHECKPOINT',
-        'MANUAL_ACTION',
-        'MANUAL_REVIEW',
-        'REVIEW_CHECKPOINT',
-        'APPROVAL_CHECKPOINT'
-      ].includes(marker);
-    }
-
-    function requiresHumanAction(milestone) {
-      if (!milestone || typeof milestone !== 'object') return false;
-      if (milestone.human_action_required === true || milestone.requires_human_action === true) return true;
-      if (explicitHumanActionMarker(milestone.action_type || milestone.checkpoint_type || milestone.type)) return true;
-      if (milestone.action && typeof milestone.action === 'object' && explicitHumanActionMarker(milestone.action.type || milestone.action.kind)) return true;
-      if (milestone.checkpoint && typeof milestone.checkpoint === 'object' && explicitHumanActionMarker(milestone.checkpoint.type || milestone.checkpoint.kind)) return true;
-      return milestone.executor_required === false && (
-        explicitHumanActionMarker(milestone.handoff_type) ||
-        explicitHumanActionMarker(milestone.review_type)
-      );
-    }
-
     function renderSummaryCard(proposal, milestones) {
       const total = milestones.length;
       const executorCount = milestones.filter((item) => item.milestone.executor_required === true).length;
@@ -601,7 +638,7 @@ function plannerPageHtml() {
 
     function renderRoadmapAdvancedDetails(proposal) {
       return '<details class="advanced-details"><summary><strong>Advanced roadmap details</strong></summary>' +
-        '<div class="info-grid"><div><span class="label">Lifecycle state</span><p>' + escapeHtml(lifecycleState(proposal)) + '</p></div>' +
+        '<div class="info-grid"><div><span class="label">Lifecycle state</span><p>' + escapeHtml(rawLifecycleState(proposal) || 'Not recorded') + '</p></div>' +
         '<div><span class="label">Approval status</span><p>' + escapeHtml(approvalLabel(proposal)) + '</p></div>' +
         '<div><span class="label">Roadmap ID</span><p>' + escapeHtml(state.proposalId || 'Not recorded') + '</p></div></div>' +
         renderRevisionContext(proposal) +
@@ -619,18 +656,24 @@ function plannerPageHtml() {
 
     function renderNotice(proposal) {
       if (isProposed(proposal)) {
-        return '<div class="notice"><strong>Plan listo para revisar.</strong> Todavía no se ejecutó nada. Revisá el roadmap antes de aprobarlo.</div>';
+        return '<div class="notice"><strong>Waiting for approval.</strong> Nothing has run yet. Review the roadmap before approving it.</div>';
       }
       if (isRevisionPending(proposal)) {
-        return '<div class="notice"><strong>Cambios pedidos.</strong> W01 está revisando el roadmap con tu feedback. Aprobar e iniciar no están disponibles hasta que haya un plan actualizado.</div>';
+        return '<div class="notice"><strong>Cambios pedidos.</strong> W01 is revising the roadmap with your feedback. Approve and Start are unavailable until the updated plan is ready.</div>';
+      }
+      if (isRunning(proposal)) {
+        const current = currentMilestone(proposal);
+        const currentName = text(current?.title || current?.objective || current?.expected_outcome || current?.id || proposal.current_milestone_id || proposal.milestone_id).trim();
+        const currentState = current ? friendlyMilestoneState(current) : stateLabel(proposal);
+        return '<div class="notice"><strong>Running.</strong> Current milestone: ' + escapeHtml(currentName || 'Not recorded') + '. Status: ' + escapeHtml(currentState) + '.</div>';
       }
       if (isApproved(proposal)) {
-        return '<div class="notice"><strong>Roadmap aprobado.</strong> Start Autopilot sigue siendo una acción separada.</div>';
+        return '<div class="notice"><strong>Approved.</strong> Start Autopilot remains a separate action.</div>';
       }
       if (isTerminal(proposal)) {
         return '<div class="notice terminal"><strong>This roadmap is ' + escapeHtml(stateLabel(proposal)) + '.</strong> It is not presented as ordinary executable approved work.</div>';
       }
-      return '<div class="notice"><strong>Estado del roadmap: ' + escapeHtml(stateLabel(proposal)) + '.</strong> Todavía no está listo para iniciarse.</div>';
+      return '<div class="notice"><strong>Roadmap status: ' + escapeHtml(stateLabel(proposal)) + '.</strong> It is not ready to start yet.</div>';
     }
 
     function renderOriginalRequest(proposal) {
@@ -684,7 +727,7 @@ function plannerPageHtml() {
       const proposed = isProposed(proposal);
       const canApprove = proposed && !approved && !isTerminal(proposal);
       const canRequestChanges = canApprove;
-      const canStart = approved && !isTerminal(proposal);
+      const canStart = approved && !isTerminal(proposal) && !isRunning(proposal);
       els.approve.classList.toggle('hidden', !canApprove);
       els.requestChanges.classList.toggle('hidden', !canRequestChanges);
       els.start.classList.toggle('hidden', !canStart);
@@ -704,10 +747,11 @@ function plannerPageHtml() {
         renderSummaryCard(proposal, milestones) +
         renderRoadmapAdvancedDetails(proposal) +
         '<h2>Milestones</h2><div class="milestones">' + milestones.map((item) => renderMilestone(item.milestone, item.index)).join('') + '</div>';
-      if (proposed && !approved) setStatus('Plan listo - revisalo antes de aprobar.', '');
+      if (isRunning(proposal)) setStatus('Running - current milestone is in progress.', 'success');
+      else if (proposed && !approved) setStatus('Waiting for approval - revisalo antes de aprobar.', '');
       else if (isRevisionPending(proposal)) setStatus('Cambios pedidos. W01 está revisando el roadmap con tu feedback.', 'success');
       else if (approved) setStatus('Roadmap aprobado. Start Autopilot ya está disponible.', 'success');
-      else setStatus('Roadmap is ' + text(proposal.state || 'not startable') + '.', '');
+      else setStatus('Roadmap is ' + stateLabel(proposal) + '.', '');
     }
 
     function renderMilestone(milestone, index) {
@@ -719,7 +763,7 @@ function plannerPageHtml() {
         '<div class="kv"><div><span class="label">Description</span><p>' + escapeHtml(milestone.description) + '</p></div></div>' +
         '<details class="advanced-details"><summary><strong>Advanced milestone details</strong></summary><div class="kv">' +
         '<div><span class="label">Milestone ID</span><p>' + escapeHtml(milestone.id) + '</p></div>' +
-        '<div><span class="label">Raw lifecycle state</span><p>' + escapeHtml(milestone.state || 'PROPOSED') + '</p></div>' +
+        '<div><span class="label">Raw lifecycle state</span><p>' + escapeHtml(rawLifecycleState(milestone) || 'Not recorded') + '</p></div>' +
         '<div><span class="label">Executor requirement</span><p><span class="badge ' + executorClass + '">' + escapeHtml(executorLabel) + '</span></p></div>' +
         '<div><span class="label">Dependencies</span>' + list(dependencyItems, 'No dependencies') + '</div>' +
         '<div><span class="label">Risks</span>' + list(milestone.risks, 'None recorded') + '</div>' +
@@ -920,10 +964,16 @@ function plannerPageHtml() {
           body: JSON.stringify({})
         }).then(parseResponse);
         const current = started.current_milestone || {};
+        const currentName = text(current.title || current.objective || current.expected_outcome || current.id || started.milestone_id).trim();
+        const currentState = friendlyMilestoneState({ ...current, state: current.state || started.state });
         els.startView.classList.remove('hidden');
         els.startView.innerHTML = '<div class="status success"><strong>' + (started.no_new_work || started.reused ? 'Existing Autopilot work reused.' : 'Autopilot started.') + '</strong><br>' +
-          'Current milestone: ' + escapeHtml(current.id || started.milestone_id || '') + ' ' + escapeHtml(current.title || '') + ' (' + escapeHtml(current.state || started.state || '') + ')<br>' +
-          'Mission: ' + escapeHtml(started.mission_id || '') + '<br>Brain Run: ' + escapeHtml(started.brain_run_id || '') + '</div>';
+          'Current milestone: ' + escapeHtml(currentName || 'Not recorded') + '<br>' +
+          'Status: ' + escapeHtml(currentState) +
+          '<details class="advanced-details"><summary><strong>Advanced execution details</strong></summary>' +
+          '<div class="info-grid"><div><span class="label">Milestone ID</span><p>' + escapeHtml(current.id || started.milestone_id || 'Not recorded') + '</p></div>' +
+          '<div><span class="label">Mission ID</span><p>' + escapeHtml(started.mission_id || 'Not recorded') + '</p></div>' +
+          '<div><span class="label">Brain Run ID</span><p>' + escapeHtml(started.brain_run_id || 'Not recorded') + '</p></div></div></details></div>';
         await loadProposal();
         loadRecentPlannerRequests();
       } catch (error) {

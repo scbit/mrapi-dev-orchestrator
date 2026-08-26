@@ -573,9 +573,10 @@ test('integrated UI request changes approval and start lifecycle is persisted an
   await planner.els.start.listeners.click();
   const firstStart = calls.find((call) => call.url.endsWith('/start'));
   assert.match(firstStart.url, /\/api\/planner\/roadmaps\/roadmaps_1\/start$/);
-  assert.match(planner.els.startView.innerHTML, /Current milestone: m1/);
-  assert.match(planner.els.startView.innerHTML, /Mission:/);
-  assert.match(planner.els.startView.innerHTML, /Brain Run:/);
+  assert.match(planner.els.startView.innerHTML, /Current milestone: Brain-only Foundation/);
+  assert.match(planner.els.startView.innerHTML, /Milestone ID[\s\S]*m1/);
+  assert.match(planner.els.startView.innerHTML, /Mission ID/);
+  assert.match(planner.els.startView.innerHTML, /Brain Run ID/);
   assert.doesNotMatch(planner.els.proposalView.innerHTML + planner.els.startView.innerHTML, /MRAPI_CONTROL|executor_instructions|codex_handoff|raw_brain_output|stack/i);
   assert.deepEqual(counts(db), { missions: 2, brainRuns: 3, tasks: 0, executionRuns: 0 });
   assert.equal(db.get('roadmaps', proposed.roadmap_id).milestones[0].state, 'PLANNING');

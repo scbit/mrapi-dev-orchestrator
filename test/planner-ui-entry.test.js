@@ -148,7 +148,7 @@ test('proposal rendering includes proposal and ordered milestone review fields',
 
 test('PROPOSED review requires explicit approval and read or refresh never approves', async () => {
   const { html } = await renderPlannerPage();
-  assert.match(html, /Plan listo para revisar/);
+  assert.match(html, /Waiting for approval/);
   assert.match(html, /id="approveRoadmap"[^>]*>Approve roadmap/);
   assert.match(html, /const canApprove = proposed && !approved && !isTerminal\(proposal\)/);
   assert.match(html, /els\.approve\.classList\.toggle\('hidden', !canApprove\)/);
@@ -169,8 +169,9 @@ test('Start Autopilot is hidden before approval, separate from approval, and reu
   assert.match(html, /\/api\/planner\/roadmaps\/' \+ encodeURIComponent\(proposalId\) \+ '\/start'/);
   assert.match(html, /Existing Autopilot work reused/);
   assert.match(html, /Current milestone:/);
-  assert.match(html, /Mission:/);
-  assert.match(html, /Brain Run:/);
+  assert.match(html, /Advanced execution details/);
+  assert.match(html, /Mission ID/);
+  assert.match(html, /Brain Run ID/);
 
   const approvalHandler = html.slice(html.indexOf("els.approve.addEventListener('click'"), html.indexOf("els.start.addEventListener('click'"));
   assert.doesNotMatch(approvalHandler, /\/start/);
