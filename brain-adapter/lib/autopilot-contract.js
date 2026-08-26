@@ -4,7 +4,33 @@ function normalizeBrainTransportText(text) {
 }
 
 function escapeInvalidJsonBackslashes(text) {
-  return String(text || '').replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+  const source = String(text || '');
+  let out = '';
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch !== '\\') {
+      out += ch;
+      continue;
+    }
+    const next = source[i + 1];
+    if (next === undefined) {
+      out += '\\\\';
+      continue;
+    }
+    // Preserve valid JSON escapes atomically. This is important for Windows paths
+    // already encoded as C:\\\\Users\\\\Shadow: treating the second slash of \\\\ as
+    // a new invalid escape would corrupt the JSON into \\\\\\U.
+    if ('"\\\\/bfnrtu'.includes(next)) {
+      out += ch + next;
+      i += 1;
+      continue;
+    }
+    // A single transport backslash before a non-JSON escape (for example \a in
+    // test\\autopilot...) must become a literal backslash inside the JSON string.
+    out += '\\\\' + next;
+    i += 1;
+  }
+  return out;
 }
 
 function parseTaggedJson(text, tag) {

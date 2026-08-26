@@ -31,3 +31,19 @@ test('PROGRAM contract accepts ChatGPT markdown-escaped tags and keys', () => {
 \</MRAPI\_CONTROL>`;
   assert.equal(hasValidAutopilotProgramControl(escaped), true);
 });
+
+
+test('PROGRAM contract preserves valid doubled backslashes in Windows paths while repairing invalid JSON path escapes', () => {
+  const captured = String.raw`\<MRAPI\_CONTROL>
+{
+  "requires\_execution": true,
+  "execution\_type": "EXECUTOR",
+  "task\_spec": {
+    "allowed\_files": ["src/services/autopilot.js"],
+    "required\_tests": ["node --test test\autopilot-v7-loop.test.js"],
+    "instructions": "CONTEXT\\nRepository: C:\\Users\\Shadow\\Documents\\GitHub\\mrapi-dev-orchestrator\\nTESTS\\nnode --test test\autopilot-v7-loop.test.js"
+  }
+}
+\</MRAPI\_CONTROL>`;
+  assert.equal(hasValidAutopilotProgramControl(captured), true);
+});
