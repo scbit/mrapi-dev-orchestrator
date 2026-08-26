@@ -101,6 +101,14 @@ function parseAutopilotDecision(text) {
   };
 }
 
+const TERMINAL_MISSION_STATES = new Set(['BLOCKED', 'COMPLETED', 'FAILED', 'CANCELLED']);
+
+function linkedMissionBlocksFreshStart(mission, tenantId) {
+  if (!mission) return false;
+  if (mission.tenant_id !== tenantId) return true;
+  return !TERMINAL_MISSION_STATES.has(String(mission.state || '').toUpperCase());
+}
+
 function milestoneWithState(roadmap, milestoneId, state, extra = {}) {
   let found = false;
   const milestones = (roadmap.milestones || []).map((item) => {
@@ -140,7 +148,19 @@ async function startNextRoadmapMilestone(db, tenantId, roadmapId, options = {}) 
       const error = new Error('MILESTONE_NOT_PENDING'); error.status = 409; throw error;
     }
     if (milestone.mission_id) {
-      const error = new Error('MILESTONE_ALREADY_HAS_MISSION'); error.status = 409; throw error;
+      const linkedMissionRef = db.collection('missions').doc(milestone.mission_id);
+      const linkedMissionSnap = await tx.get(linkedMissionRef);
+      const linkedMission = linkedMissionSnap.exists
+        ? { id: linkedMissionSnap.id, ...linkedMissionSnap.data() }
+        : null;
+
+      // PENDING may start again after a terminal prior Mission.
+      // Historical Mission/Runs remain stored for audit.
+      if (linkedMissionBlocksFreshStart(linkedMission, tenantId)) {
+        const error = new Error('MILESTONE_ALREADY_HAS_MISSION');
+        error.status = 409;
+        throw error;
+      }
     }
 
     const projectRef = db.collection('projects').doc(roadmap.project_id);
@@ -542,6 +562,8 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
 }
 
 module.exports = {
+  TERMINAL_MISSION_STATES,
+  linkedMissionBlocksFreshStart,
   AUTOPILOT_ACTIONS,
   parseAutopilotDecision,
   startNextRoadmapMilestone,
