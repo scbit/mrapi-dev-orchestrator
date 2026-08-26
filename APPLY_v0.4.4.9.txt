@@ -1,0 +1,14 @@
+MRAPI DEV v0.4.4.9 — Git read-only guard fallback
+
+1. On the main PC, replace/update the repo with this ZIP.
+2. GitHub Desktop: review, Commit, Push.
+3. On Shadow: discard any uncommitted files left by the failed Autopilot execution BEFORE Pull.
+4. Shadow GitHub Desktop: Fetch/Pull.
+5. Manual Cloud Run deploy.
+6. Restart tools\shadow\START MRAPI W01 + RUNNER.cmd.
+7. Re-run the clean Autopilot Loop test with Auto-advance OFF.
+
+Expected:
+- git status/diff/rev-parse/ls-files/log/show are available read-only.
+- git add/commit/push/pull/merge/rebase remain blocked during PROGRAM/RETRY.
+- no automatic deploy.

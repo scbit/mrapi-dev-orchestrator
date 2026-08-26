@@ -37,11 +37,49 @@ function resolveCommand(cfg) {
   return null;
 }
 
-function realGitCommand() {
+function windowsGitCandidates(env = process.env) {
+  const candidates = [];
+  const add = (value) => {
+    const normalized = String(value || '').trim();
+    if (normalized && !candidates.includes(normalized)) candidates.push(normalized);
+  };
+
+  add(env.MRAPI_GIT_READ_BINARY);
+  if (env.ProgramFiles) add(path.join(env.ProgramFiles, 'Git', 'cmd', 'git.exe'));
+  if (env['ProgramFiles(x86)']) add(path.join(env['ProgramFiles(x86)'], 'Git', 'cmd', 'git.exe'));
+  if (env.LOCALAPPDATA) {
+    add(path.join(env.LOCALAPPDATA, 'Programs', 'Git', 'cmd', 'git.exe'));
+    const desktopRoot = path.join(env.LOCALAPPDATA, 'GitHubDesktop');
+    try {
+      const appDirs = fs.readdirSync(desktopRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && /^app-/i.test(entry.name))
+        .map((entry) => entry.name)
+        .sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+      for (const appDir of appDirs) {
+        add(path.join(desktopRoot, appDir, 'resources', 'app', 'git', 'cmd', 'git.exe'));
+      }
+    } catch {
+      // GitHub Desktop is optional; ignore missing/unreadable install roots.
+    }
+  }
+  return candidates;
+}
+
+function realGitCommand(env = process.env) {
   const probe = process.platform === 'win32' ? 'where' : 'which';
-  const result = spawnSync(probe, [process.platform === 'win32' ? 'git.exe' : 'git'], { encoding: 'utf8' });
-  if (result.status !== 0) return null;
-  return String(result.stdout || '').split(/\r?\n/).map((x) => x.trim()).find(Boolean) || null;
+  const probeNames = process.platform === 'win32' ? ['git.exe', 'git'] : ['git'];
+  for (const name of probeNames) {
+    const result = spawnSync(probe, [name], { encoding: 'utf8' });
+    if (result.status === 0) {
+      const found = String(result.stdout || '').split(/\r?\n/).map((x) => x.trim()).find(Boolean);
+      if (found) return found;
+    }
+  }
+
+  if (process.platform === 'win32') {
+    return windowsGitCandidates(env).find((candidate) => fs.existsSync(candidate)) || null;
+  }
+  return null;
 }
 
 function createGitReadOnlyGuard(baseEnv = process.env) {
@@ -138,4 +176,4 @@ async function runCodexCommand({ cfg, prompt, onOutput, onProgress, guardGitWrit
   });
 }
 
-module.exports = { runCodexCommand, resolveCommand, createGitReadOnlyGuard, realGitCommand };
+module.exports = { runCodexCommand, resolveCommand, createGitReadOnlyGuard, realGitCommand, windowsGitCandidates };
