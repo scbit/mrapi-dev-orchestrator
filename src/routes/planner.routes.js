@@ -4,7 +4,8 @@ const {
   createPlannerRequest,
   completePlannerBrainRun,
   getPlannerProposal,
-  approvePlannerRoadmap
+  approvePlannerRoadmap,
+  startPlannerRoadmap
 } = require('../services/planner');
 
 function createPlannerRouter({ db }) {
@@ -43,6 +44,25 @@ function createPlannerRouter({ db }) {
         request_id: requestId
       });
       res.json(serializeFirestore(approved));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.post('/roadmaps/:roadmapId/start', async (req, res, next) => {
+    try {
+      const started = await startPlannerRoadmap(db, req.tenantId, req.params.roadmapId, req.body || {});
+      res.status(started.no_new_work ? 200 : 201).json(serializeFirestore({
+        ok: true,
+        roadmap_id: started.roadmap?.id || req.params.roadmapId,
+        milestone_id: started.milestone?.id || null,
+        mission_id: started.mission?.id || null,
+        brain_run_id: started.brain_run?.id || null,
+        reused: started.reused === true,
+        no_new_work: started.no_new_work === true,
+        already_complete: started.already_complete === true
+      }));
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });
       next(error);

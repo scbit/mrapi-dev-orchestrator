@@ -370,10 +370,11 @@ test('approval is idempotent and subsequent Autopilot start creates only first e
     'PLANNING',
     'PENDING'
   ]);
-  await assert.rejects(
-    () => startNextRoadmapMilestone(db, 'tenant_a', roadmap.roadmap_id),
-    /NO_EXECUTABLE_MILESTONE/
-  );
+  const replayedStart = await startNextRoadmapMilestone(db, 'tenant_a', roadmap.roadmap_id);
+  assert.equal(replayedStart.reused, true);
+  assert.equal(replayedStart.no_new_work, true);
+  assert.equal(replayedStart.mission.id, started.mission.id);
+  assert.equal(values(db, 'missions').length, 2);
 
   const third = await approvePlannerRoadmap(db, 'tenant_a', roadmap.roadmap_id, { approve: true });
   assert.equal(third.state, 'ACTIVE');

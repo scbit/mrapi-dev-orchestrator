@@ -102,11 +102,97 @@ function parseAutopilotDecision(text) {
 }
 
 const TERMINAL_MISSION_STATES = new Set(['BLOCKED', 'COMPLETED', 'FAILED', 'CANCELLED']);
+const ACTIVE_MILESTONE_STATES = new Set(['PLANNING', 'RUNNING', 'VERIFYING']);
+const PLANNER_START_ALLOWED_STATES = new Set(['ACTIVE']);
 
 function linkedMissionBlocksFreshStart(mission, tenantId) {
   if (!mission) return false;
   if (mission.tenant_id !== tenantId) return true;
   return !TERMINAL_MISSION_STATES.has(String(mission.state || '').toUpperCase());
+}
+
+function completedPredecessorContext(roadmap, milestone) {
+  const dependencyIds = Array.isArray(milestone.dependencies)
+    ? milestone.dependencies
+    : Array.isArray(milestone.depends_on)
+      ? milestone.depends_on
+      : [];
+  const byId = new Map((roadmap.milestones || []).map((item) => [item.id, item]));
+  return dependencyIds.map((id) => {
+    const dependency = byId.get(id);
+    if (!dependency || dependency.state !== 'COMPLETED') return null;
+    return {
+      id: dependency.id,
+      title: dependency.title || '',
+      objective: dependency.objective || dependency.expected_outcome || '',
+      description: dependency.description || '',
+      state: dependency.state,
+      mission_id: dependency.mission_id || null,
+      brain_run_id: dependency.brain_run_id || dependency.verification_brain_run_id || null,
+      result_id: dependency.result_id || dependency.brain_output_result_id || null,
+      completed_at: dependency.completed_at || null
+    };
+  }).filter(Boolean);
+}
+
+function plannerAutopilotBrainContext({ tenantId, roadmap, milestone, project }) {
+  const dependencies = Array.isArray(milestone.dependencies)
+    ? [...milestone.dependencies]
+    : Array.isArray(milestone.depends_on)
+      ? [...milestone.depends_on]
+      : [];
+  return {
+    planner_contract: 'PLANNER_ROADMAP_AUTOPILOT_HANDOFF_V1',
+    trusted_scope: {
+      tenant_id: tenantId,
+      workspace_id: roadmap.workspace_id || project.workspace_id || null,
+      project_id: roadmap.project_id,
+      roadmap_id: roadmap.id,
+      milestone_id: milestone.id
+    },
+    roadmap: {
+      id: roadmap.id,
+      title: roadmap.title || '',
+      objective: roadmap.objective || '',
+      summary: roadmap.summary || '',
+      original_request: roadmap.original_request || '',
+      provenance: roadmap.provenance || null
+    },
+    current_milestone: {
+      id: milestone.id,
+      title: milestone.title || '',
+      objective: milestone.objective || milestone.expected_outcome || '',
+      description: milestone.description || '',
+      dependencies,
+      depends_on: Array.isArray(milestone.depends_on) ? [...milestone.depends_on] : dependencies,
+      risks: Array.isArray(milestone.risks) ? [...milestone.risks] : [],
+      success_criteria: Array.isArray(milestone.success_criteria) ? [...milestone.success_criteria] : [],
+      executor_required: milestone.executor_required === true,
+      order: milestone.order || null
+    },
+    completed_predecessors: completedPredecessorContext(roadmap, milestone),
+    project_context: {
+      id: project.id,
+      workspace_id: project.workspace_id || null,
+      repository_url: project.repository_url || null,
+      repository_full_name: project.repository_full_name || null,
+      local_path: project.local_path || project.runtime_context?.repository_path || null,
+      default_branch: project.default_branch || null,
+      default_worker_id: project.default_worker_id || null,
+      reusable_instructions: project.reusable_instructions || ''
+    },
+    instructions: [
+      'Brain owns planning and verification. Codex is hands only.',
+      'For executor_required=true, return the existing machine-readable execution planning contract before any Executor task exists.',
+      'For executor_required=false, return requires_execution=false with a final Brain result.'
+    ]
+  };
+}
+
+function activeMilestone(roadmap) {
+  return [...(roadmap.milestones || [])]
+    .sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
+    .find((item) => ACTIVE_MILESTONE_STATES.has(String(item.state || '').toUpperCase())) || null;
 }
 
 function milestoneWithState(roadmap, milestoneId, state, extra = {}) {
@@ -127,6 +213,7 @@ function milestoneWithState(roadmap, milestoneId, state, extra = {}) {
 async function startNextRoadmapMilestone(db, tenantId, roadmapId, options = {}) {
   const roadmapRef = db.collection('roadmaps').doc(roadmapId);
   const missionRef = db.collection('missions').doc();
+  const runRef = db.collection('runs').doc();
   let created = null;
 
   await db.runTransaction(async (tx) => {
@@ -135,9 +222,48 @@ async function startNextRoadmapMilestone(db, tenantId, roadmapId, options = {}) 
       const error = new Error('ROADMAP_NOT_FOUND'); error.status = 404; throw error;
     }
     const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
-    if (roadmap.state !== 'ACTIVE') {
+    if (roadmap.state === 'COMPLETED' && options.planner_handoff === true) {
+      created = { roadmap, milestone: null, mission: null, brain_run: null, already_complete: true, no_new_work: true };
+      return;
+    }
+    if (options.planner_handoff === true) {
+      if (
+        roadmap.proposal_type !== 'PLANNER_ROADMAP' ||
+        roadmap.approval_status !== 'APPROVED' ||
+        roadmap.non_executable === true ||
+        !PLANNER_START_ALLOWED_STATES.has(roadmap.state)
+      ) {
+        const error = new Error('PLANNER_ROADMAP_NOT_STARTABLE'); error.status = 409; throw error;
+      }
+    } else if (roadmap.state !== 'ACTIVE') {
       const error = new Error('ROADMAP_NOT_ACTIVE'); error.status = 409; throw error;
     }
+
+    const existingActiveMilestone = activeMilestone(roadmap);
+    if (existingActiveMilestone) {
+      let mission = null;
+      let brainRun = null;
+      if (existingActiveMilestone.mission_id) {
+        const existingMissionSnap = await tx.get(db.collection('missions').doc(existingActiveMilestone.mission_id));
+        if (existingMissionSnap.exists && existingMissionSnap.data().tenant_id === tenantId) {
+          mission = { id: existingMissionSnap.id, ...existingMissionSnap.data() };
+          const runsSnap = await tx.get(db.collection('runs').where('tenant_id', '==', tenantId).limit(200));
+          brainRun = runsSnap.docs
+            .map((doc) => ({ id: doc.id, ...doc.data() }))
+            .find((run) => run.mission_id === mission.id && run.run_type === 'BRAIN_RUN' && run.autopilot_phase === 'PROGRAM') || null;
+        }
+      }
+      created = {
+        mission,
+        milestone: existingActiveMilestone,
+        roadmap,
+        brain_run: brainRun,
+        reused: true,
+        no_new_work: true
+      };
+      return;
+    }
+
     const milestone = options.milestone_id
       ? (roadmap.milestones || []).find((item) => item.id === options.milestone_id)
       : nextMilestone(roadmap);
@@ -213,18 +339,49 @@ async function startNextRoadmapMilestone(db, tenantId, roadmapId, options = {}) 
       autopilot_max_attempts: Number(options.max_attempts || 3),
       roadmap_id: roadmap.id,
       milestone_id: milestone.id,
+      planner_roadmap_handoff: options.planner_handoff === true,
+      brain_context: plannerAutopilotBrainContext({ tenantId, roadmap, milestone, project }),
       created_at: timestamp(),
       updated_at: timestamp()
     };
     tx.set(missionRef, mission);
+    let brainRun = null;
+    if (options.dispatch_brain_run === true) {
+      brainRun = {
+        id: runRef.id,
+        tenant_id: tenantId,
+        run_type: 'BRAIN_RUN',
+        mission_id: missionRef.id,
+        task_id: null,
+        workspace_id: mission.workspace_id,
+        project_id: mission.project_id,
+        worker_id: workerId,
+        executor_id: null,
+        parent_run_id: null,
+        objective: mission.objective,
+        brain_context: mission.brain_context,
+        autopilot_mode: true,
+        autopilot_phase: 'PROGRAM',
+        roadmap_id: roadmap.id,
+        milestone_id: milestone.id,
+        state: 'RUNNING',
+        progress_percent: 0,
+        progress_message: 'Planner roadmap milestone handed off; Brain Run started',
+        started_at: timestamp(),
+        created_at: timestamp(),
+        updated_at: timestamp()
+      };
+      tx.set(runRef, brainRun);
+    }
     tx.set(roadmapRef, {
       milestones: milestoneWithState(roadmap, milestone.id, 'PLANNING', {
         mission_id: missionRef.id,
+        brain_run_id: brainRun?.id || null,
         started_at: milestoneTimestamp()
       }),
       updated_at: timestamp()
     }, { merge: true });
-    created = { mission, milestone, roadmap };
+    created = { mission, milestone, roadmap, brain_run: brainRun };
   });
 
   return created;
@@ -567,6 +724,7 @@ module.exports = {
   AUTOPILOT_ACTIONS,
   parseAutopilotDecision,
   startNextRoadmapMilestone,
+  plannerAutopilotBrainContext,
   queueVerificationBrainRun,
   completeVerificationBrainRun
 };

@@ -130,6 +130,7 @@ async function dispatchMission(db, tenantId, missionId) {
       executor_id: null,
       parent_run_id: null,
       objective: mission.objective,
+      brain_context: mission.brain_context || null,
       autopilot_mode: mission.autopilot_mode === true,
       autopilot_phase: mission.autopilot_mode === true ? (mission.autopilot_phase || 'PROGRAM') : null,
       roadmap_id: mission.roadmap_id || null,
@@ -1028,6 +1029,44 @@ function brainResultTitle(run, taskSpec) {
   return String(taskSpec?.title || run.objective || 'Brain result').slice(0, 250);
 }
 
+function roadmapMilestonesWithState(roadmap, milestoneId, state, extra = {}) {
+  let found = false;
+  const milestones = (roadmap?.milestones || []).map((item) => {
+    if (item.id !== milestoneId) return item;
+    found = true;
+    return { ...item, state, ...extra, updated_at: new Date() };
+  });
+  if (!found) {
+    const error = new Error('MILESTONE_NOT_FOUND');
+    error.status = 404;
+    throw error;
+  }
+  return milestones;
+}
+
+async function getAutopilotRoadmapForRun(tx, db, tenantId, mission, run) {
+  if (mission.autopilot_mode !== true || !mission.roadmap_id || !mission.milestone_id) return null;
+  const roadmapRef = db.collection('roadmaps').doc(mission.roadmap_id);
+  const roadmapSnap = await tx.get(roadmapRef);
+  if (!roadmapSnap.exists || roadmapSnap.data().tenant_id !== tenantId) {
+    const error = new Error('ROADMAP_NOT_FOUND');
+    error.status = 404;
+    throw error;
+  }
+  const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
+  const milestone = (roadmap.milestones || []).find((item) => item.id === (mission.milestone_id || run.milestone_id));
+  if (!milestone) {
+    const error = new Error('MILESTONE_NOT_FOUND');
+    error.status = 404;
+    throw error;
+  }
+  return { roadmapRef, roadmap, milestone };
+}
+
+function roadmapCompletedAfter(milestones) {
+  return milestones.every((item) => ['COMPLETED', 'SKIPPED'].includes(item.state));
+}
+
 function arrayOfStrings(value) {
   return Array.isArray(value)
     ? value.map((item) => typeof item === 'string' ? item.trim() : String(item?.title || item?.description || '')).filter(Boolean)
@@ -1606,6 +1645,7 @@ async function completeBrainRun(db, tenantId, runId, input) {
     const brainOutput = buildBrainOutput({ id: runId, ...run }, { ...input, output_text: outputText });
     const taskSpec = brainOutput.task_spec || {};
     const mission = missionSnap.data();
+    const autopilotRoadmap = await getAutopilotRoadmapForRun(tx, db, tenantId, mission, run);
 
     if (mission.planning_mode === 'REQUIRED' && mission.approval_status !== 'APPROVED') {
       const revision = Number(mission.plan_revision_number || 0) + 1;
@@ -1699,6 +1739,16 @@ async function completeBrainRun(db, tenantId, runId, input) {
           block_reason: 'BRAIN_RESULT_MISSING',
           updated_at: timestamp()
         }, { merge: true });
+        if (autopilotRoadmap) {
+          tx.set(autopilotRoadmap.roadmapRef, {
+            milestones: roadmapMilestonesWithState(autopilotRoadmap.roadmap, autopilotRoadmap.milestone.id, 'BLOCKED', {
+              blocked_reason: 'BRAIN_RESULT_MISSING',
+              brain_run_id: runId
+            }),
+            state: 'BLOCKED',
+            updated_at: timestamp()
+          }, { merge: true });
+        }
 
         result = {
           success: false,
@@ -1753,6 +1803,19 @@ async function completeBrainRun(db, tenantId, runId, input) {
         completed_at: timestamp(),
         updated_at: timestamp()
       }, { merge: true });
+      if (autopilotRoadmap) {
+        const milestones = roadmapMilestonesWithState(autopilotRoadmap.roadmap, autopilotRoadmap.milestone.id, 'COMPLETED', {
+          brain_run_id: runId,
+          brain_output_result_id: resultRef.id,
+          result_id: resultRef.id,
+          completed_at: new Date()
+        });
+        tx.set(autopilotRoadmap.roadmapRef, {
+          milestones,
+          state: roadmapCompletedAfter(milestones) ? 'COMPLETED' : autopilotRoadmap.roadmap.state,
+          updated_at: timestamp()
+        }, { merge: true });
+      }
 
       if (executorRef) {
         tx.set(executorRef, {
@@ -1797,6 +1860,16 @@ async function completeBrainRun(db, tenantId, runId, input) {
           blocker_stage: 'BRAIN_CONTRACT',
           updated_at: timestamp()
         }, { merge: true });
+        if (autopilotRoadmap) {
+          tx.set(autopilotRoadmap.roadmapRef, {
+            milestones: roadmapMilestonesWithState(autopilotRoadmap.roadmap, autopilotRoadmap.milestone.id, 'BLOCKED', {
+              blocked_reason: 'BRAIN_AUTOPILOT_ALLOWED_FILES_REQUIRED',
+              brain_run_id: runId
+            }),
+            state: 'BLOCKED',
+            updated_at: timestamp()
+          }, { merge: true });
+        }
         result = {
           success: false,
           mission_id: run.mission_id,
@@ -1830,6 +1903,16 @@ async function completeBrainRun(db, tenantId, runId, input) {
           blocker_stage: 'BRAIN_CONTRACT',
           updated_at: timestamp()
         }, { merge: true });
+        if (autopilotRoadmap) {
+          tx.set(autopilotRoadmap.roadmapRef, {
+            milestones: roadmapMilestonesWithState(autopilotRoadmap.roadmap, autopilotRoadmap.milestone.id, 'BLOCKED', {
+              blocked_reason: 'BRAIN_AUTOPILOT_REQUIRED_TESTS_REQUIRED',
+              brain_run_id: runId
+            }),
+            state: 'BLOCKED',
+            updated_at: timestamp()
+          }, { merge: true });
+        }
         result = {
           success: false,
           mission_id: run.mission_id,
@@ -1903,6 +1986,15 @@ async function completeBrainRun(db, tenantId, runId, input) {
       } : {}),
       updated_at: timestamp()
     }, { merge: true });
+    if (autopilotRoadmap) {
+      tx.set(autopilotRoadmap.roadmapRef, {
+        milestones: roadmapMilestonesWithState(autopilotRoadmap.roadmap, autopilotRoadmap.milestone.id, 'RUNNING', {
+          mission_id: run.mission_id,
+          brain_run_id: runId
+        }),
+        updated_at: timestamp()
+      }, { merge: true });
+    }
 
     if (executorRef) {
       tx.set(executorRef, {

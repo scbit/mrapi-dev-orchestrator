@@ -575,6 +575,15 @@ async function approvePlannerRoadmap(db, tenantId, roadmapId, input = {}) {
   return result;
 }
 
+async function startPlannerRoadmap(db, tenantId, roadmapId, input = {}) {
+  const { startNextRoadmapMilestone } = require('./autopilot');
+  return startNextRoadmapMilestone(db, tenantId, roadmapId, {
+    planner_handoff: true,
+    dispatch_brain_run: true,
+    max_attempts: input.max_attempts || 3
+  });
+}
+
 async function completePlannerBrainRun(db, tenantId, runId, input = {}) {
   const runRef = db.collection('runs').doc(runId);
   const preflight = await runRef.get();
@@ -729,6 +738,7 @@ module.exports = {
   completePlannerBrainRun,
   getPlannerProposal,
   approvePlannerRoadmap,
+  startPlannerRoadmap,
   validateProposal,
   parseProposal
 };
