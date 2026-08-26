@@ -527,7 +527,7 @@ test('integrated UI request changes approval and start lifecycle is persisted an
   planner.els.revisionFeedback.listeners.input();
   await planner.els.submitRevision.listeners.click();
 
-  const revisionCall = calls.at(-1);
+  const revisionCall = calls.find((call) => call.url.endsWith('/request-changes'));
   assert.match(revisionCall.url, /\/api\/planner\/roadmaps\/roadmaps_1\/request-changes$/);
   assert.deepEqual(Object.keys(JSON.parse(revisionCall.options.body)), ['feedback']);
   assert.equal(JSON.parse(revisionCall.options.body).feedback, feedback);
@@ -571,7 +571,7 @@ test('integrated UI request changes approval and start lifecycle is persisted an
   assert.equal(planner.els.start.classList.contains('hidden'), false);
 
   await planner.els.start.listeners.click();
-  const firstStart = calls.at(-2).url.endsWith('/start') ? calls.at(-2) : calls.at(-1);
+  const firstStart = calls.find((call) => call.url.endsWith('/start'));
   assert.match(firstStart.url, /\/api\/planner\/roadmaps\/roadmaps_1\/start$/);
   assert.match(planner.els.startView.innerHTML, /Current milestone: m1/);
   assert.match(planner.els.startView.innerHTML, /Mission:/);

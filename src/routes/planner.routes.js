@@ -4,6 +4,7 @@ const {
   createPlannerRequest,
   completePlannerBrainRun,
   getPlannerProposal,
+  listRecentPlannerRequests,
   approvePlannerRoadmap,
   requestPlannerRoadmapChanges,
   startPlannerRoadmap
@@ -29,6 +30,18 @@ function createPlannerRouter({ db }) {
   router.get('/proposals/:proposalId', async (req, res, next) => {
     try {
       res.json(serializeFirestore(await getPlannerProposal(db, req.tenantId, req.params.proposalId)));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.get('/recent', async (req, res, next) => {
+    try {
+      const query = req.query || Object.fromEntries(new URLSearchParams(String(req.url || '').split('?')[1] || ''));
+      res.json(serializeFirestore(await listRecentPlannerRequests(db, req.tenantId, {
+        limit: query.limit
+      })));
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });
       next(error);

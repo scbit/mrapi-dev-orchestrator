@@ -460,10 +460,11 @@ test('request-changes UI requires trimmed feedback and submits only bounded revi
   assert.equal(planner.els.submitRevision.disabled, false);
   await planner.els.submitRevision.listeners.click();
 
-  assert.equal(calls.length, 1);
-  assert.match(calls[0].url, /\/api\/planner\/roadmaps\/roadmap_1\/request-changes$/);
-  assert.equal(calls[0].options.body, JSON.stringify({ feedback: 'Tighten the plan.' }));
-  assert.deepEqual(Object.keys(JSON.parse(calls[0].options.body)), ['feedback']);
+  const revisionCalls = calls.filter((call) => /\/request-changes$/.test(call.url));
+  assert.equal(revisionCalls.length, 1);
+  assert.match(revisionCalls[0].url, /\/api\/planner\/roadmaps\/roadmap_1\/request-changes$/);
+  assert.equal(revisionCalls[0].options.body, JSON.stringify({ feedback: 'Tighten the plan.' }));
+  assert.deepEqual(Object.keys(JSON.parse(revisionCalls[0].options.body)), ['feedback']);
   assert.doesNotMatch(calls.map((call) => call.url).join('\n'), /\/approve|\/start/);
   assert.equal(planner.els.approve.classList.contains('hidden'), true);
   assert.equal(planner.els.start.classList.contains('hidden'), true);

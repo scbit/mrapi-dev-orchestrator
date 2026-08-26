@@ -28,6 +28,14 @@ function plannerPageHtml() {
     .context-box { margin:16px 0; padding:14px; border:1px solid rgba(255,255,255,.08); border-radius:12px; background:rgba(255,255,255,.025); }
     .context-box h3 { margin:0 0 10px; color:#cfe0f7; font-size:14px; }
     .context-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .recent-panel { margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
+    .recent-panel h3 { margin:0 0 10px; font-size:16px; }
+    .recent-list { display:grid; gap:9px; }
+    .recent-item { width:100%; text-align:left; border:1px solid rgba(255,255,255,.1); border-radius:10px; padding:11px 12px; background:rgba(255,255,255,.025); color:var(--text); }
+    .recent-item:hover,.recent-item:focus { border-color:rgba(106,167,255,.45); background:rgba(106,167,255,.07); }
+    .recent-title { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; font-weight:850; }
+    .recent-meta { display:block; margin-top:6px; color:var(--muted); font-size:12px; line-height:1.45; }
+    .recent-id { display:block; margin-top:5px; color:rgba(143,161,184,.72); font-size:11px; }
     .primary-request span { color:var(--text); font-size:18px; }
     .primary-request textarea { min-height:220px; border-color:rgba(106,167,255,.32); background:#07111f; font-size:16px; }
     .secondary-tools { margin-top:14px; opacity:.82; }
@@ -107,6 +115,11 @@ function plannerPageHtml() {
           <button class="primary" id="submitPlannerRequest" type="submit">Pedir plan</button>
           <button class="secondary" id="resetPlanner" type="button">Reset</button>
         </div>
+        <section class="recent-panel" aria-label="Recent Planner Requests">
+          <h3>Recent Planner Requests</h3>
+          <div id="recentPlannerError" class="small"></div>
+          <div id="recentPlannerList" class="recent-list"><span class="small">Loading recent Planner requests...</span></div>
+        </section>
       </form>
 
       <section class="panel">
@@ -147,6 +160,9 @@ function plannerPageHtml() {
       contextError: '',
       workspaces: [],
       projects: [],
+      recentPlannerRequests: [],
+      recentLoading: true,
+      recentError: '',
       restoredPlanner: false,
       activeContext: null
     };
@@ -246,7 +262,9 @@ function plannerPageHtml() {
       cancelRevision: document.getElementById('cancelRevisionRequest'),
       start: document.getElementById('startAutopilot'),
       proposalView: document.getElementById('proposalView'),
-      startView: document.getElementById('startView')
+      startView: document.getElementById('startView'),
+      recentList: document.getElementById('recentPlannerList'),
+      recentError: document.getElementById('recentPlannerError')
     };
 
     function text(value) {
@@ -462,6 +480,80 @@ function plannerPageHtml() {
       if (raw === 'BLOCKED') return 'Blocked';
       if (raw === 'CANCELLED' || raw === 'CANCELED') return 'Cancelled';
       return titleCaseState(raw);
+    }
+
+    function friendlyPlannerState(item) {
+      const roadmapState = lifecycleState(item) || 'UNKNOWN';
+      const status = approvalStatus(item);
+      const revisionStatus = text(item?.revision_status).trim().toUpperCase();
+      if (roadmapState === 'PLANNING') return 'Planning';
+      if (roadmapState === 'PROPOSED' && (status === 'PENDING' || status === 'AWAITING_APPROVAL' || !status)) return 'Waiting for approval';
+      if ((roadmapState === 'ACTIVE' || roadmapState === 'APPROVED') && status === 'APPROVED') return 'Approved';
+      if (roadmapState === 'RUNNING' || roadmapState === 'EXECUTING' || roadmapState === 'VERIFYING') return 'Running';
+      if (roadmapState === 'NEEDS_HUMAN_ACTION' || roadmapState === 'HUMAN_ACTION_REQUIRED' || revisionStatus === 'NEEDS_HUMAN_ACTION') return 'Need human action';
+      if (roadmapState === 'COMPLETED' || roadmapState === 'COMPLETE' || roadmapState === 'DONE') return 'Completed';
+      if (roadmapState === 'BLOCKED') return 'Blocked';
+      if (roadmapState === 'CANCELLED' || roadmapState === 'CANCELED') return 'Cancelled';
+      return titleCaseState(roadmapState + (status ? ' ' + status : ''));
+    }
+
+    function friendlyTimestamp(item) {
+      const raw = item?.updated_at || item?.created_at;
+      if (!raw) return 'Date not recorded';
+      const date = new Date(raw);
+      if (Number.isNaN(date.getTime())) return text(raw);
+      return date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+    }
+
+    function renderRecentPlannerRequests() {
+      els.recentError.textContent = state.recentError || '';
+      if (state.recentLoading) {
+        els.recentList.innerHTML = '<span class="small">Loading recent Planner requests...</span>';
+        return;
+      }
+      if (state.recentError) {
+        els.recentList.innerHTML = '<span class="small">Recent Planner Requests are unavailable right now.</span>';
+        return;
+      }
+      if (!state.recentPlannerRequests.length) {
+        els.recentList.innerHTML = '<span class="small">No recent Planner requests yet.</span>';
+        return;
+      }
+      els.recentList.innerHTML = state.recentPlannerRequests.map((item) => {
+        const proposalId = text(item.roadmap_id || item.proposal_id || '').trim();
+        const workspace = text(item.workspace_name || item.workspace_id || 'Workspace not recorded').trim();
+        const project = text(item.project_name || item.project_id || 'Project not recorded').trim();
+        return '<button class="recent-item" type="button" data-proposal-id="' + escapeHtml(proposalId) + '">' +
+          '<span class="recent-title"><span>' + escapeHtml(item.title || 'Untitled roadmap') + '</span><span class="badge ' + stateClass(item) + '">' + escapeHtml(friendlyPlannerState(item)) + '</span></span>' +
+          '<span class="recent-meta">' + escapeHtml(friendlyTimestamp(item)) + ' - Workspace: ' + escapeHtml(workspace) + ' - Project: ' + escapeHtml(project) + '</span>' +
+          '<span class="recent-id">Roadmap ' + escapeHtml(proposalId || 'not recorded') + '</span>' +
+          '</button>';
+      }).join('');
+    }
+
+    async function loadRecentPlannerRequests() {
+      state.recentLoading = true;
+      state.recentError = '';
+      renderRecentPlannerRequests();
+      try {
+        const history = await fetch('/api/planner/recent?limit=10').then(parseResponse);
+        state.recentPlannerRequests = Array.isArray(history.items) ? history.items : [];
+        state.recentLoading = false;
+        renderRecentPlannerRequests();
+      } catch (error) {
+        state.recentLoading = false;
+        state.recentError = 'Recent Planner Requests failed to load.';
+        renderRecentPlannerRequests();
+      }
+    }
+
+    async function openRecentPlannerRequest(proposalId) {
+      const id = text(proposalId).trim();
+      if (!id) return;
+      state.proposalId = id;
+      els.proposalId.value = id;
+      setStatus('Opening persisted Planner proposal...', '');
+      await loadProposal();
     }
 
     function explicitHumanActionMarker(value) {
@@ -735,6 +827,7 @@ function plannerPageHtml() {
         } else {
           setStatus('W01 está preparando el roadmap... Actualizá el plan cuando esté listo.', 'success');
         }
+        loadRecentPlannerRequests();
       } catch (error) {
         setStatus('Planner request failed: ' + error.message, 'error');
       } finally {
@@ -744,6 +837,11 @@ function plannerPageHtml() {
     });
 
     els.refresh.addEventListener('click', loadProposal);
+    els.recentList.addEventListener('click', (event) => {
+      const row = event.target?.closest ? event.target.closest('[data-proposal-id]') : event.target;
+      const proposalId = row?.dataset?.proposalId;
+      if (proposalId) openRecentPlannerRequest(proposalId);
+    });
     els.requestChanges.addEventListener('click', () => {
       if (!isProposed(state.proposal) || !isReviewComplete(state.proposal)) {
         setStatus('Request Changes no está disponible hasta que el plan esté listo para revisar.', 'error');
@@ -786,6 +884,7 @@ function plannerPageHtml() {
         hideRevisionForm();
         renderProposal(revised);
         setStatus('Cambios pedidos. W01 está revisando el roadmap con tu feedback.', 'success');
+        loadRecentPlannerRequests();
       } catch (error) {
         setStatus('Request Changes failed: ' + error.message, 'error');
       } finally {
@@ -805,6 +904,7 @@ function plannerPageHtml() {
         }).then(parseResponse);
         setStatus('Aprobación guardada. Actualizando el roadmap...', 'success');
         await loadProposal();
+        loadRecentPlannerRequests();
       } catch (error) {
         setStatus('Approval failed: ' + error.message, 'error');
       }
@@ -825,6 +925,7 @@ function plannerPageHtml() {
           'Current milestone: ' + escapeHtml(current.id || started.milestone_id || '') + ' ' + escapeHtml(current.title || '') + ' (' + escapeHtml(current.state || started.state || '') + ')<br>' +
           'Mission: ' + escapeHtml(started.mission_id || '') + '<br>Brain Run: ' + escapeHtml(started.brain_run_id || '') + '</div>';
         await loadProposal();
+        loadRecentPlannerRequests();
       } catch (error) {
         setStatus('Start failed: ' + error.message, 'error');
       }
@@ -846,6 +947,7 @@ function plannerPageHtml() {
       els.requestChanges.classList.add('hidden');
       els.start.classList.add('hidden');
       setStatus('Elegí el contexto y contame qué querés hacer.', '');
+      renderRecentPlannerRequests();
       syncSubmitState();
     });
 
@@ -860,6 +962,7 @@ function plannerPageHtml() {
     });
     state.restoredPlanner = restorePlannerState();
     syncSubmitState();
+    loadRecentPlannerRequests();
     loadPlannerContextOptions();
   </script>
 </body>

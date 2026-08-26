@@ -234,6 +234,9 @@ test('approval payload is affirmative-only, refresh is side-effect free, and app
     if (String(url).endsWith('/api/workspaces') || String(url).endsWith('/api/projects')) {
       return { ok: true, json: async () => ({ items: [] }) };
     }
+    if (String(url).startsWith('/api/planner/recent')) {
+      return { ok: true, json: async () => ({ items: [] }) };
+    }
     const body = responses.shift();
     return { ok: true, json: async () => body };
   });
@@ -246,7 +249,8 @@ test('approval payload is affirmative-only, refresh is side-effect free, and app
   assert.doesNotMatch(calls[0].url, /\/approve|\/start/);
 
   await planner.els.approve.listeners.click();
-  assert.equal(calls.length, 3);
+  const lifecycleCalls = calls.filter((call) => !String(call.url).startsWith('/api/planner/recent'));
+  assert.equal(lifecycleCalls.length, 3);
   assert.match(calls[1].url, /\/approve$/);
   assert.equal(calls[1].options.body, JSON.stringify({ approve: true }));
   assert.doesNotMatch(calls.map((call) => call.url).join('\n'), /\/start/);

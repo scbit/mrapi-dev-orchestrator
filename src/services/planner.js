@@ -402,6 +402,98 @@ function responseShape(roadmap) {
   };
 }
 
+function parseRecentPlannerLimit(value, fallback = 10) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, 50);
+}
+
+function activityTimeValue(value) {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  if (typeof value.toDate === 'function') return value.toDate().getTime();
+  if (value instanceof Date) return value.getTime();
+  const parsed = Date.parse(String(value));
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function plannerHistoryTitle(roadmap) {
+  return cleanText(roadmap.title || roadmap.objective || roadmap.original_request || '', 500) || 'Untitled roadmap';
+}
+
+async function resolvePlannerHistoryNames(db, tenantId, roadmap) {
+  const workspaceId = cleanText(roadmap.workspace_id || '', 300);
+  const projectId = cleanText(roadmap.project_id || '', 300);
+  let workspaceName = workspaceId || null;
+  let projectName = projectId || null;
+
+  if (workspaceId) {
+    const workspaceSnap = await db.collection('workspaces').doc(workspaceId).get();
+    const workspace = workspaceSnap.exists ? workspaceSnap.data() : null;
+    if (workspace?.tenant_id === tenantId) {
+      workspaceName = cleanText(workspace.name || workspace.title || workspace.id || workspaceId, 500) || workspaceId;
+    }
+  }
+
+  if (projectId) {
+    const projectSnap = await db.collection('projects').doc(projectId).get();
+    const project = projectSnap.exists ? projectSnap.data() : null;
+    if (
+      project?.tenant_id === tenantId &&
+      (!workspaceId || !project.workspace_id || project.workspace_id === workspaceId)
+    ) {
+      projectName = cleanText(project.name || project.title || project.repository_full_name || project.id || projectId, 500) || projectId;
+    }
+  }
+
+  return { workspaceName, projectName };
+}
+
+async function listRecentPlannerRequests(db, tenantId, options = {}) {
+  const limit = parseRecentPlannerLimit(options.limit, 10);
+  const queryLimit = Math.max(limit, 50);
+  const snapshot = await db.collection('roadmaps')
+    .where('tenant_id', '==', tenantId)
+    .where('proposal_type', '==', 'PLANNER_ROADMAP')
+    .limit(queryLimit)
+    .get();
+
+  const roadmaps = snapshot.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((roadmap) => (
+      roadmap.tenant_id === tenantId &&
+      roadmap.proposal_type === 'PLANNER_ROADMAP'
+    ))
+    .sort((a, b) => {
+      const bTime = activityTimeValue(b.updated_at || b.created_at);
+      const aTime = activityTimeValue(a.updated_at || a.created_at);
+      if (bTime !== aTime) return bTime - aTime;
+      return String(b.id || '').localeCompare(String(a.id || ''));
+    })
+    .slice(0, limit);
+
+  const items = [];
+  for (const roadmap of roadmaps) {
+    const names = await resolvePlannerHistoryNames(db, tenantId, roadmap);
+    items.push({
+      roadmap_id: roadmap.id,
+      proposal_id: roadmap.id,
+      title: plannerHistoryTitle(roadmap),
+      created_at: roadmap.created_at || null,
+      updated_at: roadmap.updated_at || null,
+      state: roadmap.state || null,
+      approval_status: roadmap.approval_status || null,
+      revision_status: roadmap.revision_status || null,
+      workspace_id: roadmap.workspace_id || null,
+      project_id: roadmap.project_id || null,
+      workspace_name: names.workspaceName,
+      project_name: names.projectName
+    });
+  }
+
+  return { items, limit };
+}
+
 async function createPlannerRequest(db, tenantId, input = {}) {
   const request = cleanText(input.request ?? input.prompt ?? input.objective, 50000);
   if (!request) {
@@ -978,6 +1070,7 @@ module.exports = {
   createPlannerRequest,
   completePlannerBrainRun,
   getPlannerProposal,
+  listRecentPlannerRequests,
   approvePlannerRoadmap,
   requestPlannerRoadmapChanges,
   startPlannerRoadmap,
