@@ -28,9 +28,10 @@ function plannerPageHtml() {
     textarea { min-height:150px; resize:vertical; }
     input:focus,textarea:focus { border-color:rgba(106,167,255,.65); box-shadow:0 0 0 3px rgba(106,167,255,.08); }
     .actions { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
-    .primary,.secondary { border-radius:9px; padding:10px 14px; font-weight:800; }
+    .primary,.secondary,.danger { border-radius:9px; padding:10px 14px; font-weight:800; }
     .primary { border:1px solid rgba(106,167,255,.55); background:#dceaff; color:#07101d; }
     .secondary { border:1px solid var(--line); background:rgba(255,255,255,.03); color:var(--text); }
+    .danger { border:1px solid rgba(243,189,97,.45); background:rgba(243,189,97,.09); color:#ffe0ab; }
     button:disabled { opacity:.48; cursor:not-allowed; transform:none; }
     .status { margin:0 0 14px; padding:12px 13px; border:1px solid var(--line); border-radius:12px; background:rgba(255,255,255,.025); color:var(--muted); }
     .status strong { color:var(--text); }
@@ -88,7 +89,16 @@ function plannerPageHtml() {
         <div class="actions">
           <button class="secondary" id="refreshProposal" type="button">Refresh proposal</button>
           <button class="primary hidden" id="approveRoadmap" type="button">Approve roadmap</button>
+          <button class="danger hidden" id="requestChanges" type="button">Request changes</button>
           <button class="primary hidden" id="startAutopilot" type="button">Start Autopilot</button>
+        </div>
+        <div id="requestChangesView" class="hidden">
+          <label class="field"><span>Human feedback for W01 revision</span><textarea id="revisionFeedback" placeholder="Describe what W01 should change before this roadmap can be approved."></textarea></label>
+          <div class="actions">
+            <button class="danger" id="submitRevisionRequest" type="button" disabled>Submit changes</button>
+            <button class="secondary" id="cancelRevisionRequest" type="button">Cancel</button>
+          </div>
+          <p class="small">This feedback will be sent back to W01 to revise the roadmap. Roadmap fields remain read-only.</p>
         </div>
         <div id="proposalView" class="hidden"></div>
         <div id="startView" class="hidden"></div>
@@ -103,7 +113,8 @@ function plannerPageHtml() {
       brainRunId: null,
       proposalId: null,
       proposal: null,
-      submitting: false
+      submitting: false,
+      revisionSubmitting: false
     };
 
     const els = {
@@ -117,6 +128,11 @@ function plannerPageHtml() {
       proposalId: document.getElementById('proposalId'),
       refresh: document.getElementById('refreshProposal'),
       approve: document.getElementById('approveRoadmap'),
+      requestChanges: document.getElementById('requestChanges'),
+      requestChangesView: document.getElementById('requestChangesView'),
+      revisionFeedback: document.getElementById('revisionFeedback'),
+      submitRevision: document.getElementById('submitRevisionRequest'),
+      cancelRevision: document.getElementById('cancelRevisionRequest'),
       start: document.getElementById('startAutopilot'),
       proposalView: document.getElementById('proposalView'),
       startView: document.getElementById('startView')
@@ -189,6 +205,10 @@ function plannerPageHtml() {
       return roadmapState === 'PROPOSED' && (status === 'PENDING' || status === 'AWAITING_APPROVAL' || !status);
     }
 
+    function isRevisionPending(proposal) {
+      return lifecycleState(proposal) === 'PLANNING' && text(proposal?.revision_status).trim().toUpperCase() === 'PENDING';
+    }
+
     function isTerminal(proposal) {
       return ['BLOCKED', 'CANCELLED', 'CANCELED', 'COMPLETED'].includes(lifecycleState(proposal));
     }
@@ -244,6 +264,9 @@ function plannerPageHtml() {
       if (isProposed(proposal)) {
         return '<div class="notice"><strong>Awaiting explicit human approval.</strong> No Autopilot execution has started from this proposal. Review the persisted roadmap before approving.</div>';
       }
+      if (isRevisionPending(proposal)) {
+        return '<div class="notice"><strong>Changes requested.</strong> W01 is revising the roadmap based on the persisted human feedback. Approval and Start Autopilot are unavailable until a revised proposal is ready.</div>';
+      }
       if (isApproved(proposal)) {
         return '<div class="notice"><strong>Roadmap approval is persisted.</strong> Start Autopilot remains a separate action.</div>';
       }
@@ -262,6 +285,27 @@ function plannerPageHtml() {
         '<div><span class="label">Planner context</span><p>' + escapeHtml(text(proposal.workspace_id || 'Workspace not recorded')) + ' / ' + escapeHtml(text(proposal.project_id || 'Project not recorded')) + '</p></div></div>';
     }
 
+    function renderRevisionContext(proposal) {
+      const revisionNumber = Number(proposal.revision_number || 1);
+      const feedback = text(proposal.latest_revision_feedback).trim();
+      if (revisionNumber <= 1 && !feedback) return '';
+      return '<div class="info-grid"><div><span class="label">Revision</span><p>Revision ' + escapeHtml(revisionNumber || 1) + '</p></div>' +
+        '<div><span class="label">Latest human feedback</span><p>' + escapeHtml(feedback || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Revision status</span><p>' + escapeHtml(text(proposal.revision_status || (isRevisionPending(proposal) ? 'PENDING' : 'Ready for review'))) + '</p></div></div>';
+    }
+
+    function syncRevisionSubmitState() {
+      const hasFeedback = Boolean(els.revisionFeedback.value.trim());
+      els.submitRevision.disabled = state.revisionSubmitting || !hasFeedback;
+      els.submitRevision.textContent = state.revisionSubmitting ? 'Sending revision request...' : 'Submit changes';
+    }
+
+    function hideRevisionForm() {
+      els.requestChangesView.classList.add('hidden');
+      state.revisionSubmitting = false;
+      syncRevisionSubmitState();
+    }
+
     function renderProposal(proposal) {
       state.proposal = proposal;
       state.proposalId = proposal?.roadmap_id || proposal?.proposal_id || proposal?.id || state.proposalId;
@@ -270,7 +314,9 @@ function plannerPageHtml() {
       els.startView.classList.add('hidden');
       if (!isReviewComplete(proposal)) {
         els.approve.classList.add('hidden');
+        els.requestChanges.classList.add('hidden');
         els.start.classList.add('hidden');
+        hideRevisionForm();
         els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>Proposal unavailable</h2></div><span class="badge blocked">INCOMPLETE</span></div>' +
           '<div class="notice terminal"><strong>Proposal review data is incomplete or malformed.</strong> Refresh the persisted proposal after Brain planning completes. Approval is unavailable until required review fields are returned by the server.</div>';
         setStatus('Proposal review data is incomplete or malformed. Approval is unavailable.', 'error');
@@ -279,9 +325,12 @@ function plannerPageHtml() {
       const approved = isApproved(proposal);
       const proposed = isProposed(proposal);
       const canApprove = proposed && !approved && !isTerminal(proposal);
+      const canRequestChanges = canApprove;
       const canStart = approved && !isTerminal(proposal);
       els.approve.classList.toggle('hidden', !canApprove);
+      els.requestChanges.classList.toggle('hidden', !canRequestChanges);
       els.start.classList.toggle('hidden', !canStart);
+      if (!canRequestChanges || isRevisionPending(proposal)) hideRevisionForm();
       const milestones = proposal.milestones.map((milestone, index) => ({ milestone, index }));
       milestones.sort((a, b) => {
         const aHasOrder = Number.isFinite(Number(a.milestone.order));
@@ -295,12 +344,14 @@ function plannerPageHtml() {
       els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>' + escapeHtml(proposal.title) + '</h2></div><span class="badge ' + stateClass(proposal) + '">' + escapeHtml(stateLabel(proposal)) + '</span></div>' +
         renderNotice(proposal) +
         '<div class="info-grid"><div><span class="label">Lifecycle state</span><p>' + escapeHtml(lifecycleState(proposal)) + '</p></div><div><span class="label">Approval status</span><p>' + escapeHtml(approvalLabel(proposal)) + '</p></div><div><span class="label">Roadmap ID</span><p>' + escapeHtml(state.proposalId || 'Not recorded') + '</p></div></div>' +
+        renderRevisionContext(proposal) +
         '<p><strong>Objective:</strong> ' + escapeHtml(proposal.objective) + '</p>' +
         '<p><strong>Summary:</strong> ' + escapeHtml(proposal.summary) + '</p>' +
         '<div class="info-grid"><div><span class="label">Risks</span>' + list(proposal.risks, 'None recorded') + '</div><div><span class="label">Dependencies</span>' + list(proposal.dependencies, 'No dependencies') + '</div><div><span class="label">Assumptions</span>' + list(proposal.assumptions, 'None recorded') + '</div></div>' +
         renderOriginalRequest(proposal) +
         '<h2>Milestones</h2><div class="milestones">' + milestones.map((item) => renderMilestone(item.milestone, item.index)).join('') + '</div>';
       if (proposed && !approved) setStatus('Proposal is PROPOSED and waiting for explicit human approval.', '');
+      else if (isRevisionPending(proposal)) setStatus('Changes requested. W01 is revising the roadmap based on persisted feedback.', 'success');
       else if (approved) setStatus('Roadmap approval is persisted. Start Autopilot is now available.', 'success');
       else setStatus('Roadmap is ' + text(proposal.state || 'not startable') + '.', '');
     }
@@ -385,6 +436,56 @@ function plannerPageHtml() {
     });
 
     els.refresh.addEventListener('click', loadProposal);
+    els.requestChanges.addEventListener('click', () => {
+      if (!isProposed(state.proposal) || !isReviewComplete(state.proposal)) {
+        setStatus('Request Changes unavailable: roadmap must be a complete PROPOSED proposal awaiting approval.', 'error');
+        return;
+      }
+      els.requestChangesView.classList.remove('hidden');
+      syncRevisionSubmitState();
+    });
+
+    els.cancelRevision.addEventListener('click', () => {
+      els.revisionFeedback.value = '';
+      hideRevisionForm();
+    });
+
+    els.revisionFeedback.addEventListener('input', syncRevisionSubmitState);
+
+    els.submitRevision.addEventListener('click', async () => {
+      const proposalId = els.proposalId.value.trim() || state.proposalId;
+      const feedback = els.revisionFeedback.value.trim();
+      if (!proposalId) return setStatus('Request Changes failed: proposal ID is required.', 'error');
+      if (!feedback) {
+        setStatus('Request Changes failed: feedback is required before W01 can revise the roadmap.', 'error');
+        syncRevisionSubmitState();
+        return;
+      }
+      if (state.revisionSubmitting) return;
+      state.revisionSubmitting = true;
+      syncRevisionSubmitState();
+      setStatus('Sending revision request to W01.', '');
+      try {
+        const revised = await fetch('/api/planner/roadmaps/' + encodeURIComponent(proposalId) + '/request-changes', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ feedback })
+        }).then(parseResponse);
+        state.proposal = revised;
+        els.approve.classList.add('hidden');
+        els.requestChanges.classList.add('hidden');
+        els.start.classList.add('hidden');
+        hideRevisionForm();
+        renderProposal(revised);
+        setStatus('Changes requested. W01 is revising the roadmap based on persisted feedback.', 'success');
+      } catch (error) {
+        setStatus('Request Changes failed: ' + error.message, 'error');
+      } finally {
+        state.revisionSubmitting = false;
+        syncRevisionSubmitState();
+      }
+    });
+
     els.approve.addEventListener('click', async () => {
       const proposalId = els.proposalId.value.trim() || state.proposalId;
       if (!proposalId) return setStatus('Approval failed: proposal ID is required.', 'error');
@@ -422,12 +523,15 @@ function plannerPageHtml() {
     });
 
     els.reset.addEventListener('click', () => {
-      state.requestId = null; state.missionId = null; state.brainRunId = null; state.proposalId = null; state.proposal = null; state.submitting = false;
+      state.requestId = null; state.missionId = null; state.brainRunId = null; state.proposalId = null; state.proposal = null; state.submitting = false; state.revisionSubmitting = false;
       els.form.reset();
+      els.revisionFeedback.value = '';
       els.proposalId.value = '';
       els.proposalView.classList.add('hidden');
       els.startView.classList.add('hidden');
+      els.requestChangesView.classList.add('hidden');
       els.approve.classList.add('hidden');
+      els.requestChanges.classList.add('hidden');
       els.start.classList.add('hidden');
       setStatus('Enter workspace, project, and request text to begin.', '');
       syncSubmitState();

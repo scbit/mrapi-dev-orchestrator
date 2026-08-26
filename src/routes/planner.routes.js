@@ -5,6 +5,7 @@ const {
   completePlannerBrainRun,
   getPlannerProposal,
   approvePlannerRoadmap,
+  requestPlannerRoadmapChanges,
   startPlannerRoadmap
 } = require('../services/planner');
 
@@ -44,6 +45,16 @@ function createPlannerRouter({ db }) {
         request_id: requestId
       });
       res.json(serializeFirestore(approved));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.post('/roadmaps/:roadmapId/request-changes', async (req, res, next) => {
+    try {
+      const revised = await requestPlannerRoadmapChanges(db, req.tenantId, req.params.roadmapId, req.body || {});
+      res.status(revised.no_new_work ? 200 : 202).json(serializeFirestore(revised));
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });
       next(error);

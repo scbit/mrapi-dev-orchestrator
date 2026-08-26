@@ -324,6 +324,53 @@ function plannerBrainContext({ tenantId, workspace, project, request }) {
   };
 }
 
+function proposalHistorySnapshot(roadmap) {
+  return {
+    roadmap_id: roadmap.id || null,
+    revision_number: Number(roadmap.revision_number || 1),
+    title: roadmap.title,
+    objective: roadmap.objective,
+    summary: roadmap.summary || '',
+    milestones: Array.isArray(roadmap.milestones) ? roadmap.milestones : [],
+    risks: Array.isArray(roadmap.risks) ? roadmap.risks : [],
+    dependencies: Array.isArray(roadmap.dependencies) ? roadmap.dependencies : [],
+    assumptions: Array.isArray(roadmap.assumptions) ? roadmap.assumptions : [],
+    approval_status: roadmap.approval_status || null,
+    state: roadmap.state || null,
+    source_planner_mission_id: roadmap.source_planner_mission_id || null,
+    source_planner_brain_run_id: roadmap.source_planner_brain_run_id || null,
+    provenance: roadmap.provenance || null
+  };
+}
+
+function revisionBrainContext({ tenantId, roadmap, mission, feedback, revisionNumber, priorProposal }) {
+  const trustedScope = {
+    tenant_id: tenantId,
+    workspace_id: roadmap.workspace_id || mission.workspace_id || null,
+    project_id: roadmap.project_id || mission.project_id || null,
+    roadmap_id: roadmap.id
+  };
+  return {
+    planner_contract: 'ROADMAP_PROPOSAL_V1',
+    revision_contract: 'PLANNER_ROADMAP_REVISION_V1',
+    revision_number: revisionNumber,
+    natural_language_request: roadmap.original_request || mission.planner_request || mission.original_prompt || '',
+    human_revision_feedback: feedback,
+    previous_proposal: priorProposal,
+    prior_roadmap_id: roadmap.id,
+    prior_brain_run_id: roadmap.source_planner_brain_run_id || null,
+    planner_request_id: roadmap.planner_request_id || mission.planner_request_id || mission.id,
+    trusted_scope: trustedScope,
+    instructions: [
+      'Revise the structured non-executable roadmap proposal using the human feedback.',
+      'Preserve tenant, workspace, project, original request, and Planner roadmap scope from trusted_scope.',
+      'Use previous_proposal as history; do not approve, start, or request Codex execution.',
+      'Return a complete replacement proposal with title, objective, summary, risks, dependencies, assumptions, milestones[].',
+      'Each milestone requires id, title, objective or expected_outcome, description, executor_required, dependencies, risks, success_criteria.'
+    ]
+  };
+}
+
 function responseShape(roadmap) {
   return {
     roadmap_id: roadmap.id,
@@ -346,7 +393,12 @@ function responseShape(roadmap) {
     brain_run_id: roadmap.source_planner_brain_run_id || null,
     original_request: roadmap.original_request || null,
     provenance: roadmap.provenance || null,
-    approval: roadmap.approval || null
+    approval: roadmap.approval || null,
+    revision_number: Number(roadmap.revision_number || 1),
+    revision_status: roadmap.revision_status || null,
+    latest_revision_feedback: roadmap.latest_revision_feedback || null,
+    active_revision_brain_run_id: roadmap.active_revision_brain_run_id || null,
+    revision_history: Array.isArray(roadmap.revision_history) ? roadmap.revision_history : []
   };
 }
 
@@ -575,6 +627,168 @@ async function approvePlannerRoadmap(db, tenantId, roadmapId, input = {}) {
   return result;
 }
 
+async function requestPlannerRoadmapChanges(db, tenantId, roadmapId, input = {}) {
+  const feedback = requiredText(input.feedback ?? input.revision_feedback ?? input.changes_requested, 'PLANNER_REVISION_FEEDBACK', 12000);
+  const roadmapRef = db.collection('roadmaps').doc(roadmapId);
+  const runRef = db.collection('runs').doc();
+  let result;
+
+  await db.runTransaction(async (tx) => {
+    const roadmapSnap = await tx.get(roadmapRef);
+    if (!roadmapSnap.exists || roadmapSnap.data().tenant_id !== tenantId) {
+      fail('PLANNER_ROADMAP_NOT_FOUND', 404);
+    }
+
+    const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
+    if (roadmap.proposal_type !== 'PLANNER_ROADMAP') {
+      fail('PLANNER_ROADMAP_NOT_REVISIONABLE', 409);
+    }
+    if (roadmap.state === 'PLANNING' && roadmap.revision_status === 'PENDING') {
+      const sameFeedback = cleanText(roadmap.latest_revision_feedback, 12000) === feedback;
+      if (!sameFeedback) fail('PLANNER_ROADMAP_REVISION_ALREADY_PENDING', 409);
+      result = responseShape(roadmap);
+      result.reused = true;
+      result.no_new_work = true;
+      result.brain_run_id = roadmap.active_revision_brain_run_id || result.brain_run_id;
+      return;
+    }
+    if (roadmap.state !== 'PROPOSED' || roadmap.approval_status !== 'PENDING' || roadmap.non_executable !== true) {
+      fail('PLANNER_ROADMAP_NOT_REVISIONABLE', 409);
+    }
+
+    validateStoredPlannerRoadmap(roadmap);
+
+    const missionRef = roadmap.source_planner_mission_id
+      ? db.collection('missions').doc(roadmap.source_planner_mission_id)
+      : null;
+    const missionSnap = missionRef ? await tx.get(missionRef) : null;
+    if (!missionRef || !missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+      fail('PLANNER_SOURCE_MISSION_NOT_FOUND', 409);
+    }
+    const mission = { id: missionSnap.id, ...missionSnap.data() };
+    if (mission.state === 'CANCELLED' || mission.cancellation_requested === true) {
+      fail('PLANNER_SOURCE_MISSION_CANCELLED', 409);
+    }
+
+    const activeRunsSnap = await tx.get(db.collection('runs').where('tenant_id', '==', tenantId).limit(200));
+    const existingActiveRun = activeRunsSnap.docs
+      .map((doc) => ({ id: doc.id, ...doc.data() }))
+      .find((run) => (
+        run.run_type === 'BRAIN_RUN' &&
+        run.planning_mode === 'PLANNER_ROADMAP_PROPOSAL' &&
+        run.revision_target_roadmap_id === roadmap.id &&
+        run.state === 'RUNNING' &&
+        cleanText(run.revision_feedback, 12000) === feedback
+      ));
+    if (existingActiveRun) {
+      result = responseShape({
+        ...roadmap,
+        state: 'PLANNING',
+        revision_status: 'PENDING',
+        latest_revision_feedback: feedback,
+        active_revision_brain_run_id: existingActiveRun.id
+      });
+      result.reused = true;
+      result.no_new_work = true;
+      result.brain_run_id = existingActiveRun.id;
+      return;
+    }
+
+    const revisionNumber = Number(roadmap.revision_number || 1) + 1;
+    const priorProposal = proposalHistorySnapshot(roadmap);
+    const revisionHistory = Array.isArray(roadmap.revision_history) ? [...roadmap.revision_history] : [];
+    if (!revisionHistory.some((item) => Number(item.revision_number || 0) === Number(priorProposal.revision_number))) {
+      revisionHistory.push(priorProposal);
+    }
+    const brainContext = revisionBrainContext({
+      tenantId,
+      roadmap,
+      mission,
+      feedback,
+      revisionNumber,
+      priorProposal
+    });
+    const workerId = mission.preferred_worker_id || roadmap.worker_id || 'W01';
+    const objective = [
+      'PLANNER ROADMAP REVISION REQUEST',
+      '',
+      brainContext.natural_language_request,
+      '',
+      'HUMAN_REVISION_FEEDBACK',
+      feedback,
+      '',
+      'TRUSTED_SCOPE',
+      JSON.stringify(brainContext.trusted_scope),
+      '',
+      'PREVIOUS_PROPOSAL',
+      JSON.stringify(priorProposal)
+    ].join('\n').slice(0, 100000);
+
+    const run = {
+      id: runRef.id,
+      tenant_id: tenantId,
+      run_type: 'BRAIN_RUN',
+      mission_id: mission.id,
+      task_id: null,
+      workspace_id: roadmap.workspace_id || mission.workspace_id || null,
+      project_id: roadmap.project_id || mission.project_id || null,
+      worker_id: workerId,
+      executor_id: null,
+      parent_run_id: roadmap.source_planner_brain_run_id || null,
+      objective,
+      state: 'RUNNING',
+      progress_percent: 0,
+      progress_message: 'Planner roadmap revision requested; Brain Run started',
+      planning_mode: 'PLANNER_ROADMAP_PROPOSAL',
+      planner_request_id: roadmap.planner_request_id || mission.planner_request_id || mission.id,
+      planner_request: brainContext.natural_language_request,
+      revision_target_roadmap_id: roadmap.id,
+      revision_number: revisionNumber,
+      revision_feedback: feedback,
+      prior_planner_brain_run_id: roadmap.source_planner_brain_run_id || null,
+      brain_context: brainContext,
+      non_executable: true,
+      started_at: timestamp(),
+      created_at: timestamp(),
+      updated_at: timestamp()
+    };
+
+    const update = {
+      state: 'PLANNING',
+      approval_status: 'PENDING',
+      approved_at: null,
+      approved_by: null,
+      approval: null,
+      non_executable: true,
+      revision_status: 'PENDING',
+      revision_number: revisionNumber,
+      latest_revision_feedback: feedback,
+      active_revision_brain_run_id: runRef.id,
+      revision_history: revisionHistory,
+      updated_at: timestamp()
+    };
+
+    tx.set(runRef, run);
+    tx.set(roadmapRef, update, { merge: true });
+    tx.set(missionRef, {
+      state: 'PLANNING',
+      approval_status: 'PENDING',
+      planner_roadmap_id: roadmap.id,
+      current_revision_number: revisionNumber,
+      current_revision_feedback: feedback,
+      brain_run_id: runRef.id,
+      updated_at: timestamp()
+    }, { merge: true });
+    result = responseShape({ ...roadmap, ...update });
+    result.brain_run_id = runRef.id;
+    result.mission_id = mission.id;
+    result.reused = false;
+    result.no_new_work = false;
+  });
+
+  return result;
+}
+
 async function startPlannerRoadmap(db, tenantId, roadmapId, input = {}) {
   const { startNextRoadmapMilestone } = require('./autopilot');
   return startNextRoadmapMilestone(db, tenantId, roadmapId, {
@@ -681,8 +895,25 @@ async function completePlannerBrainRun(db, tenantId, runId, input = {}) {
       return;
     }
 
-    const roadmapRef = db.collection('roadmaps').doc();
+    const revisionTargetRoadmapId = cleanText(run.revision_target_roadmap_id || '', 300);
+    const roadmapRef = revisionTargetRoadmapId
+      ? db.collection('roadmaps').doc(revisionTargetRoadmapId)
+      : db.collection('roadmaps').doc();
+    const existingRoadmapSnap = revisionTargetRoadmapId ? await tx.get(roadmapRef) : null;
+    if (revisionTargetRoadmapId && (!existingRoadmapSnap.exists || existingRoadmapSnap.data().tenant_id !== tenantId)) {
+      const error = new Error('PLANNER_REVISION_ROADMAP_NOT_FOUND');
+      error.status = 404;
+      throw error;
+    }
+    const existingRoadmap = existingRoadmapSnap?.exists
+      ? { id: existingRoadmapSnap.id, ...existingRoadmapSnap.data() }
+      : null;
+    const revisionNumber = revisionTargetRoadmapId
+      ? Number(run.revision_number || existingRoadmap?.revision_number || 1)
+      : 1;
+    const priorHistory = Array.isArray(existingRoadmap?.revision_history) ? existingRoadmap.revision_history : [];
     const roadmap = {
+      ...(revisionTargetRoadmapId ? existingRoadmap : {}),
       id: roadmapRef.id,
       ...parsedProposal,
       tenant_id: tenantId,
@@ -695,19 +926,28 @@ async function completePlannerBrainRun(db, tenantId, runId, input = {}) {
       source_planner_brain_run_id: runId,
       source_brain_run_id: runId,
       non_executable: true,
+      revision_number: revisionNumber,
+      revision_status: null,
+      latest_revision_feedback: run.revision_feedback || existingRoadmap?.latest_revision_feedback || null,
+      active_revision_brain_run_id: null,
+      revision_history: priorHistory,
       provenance: {
         source: 'PLANNER_BRAIN_RUN',
         mission_id: run.mission_id,
         brain_run_id: runId,
         planner_request_id: run.planner_request_id || mission.planner_request_id || mission.id,
-        original_request: run.planner_request || mission.planner_request || mission.original_prompt || ''
+        original_request: run.planner_request || mission.planner_request || mission.original_prompt || '',
+        revision_number: revisionNumber,
+        revised_from_roadmap_id: revisionTargetRoadmapId || null,
+        prior_planner_brain_run_id: run.prior_planner_brain_run_id || null,
+        human_revision_feedback: run.revision_feedback || null
       },
       raw_brain_output: String(input.output_text || '').slice(0, 100000),
-      created_at: timestamp(),
+      created_at: existingRoadmap?.created_at || timestamp(),
       updated_at: timestamp()
     };
 
-    tx.set(roadmapRef, roadmap);
+    tx.set(roadmapRef, roadmap, revisionTargetRoadmapId ? { merge: true } : undefined);
     tx.set(runRef, {
       state: 'COMPLETED',
       progress_percent: 100,
@@ -722,6 +962,7 @@ async function completePlannerBrainRun(db, tenantId, runId, input = {}) {
       approval_status: 'PENDING',
       planner_roadmap_id: roadmapRef.id,
       brain_run_id: runId,
+      current_revision_number: revisionNumber,
       updated_at: timestamp()
     }, { merge: true });
     result = responseShape(roadmap);
@@ -738,6 +979,7 @@ module.exports = {
   completePlannerBrainRun,
   getPlannerProposal,
   approvePlannerRoadmap,
+  requestPlannerRoadmapChanges,
   startPlannerRoadmap,
   validateProposal,
   parseProposal
