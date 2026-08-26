@@ -3,7 +3,8 @@ const { serializeFirestore } = require('../utils/firestore');
 const {
   createPlannerRequest,
   completePlannerBrainRun,
-  getPlannerProposal
+  getPlannerProposal,
+  approvePlannerRoadmap
 } = require('../services/planner');
 
 function createPlannerRouter({ db }) {
@@ -26,6 +27,22 @@ function createPlannerRouter({ db }) {
   router.get('/proposals/:proposalId', async (req, res, next) => {
     try {
       res.json(serializeFirestore(await getPlannerProposal(db, req.tenantId, req.params.proposalId)));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.post('/roadmaps/:roadmapId/approve', async (req, res, next) => {
+    try {
+      const actorId = req.user?.id || req.auth?.user_id || req.auth?.userId || null;
+      const requestId = req.id || req.requestId || null;
+      const approved = await approvePlannerRoadmap(db, req.tenantId, req.params.roadmapId, {
+        ...(req.body || {}),
+        actor_id: actorId,
+        request_id: requestId
+      });
+      res.json(serializeFirestore(approved));
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });
       next(error);

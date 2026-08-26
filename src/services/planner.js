@@ -114,6 +114,80 @@ function validateAcyclic(milestones) {
   for (const milestone of milestones) visit(milestone.id);
 }
 
+function fail(message, status = 400) {
+  const error = new Error(message);
+  error.status = status;
+  throw error;
+}
+
+function requireExplicitApproval(input = {}) {
+  if (
+    input.approve === true ||
+    input.confirm_approval === true ||
+    input.approval_intent === 'APPROVE_PLANNER_ROADMAP'
+  ) {
+    return;
+  }
+  fail('EXPLICIT_PLANNER_ROADMAP_APPROVAL_REQUIRED', 400);
+}
+
+function validateStoredPlannerRoadmap(roadmap) {
+  if (!roadmap || typeof roadmap !== 'object' || Array.isArray(roadmap)) {
+    fail('PLANNER_ROADMAP_OBJECT_REQUIRED', 400);
+  }
+  if (roadmap.proposal_type !== 'PLANNER_ROADMAP') {
+    fail('PLANNER_ROADMAP_NOT_APPROVABLE', 409);
+  }
+  if (!cleanText(roadmap.title, 500)) fail('PLANNER_PROPOSAL_TITLE_REQUIRED', 400);
+  if (!cleanText(roadmap.objective, 6000)) fail('PLANNER_PROPOSAL_OBJECTIVE_REQUIRED', 400);
+  if (!cleanText(roadmap.summary, 10000)) fail('PLANNER_PROPOSAL_SUMMARY_REQUIRED', 400);
+  if (!Array.isArray(roadmap.milestones) || roadmap.milestones.length === 0) {
+    fail('PLANNER_PROPOSAL_MILESTONES_REQUIRED', 400);
+  }
+
+  const seen = new Set();
+  const milestones = roadmap.milestones.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      fail('PLANNER_PROPOSAL_MILESTONE_OBJECT_REQUIRED', 400);
+    }
+    const id = cleanText(item.id, 160);
+    if (!id) fail('PLANNER_PROPOSAL_MILESTONE_ID_REQUIRED', 400);
+    if (seen.has(id)) fail('PLANNER_PROPOSAL_DUPLICATE_MILESTONE_ID', 400);
+    seen.add(id);
+    if (!cleanText(item.title, 500)) fail('PLANNER_PROPOSAL_MILESTONE_TITLE_REQUIRED', 400);
+    if (!cleanText(item.objective || item.expected_outcome, 6000)) {
+      fail('PLANNER_PROPOSAL_MILESTONE_OBJECTIVE_REQUIRED', 400);
+    }
+    if (!cleanText(item.description, 8000)) fail('PLANNER_PROPOSAL_MILESTONE_DESCRIPTION_REQUIRED', 400);
+    if (typeof item.executor_required !== 'boolean') {
+      fail('PLANNER_PROPOSAL_EXECUTOR_REQUIRED_REQUIRED', 400);
+    }
+    const dependencies = Array.isArray(item.dependencies) ? item.dependencies : item.depends_on;
+    if (!Array.isArray(dependencies)) {
+      fail('PLANNER_PROPOSAL_MILESTONE_DEPENDENCIES_MUST_BE_ARRAY', 400);
+    }
+    if (!Array.isArray(item.success_criteria) || item.success_criteria.length === 0) {
+      fail('PLANNER_PROPOSAL_MILESTONE_SUCCESS_CRITERIA_REQUIRED', 400);
+    }
+    stringArray(dependencies, 'PLANNER_PROPOSAL_MILESTONE_DEPENDENCIES');
+    stringArray(item.risks ?? [], 'PLANNER_PROPOSAL_MILESTONE_RISKS');
+    stringArray(item.success_criteria, 'PLANNER_PROPOSAL_MILESTONE_SUCCESS_CRITERIA');
+    return {
+      id,
+      dependencies,
+      order: Number.isFinite(Number(item.order)) ? Number(item.order) : index + 1
+    };
+  });
+
+  for (const milestone of milestones) {
+    for (const dependency of milestone.dependencies) {
+      if (dependency === milestone.id) fail('PLANNER_PROPOSAL_SELF_DEPENDENCY', 400);
+      if (!seen.has(dependency)) fail('PLANNER_PROPOSAL_UNKNOWN_DEPENDENCY', 400);
+    }
+  }
+  validateAcyclic(milestones);
+}
+
 function validateProposal(rawProposal) {
   if (!rawProposal || typeof rawProposal !== 'object' || Array.isArray(rawProposal)) {
     const error = new Error('PLANNER_PROPOSAL_OBJECT_REQUIRED');
@@ -255,6 +329,10 @@ function responseShape(roadmap) {
     roadmap_id: roadmap.id,
     proposal_id: roadmap.id,
     state: roadmap.state,
+    approval_status: roadmap.approval_status || null,
+    approved_at: roadmap.approved_at || null,
+    approved_by: roadmap.approved_by || null,
+    auto_advance: roadmap.auto_advance === true,
     title: roadmap.title,
     objective: roadmap.objective,
     summary: roadmap.summary || '',
@@ -267,7 +345,8 @@ function responseShape(roadmap) {
     mission_id: roadmap.source_planner_mission_id || null,
     brain_run_id: roadmap.source_planner_brain_run_id || null,
     original_request: roadmap.original_request || null,
-    provenance: roadmap.provenance || null
+    provenance: roadmap.provenance || null,
+    approval: roadmap.approval || null
   };
 }
 
@@ -400,6 +479,100 @@ async function getPlannerProposal(db, tenantId, proposalId) {
     throw error;
   }
   return responseShape({ id: snap.id, ...snap.data() });
+}
+
+async function approvePlannerRoadmap(db, tenantId, roadmapId, input = {}) {
+  requireExplicitApproval(input);
+  const roadmapRef = db.collection('roadmaps').doc(roadmapId);
+  let result;
+
+  await db.runTransaction(async (tx) => {
+    const roadmapSnap = await tx.get(roadmapRef);
+    if (!roadmapSnap.exists || roadmapSnap.data().tenant_id !== tenantId) {
+      fail('PLANNER_ROADMAP_NOT_FOUND', 404);
+    }
+
+    const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
+    if (roadmap.proposal_type !== 'PLANNER_ROADMAP') {
+      fail('PLANNER_ROADMAP_NOT_APPROVABLE', 409);
+    }
+
+    const sourceMissionRef = roadmap.source_planner_mission_id
+      ? db.collection('missions').doc(roadmap.source_planner_mission_id)
+      : null;
+    const sourceMissionSnap = sourceMissionRef ? await tx.get(sourceMissionRef) : null;
+    const sourceMission = sourceMissionSnap?.exists ? sourceMissionSnap.data() : null;
+
+    if (!sourceMissionRef || !sourceMissionSnap.exists || sourceMission.tenant_id !== tenantId) {
+      fail('PLANNER_SOURCE_MISSION_NOT_FOUND', 409);
+    }
+    if (sourceMission.state === 'CANCELLED' || sourceMission.cancellation_requested === true) {
+      fail('PLANNER_SOURCE_MISSION_CANCELLED', 409);
+    }
+
+    if (roadmap.state === 'ACTIVE' && roadmap.approval_status === 'APPROVED') {
+      validateStoredPlannerRoadmap(roadmap);
+      result = responseShape(roadmap);
+      return;
+    }
+
+    if (roadmap.state !== 'PROPOSED' || roadmap.approval_status !== 'PENDING' || roadmap.non_executable !== true) {
+      fail('PLANNER_ROADMAP_NOT_APPROVABLE', 409);
+    }
+
+    validateStoredPlannerRoadmap(roadmap);
+
+    const milestones = roadmap.milestones.map((milestone) => {
+      if (milestone.state !== 'PROPOSED' && milestone.state !== 'PENDING') {
+        fail('PLANNER_ROADMAP_MILESTONE_NOT_APPROVABLE', 409);
+      }
+      const dependencies = Array.isArray(milestone.dependencies)
+        ? [...milestone.dependencies]
+        : [...(milestone.depends_on || [])];
+      return {
+        ...milestone,
+        dependencies,
+        depends_on: Array.isArray(milestone.depends_on) ? [...milestone.depends_on] : dependencies,
+        state: 'PENDING'
+      };
+    });
+
+    const approval = {
+      status: 'APPROVED',
+      state: 'APPROVED',
+      approved_at: timestamp(),
+      source: 'PLANNER_ROADMAP_APPROVAL'
+    };
+    const actor = cleanText(input.actor_id || '', 300);
+    if (actor) approval.approved_by = actor;
+    const requestId = cleanText(input.request_id || '', 300);
+    if (requestId) approval.request_id = requestId;
+
+    const update = {
+      state: 'ACTIVE',
+      approval_status: 'APPROVED',
+      approved_at: approval.approved_at,
+      approved_by: approval.approved_by || null,
+      approval,
+      non_executable: false,
+      milestones,
+      updated_at: timestamp()
+    };
+
+    tx.set(roadmapRef, update, { merge: true });
+    tx.set(sourceMissionRef, {
+      state: 'COMPLETED',
+      approval_status: 'APPROVED',
+      planner_roadmap_approved: true,
+      planner_roadmap_approved_at: approval.approved_at,
+      approved_at: approval.approved_at,
+      approved_by: approval.approved_by || null,
+      updated_at: timestamp()
+    }, { merge: true });
+    result = responseShape({ ...roadmap, ...update, id: roadmap.id });
+  });
+
+  return result;
 }
 
 async function completePlannerBrainRun(db, tenantId, runId, input = {}) {
@@ -555,6 +728,7 @@ module.exports = {
   createPlannerRequest,
   completePlannerBrainRun,
   getPlannerProposal,
+  approvePlannerRoadmap,
   validateProposal,
   parseProposal
 };
