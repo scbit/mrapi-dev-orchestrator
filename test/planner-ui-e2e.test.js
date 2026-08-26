@@ -500,7 +500,7 @@ test('integrated UI request changes approval and start lifecycle is persisted an
     request: 'Build a coherent Planner UI workflow'
   }));
   assert.deepEqual(counts(db), { missions: 1, brainRuns: 1, tasks: 0, executionRuns: 0 });
-  assert.match(planner.els.status.textContent, /Waiting for W01 roadmap proposal generation/);
+  assert.match(planner.els.status.textContent, /W01 está preparando el roadmap/);
   assert.equal(planner.els.start.classList.contains('hidden'), true);
 
   const intakeRunId = values(db, 'runs')[0].id;
@@ -521,7 +521,7 @@ test('integrated UI request changes approval and start lifecycle is persisted an
 
   await planner.els.requestChanges.listeners.click();
   await planner.els.submitRevision.listeners.click();
-  assert.match(planner.els.status.textContent, /feedback is required/i);
+  assert.match(planner.els.status.textContent, /qué querés ajustar/i);
   const feedback = 'Clarify dependency gating and revision provenance.';
   planner.els.revisionFeedback.value = `  ${feedback}  `;
   planner.els.revisionFeedback.listeners.input();

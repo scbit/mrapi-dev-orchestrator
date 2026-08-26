@@ -221,7 +221,7 @@ test('selectors display friendly names with IDs as option values and filter Proj
   await flush();
 
   assert.deepEqual(optionLabels(planner.els.workspace), [
-    { value: '', label: 'Select a workspace' },
+    { value: '', label: 'Elegí un workspace' },
     { value: 'workspace_scb', label: 'SCB Workspace' },
     { value: 'workspace_fallback', label: 'workspace_fallback' }
   ]);
@@ -229,7 +229,7 @@ test('selectors display friendly names with IDs as option values and filter Proj
   planner.els.workspace.value = 'workspace_scb';
   planner.els.workspace.listeners.change();
   assert.deepEqual(optionLabels(planner.els.project), [
-    { value: '', label: 'Select a project' },
+    { value: '', label: 'Elegí un project' },
     { value: 'project_scb_development', label: 'SCB Development' },
     { value: 'project_legacy', label: 'project_legacy' }
   ]);
@@ -238,7 +238,7 @@ test('selectors display friendly names with IDs as option values and filter Proj
   planner.els.workspace.value = 'workspace_fallback';
   planner.els.workspace.listeners.change();
   assert.deepEqual(optionLabels(planner.els.project), [
-    { value: '', label: 'Select a project' },
+    { value: '', label: 'Elegí un project' },
     { value: 'project_other', label: 'Other Project' }
   ]);
   assert.equal(planner.els.project.value, '');
@@ -395,7 +395,7 @@ test('context loading failure leaves submit disabled and shows readable error', 
   assert.equal(planner.els.submit.disabled, true);
   assert.equal(planner.els.workspace.disabled, true);
   assert.equal(planner.els.project.disabled, true);
-  assert.match(planner.els.status.textContent, /Planner context failed to load/);
+  assert.match(planner.els.status.textContent, /No pude cargar el contexto/);
   assert.doesNotMatch(planner.els.status.textContent, /stack|Error:/i);
 });
 

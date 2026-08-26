@@ -20,8 +20,18 @@ function plannerPageHtml() {
     h1 { margin:4px 0 0; font-size:32px; }
     p { color:var(--muted); line-height:1.55; }
     a { color:#b9d4ff; }
-    .grid { display:grid; grid-template-columns:minmax(0,.86fr) minmax(320px,1.14fr); gap:18px; align-items:start; }
+    .grid { display:grid; grid-template-columns:minmax(0,.92fr) minmax(320px,1.08fr); gap:18px; align-items:start; }
     .panel,.milestone { border:1px solid var(--line); background:var(--panel); border-radius:15px; padding:18px; }
+    .request-panel { padding:20px; }
+    .request-panel h2 { margin:0 0 8px; font-size:28px; }
+    .flow { margin:0 0 18px; color:#cfe0f7; }
+    .context-box { margin:16px 0; padding:14px; border:1px solid rgba(255,255,255,.08); border-radius:12px; background:rgba(255,255,255,.025); }
+    .context-box h3 { margin:0 0 10px; color:#cfe0f7; font-size:14px; }
+    .context-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+    .primary-request span { color:var(--text); font-size:18px; }
+    .primary-request textarea { min-height:220px; border-color:rgba(106,167,255,.32); background:#07111f; font-size:16px; }
+    .secondary-tools { margin-top:14px; opacity:.82; }
+    .secondary-tools .field span { font-size:11px; }
     .field { display:flex; flex-direction:column; gap:7px; margin-bottom:13px; }
     .field span,.label { color:var(--muted); font-size:12px; font-weight:800; }
     input,textarea,select { width:100%; color:var(--text); background:#081220; border:1px solid rgba(255,255,255,.13); border-radius:10px; padding:11px 12px; outline:none; }
@@ -59,7 +69,7 @@ function plannerPageHtml() {
     .kv div { min-width:0; }
     .hidden { display:none !important; }
     .small { color:var(--muted); font-size:12px; }
-    @media (max-width:820px) { .grid,.info-grid,.kv { grid-template-columns:1fr; } .topbar { align-items:flex-start; flex-direction:column; } }
+    @media (max-width:820px) { .grid,.info-grid,.kv,.context-grid { grid-template-columns:1fr; } .topbar { align-items:flex-start; flex-direction:column; } }
   </style>
 </head>
 <body>
@@ -70,35 +80,41 @@ function plannerPageHtml() {
     </header>
 
     <section class="grid">
-      <form class="panel" id="plannerForm">
-        <h2>New Planner Request</h2>
-        <p>Submit a high-level request for a W01 roadmap proposal. Review and approve the roadmap before any Autopilot execution can start.</p>
-        <label class="field"><span>Workspace</span><select id="workspaceId" name="workspace_id" required disabled><option value="">Loading workspaces...</option></select></label>
-        <label class="field"><span>Project</span><select id="projectId" name="project_id" required disabled><option value="">Select a workspace first</option></select></label>
-        <label class="field"><span>Natural-language product/software request</span><textarea id="plannerRequest" name="request" required minlength="1" placeholder="Describe the product or software outcome you want. Example: Build an intake dashboard that lets operators review pending customer setup requests across workspaces."></textarea></label>
+      <form class="panel request-panel" id="plannerForm">
+        <h2>¿Qué querés hacer?</h2>
+        <p class="flow">Pedís algo → W01 prepara el plan → lo revisás → aprobás → recién ahí puede ejecutarse.</p>
+        <label class="field primary-request"><span>Contale a W01 qué necesitás</span><textarea id="plannerRequest" name="request" required minlength="1" placeholder="Contame qué querés crear, cambiar o mejorar. W01 te va a proponer un plan antes de ejecutar nada."></textarea></label>
+        <section class="context-box" aria-label="Contexto">
+          <h3>Contexto</h3>
+          <div class="context-grid">
+            <label class="field"><span>Workspace</span><select id="workspaceId" name="workspace_id" required disabled><option value="">Cargando contexto...</option></select></label>
+            <label class="field"><span>Project</span><select id="projectId" name="project_id" required disabled><option value="">Elegí un workspace primero</option></select></label>
+          </div>
+        </section>
         <div class="actions">
-          <button class="primary" id="submitPlannerRequest" type="submit">Submit to Planner</button>
+          <button class="primary" id="submitPlannerRequest" type="submit">Pedir plan</button>
           <button class="secondary" id="resetPlanner" type="button">Reset</button>
         </div>
-        <p class="small">Tenant scope is supplied by the server request context. This page does not accept a tenant_id field.</p>
       </form>
 
       <section class="panel">
-        <div id="statusMessage" class="status">Enter workspace, project, and request text to begin.</div>
-        <label class="field"><span>Proposal or roadmap ID</span><input id="proposalId" autocomplete="off" placeholder="Available after planning completes"></label>
+        <div id="statusMessage" class="status">Elegí el contexto y contame qué querés hacer.</div>
+        <div class="secondary-tools">
+          <label class="field"><span>Roadmap para actualizar</span><input id="proposalId" autocomplete="off" placeholder="Disponible cuando el plan esté listo"></label>
+        </div>
         <div class="actions">
-          <button class="secondary" id="refreshProposal" type="button">Refresh proposal</button>
+          <button class="secondary" id="refreshProposal" type="button">Actualizar plan</button>
           <button class="primary hidden" id="approveRoadmap" type="button">Approve roadmap</button>
           <button class="danger hidden" id="requestChanges" type="button">Request changes</button>
           <button class="primary hidden" id="startAutopilot" type="button">Start Autopilot</button>
         </div>
         <div id="requestChangesView" class="hidden">
-          <label class="field"><span>Human feedback for W01 revision</span><textarea id="revisionFeedback" placeholder="Describe what W01 should change before this roadmap can be approved."></textarea></label>
+          <label class="field"><span>Qué querés ajustar</span><textarea id="revisionFeedback" placeholder="Contale a W01 qué debería cambiar antes de aprobar este roadmap."></textarea></label>
           <div class="actions">
             <button class="danger" id="submitRevisionRequest" type="button" disabled>Submit changes</button>
             <button class="secondary" id="cancelRevisionRequest" type="button">Cancel</button>
           </div>
-          <p class="small">This feedback will be sent back to W01 to revise the roadmap. Roadmap fields remain read-only.</p>
+          <p class="small">W01 va a revisar el roadmap con este feedback. El plan sigue sin ejecutarse hasta que lo apruebes y lo inicies.</p>
         </div>
         <div id="proposalView" class="hidden"></div>
         <div id="startView" class="hidden"></div>
@@ -270,19 +286,19 @@ function plannerPageHtml() {
     }
 
     function renderWorkspaceOptions(selectedWorkspaceId = '') {
-      els.workspace.innerHTML = '<option value="">Select a workspace</option>' +
+      els.workspace.innerHTML = '<option value="">Elegí un workspace</option>' +
         state.workspaces.map((workspace) => optionHtml(workspace.id, workspaceLabel(workspace))).join('');
       els.workspace.value = state.workspaces.some((workspace) => workspace.id === selectedWorkspaceId) ? selectedWorkspaceId : '';
     }
 
     function renderProjectOptions(workspaceId, selectedProjectId = '') {
       if (!workspaceId) {
-        els.project.innerHTML = '<option value="">Select a workspace first</option>';
+        els.project.innerHTML = '<option value="">Elegí un workspace primero</option>';
         els.project.value = '';
         return;
       }
       const projects = projectsForWorkspace(workspaceId);
-      els.project.innerHTML = '<option value="">Select a project</option>' +
+      els.project.innerHTML = '<option value="">Elegí un project</option>' +
         projects.map((project) => optionHtml(project.id, projectLabel(project))).join('');
       els.project.value = projects.some((project) => project.id === selectedProjectId) ? selectedProjectId : '';
       if (!els.project.value && projects.length === 1 && !selectedProjectId) {
@@ -327,7 +343,7 @@ function plannerPageHtml() {
       syncContextControlState();
       els.submit.disabled = !canSubmit();
       if (state.submitting) els.submit.disabled = true;
-      els.submit.textContent = state.submitting ? 'Submitting to Planner...' : 'Submit to Planner';
+      els.submit.textContent = state.submitting ? 'Preparando tu plan...' : 'Pedir plan';
     }
 
     function lifecycleState(proposal) {
@@ -390,8 +406,8 @@ function plannerPageHtml() {
     function stateLabel(proposal) {
       const roadmapState = lifecycleState(proposal) || 'UNKNOWN';
       const status = approvalStatus(proposal);
-      if (roadmapState === 'PROPOSED') return 'PROPOSED - awaiting human approval';
-      if ((roadmapState === 'ACTIVE' || roadmapState === 'APPROVED') && status === 'APPROVED') return 'ACTIVE / APPROVED';
+      if (roadmapState === 'PROPOSED') return 'Plan listo para revisar';
+      if ((roadmapState === 'ACTIVE' || roadmapState === 'APPROVED') && status === 'APPROVED') return 'Aprobado';
       if (roadmapState === 'COMPLETED') return 'COMPLETED';
       if (roadmapState === 'BLOCKED') return 'BLOCKED';
       if (roadmapState === 'CANCELLED' || roadmapState === 'CANCELED') return 'CANCELLED';
@@ -407,27 +423,27 @@ function plannerPageHtml() {
 
     function renderNotice(proposal) {
       if (isProposed(proposal)) {
-        return '<div class="notice"><strong>Awaiting explicit human approval.</strong> No Autopilot execution has started from this proposal. Review the persisted roadmap before approving.</div>';
+        return '<div class="notice"><strong>Plan listo para revisar.</strong> Todavía no se ejecutó nada. Revisá el roadmap antes de aprobarlo.</div>';
       }
       if (isRevisionPending(proposal)) {
-        return '<div class="notice"><strong>Changes requested.</strong> W01 is revising the roadmap based on the persisted human feedback. Approval and Start Autopilot are unavailable until a revised proposal is ready.</div>';
+        return '<div class="notice"><strong>Cambios pedidos.</strong> W01 está revisando el roadmap con tu feedback. Aprobar e iniciar no están disponibles hasta que haya un plan actualizado.</div>';
       }
       if (isApproved(proposal)) {
-        return '<div class="notice"><strong>Roadmap approval is persisted.</strong> Start Autopilot remains a separate action.</div>';
+        return '<div class="notice"><strong>Roadmap aprobado.</strong> Start Autopilot sigue siendo una acción separada.</div>';
       }
       if (isTerminal(proposal)) {
         return '<div class="notice terminal"><strong>This roadmap is ' + escapeHtml(stateLabel(proposal)) + '.</strong> It is not presented as ordinary executable approved work.</div>';
       }
-      return '<div class="notice"><strong>Roadmap state is ' + escapeHtml(stateLabel(proposal)) + '.</strong> The UI is not inferring execution readiness from incomplete lifecycle data.</div>';
+      return '<div class="notice"><strong>Estado del roadmap: ' + escapeHtml(stateLabel(proposal)) + '.</strong> Todavía no está listo para iniciarse.</div>';
     }
 
     function renderOriginalRequest(proposal) {
       const originalRequest = text(proposal.original_request || proposal.provenance?.original_request).trim();
       const source = text(proposal.provenance?.source || proposal.proposal_type).trim();
       if (!originalRequest && !source) return '';
-      return '<div class="info-grid"><div><span class="label">Original Planner request</span><p>' + escapeHtml(originalRequest || 'Not recorded') + '</p></div>' +
-        '<div><span class="label">Proposal source</span><p>' + escapeHtml(source || 'Not recorded') + '</p></div>' +
-        '<div><span class="label">Planner context</span><p>' + escapeHtml(text(proposal.workspace_id || 'Workspace not recorded')) + ' / ' + escapeHtml(text(proposal.project_id || 'Project not recorded')) + '</p></div></div>';
+      return '<div class="info-grid"><div><span class="label">Pedido original</span><p>' + escapeHtml(originalRequest || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Origen del plan</span><p>' + escapeHtml(source || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Contexto</span><p>' + escapeHtml(text(proposal.workspace_id || 'Workspace not recorded')) + ' / ' + escapeHtml(text(proposal.project_id || 'Project not recorded')) + '</p></div></div>';
     }
 
     function renderRevisionContext(proposal) {
@@ -496,9 +512,9 @@ function plannerPageHtml() {
         '<div class="info-grid"><div><span class="label">Risks</span>' + list(proposal.risks, 'None recorded') + '</div><div><span class="label">Dependencies</span>' + list(proposal.dependencies, 'No dependencies') + '</div><div><span class="label">Assumptions</span>' + list(proposal.assumptions, 'None recorded') + '</div></div>' +
         renderOriginalRequest(proposal) +
         '<h2>Milestones</h2><div class="milestones">' + milestones.map((item) => renderMilestone(item.milestone, item.index)).join('') + '</div>';
-      if (proposed && !approved) setStatus('Proposal is PROPOSED and waiting for explicit human approval.', '');
-      else if (isRevisionPending(proposal)) setStatus('Changes requested. W01 is revising the roadmap based on persisted feedback.', 'success');
-      else if (approved) setStatus('Roadmap approval is persisted. Start Autopilot is now available.', 'success');
+      if (proposed && !approved) setStatus('Plan listo - revisalo antes de aprobar.', '');
+      else if (isRevisionPending(proposal)) setStatus('Cambios pedidos. W01 está revisando el roadmap con tu feedback.', 'success');
+      else if (approved) setStatus('Roadmap aprobado. Start Autopilot ya está disponible.', 'success');
       else setStatus('Roadmap is ' + text(proposal.state || 'not startable') + '.', '');
     }
 
@@ -532,7 +548,7 @@ function plannerPageHtml() {
         let proposalId = els.proposalId.value.trim() || state.proposalId;
         if (!proposalId) proposalId = await discoverProposalFromMission();
         if (!proposalId) {
-          setStatus('Planning is still pending. No proposal ID is available yet; refresh after the Brain proposal completes.', '');
+          setStatus('Preparando tu plan... Actualizá de nuevo cuando W01 termine.', '');
           return;
         }
         const proposal = await fetch('/api/planner/proposals/' + encodeURIComponent(proposalId)).then(parseResponse);
@@ -547,7 +563,7 @@ function plannerPageHtml() {
       state.contextError = '';
       renderWorkspaceOptions('');
       renderProjectOptions('', '');
-      setStatus('Loading Planner context options...', '');
+      setStatus('Cargando contexto...', '');
       syncSubmitState();
       try {
         const [workspaceData, projectData] = await Promise.all([
@@ -565,19 +581,19 @@ function plannerPageHtml() {
           restoreRememberedContext();
         }
         if (state.restoredPlanner) {
-          setStatus('Restored active Planner request. Checking for the latest roadmap proposal...', 'success');
+          setStatus('Recuperé tu pedido activo. Buscando el plan más reciente...', 'success');
           await loadProposal();
         } else if (!state.workspaces.length) {
-          setStatus('No tenant-visible workspaces are available for Planner requests.', 'error');
+          setStatus('No hay workspaces disponibles para pedir un plan.', 'error');
         } else {
-          setStatus('Select a workspace, project, and request text to begin.', '');
+          setStatus('Elegí el contexto y contame qué querés hacer.', '');
         }
       } catch (error) {
         state.contextLoading = false;
         state.contextError = 'Planner context failed to load.';
         renderWorkspaceOptions('');
         renderProjectOptions('', '');
-        setStatus('Planner context failed to load. Workspace and project selections are unavailable.', 'error');
+        setStatus('No pude cargar el contexto. Workspace y project no están disponibles.', 'error');
       } finally {
         syncSubmitState();
       }
@@ -587,12 +603,12 @@ function plannerPageHtml() {
       event.preventDefault();
       if (state.submitting) return;
       if (!canSubmit()) {
-        setStatus('Workspace, project, and request are required before submission.', 'error');
+        setStatus('Elegí workspace, project y contame qué querés hacer.', 'error');
         return;
       }
       state.submitting = true;
       syncSubmitState();
-      setStatus('Submitting Planner request. W01 roadmap proposal generation will begin after intake is accepted.', '');
+      setStatus('Preparando tu plan...', '');
       try {
         const body = {
           workspace_id: els.workspace.value.trim(),
@@ -614,7 +630,7 @@ function plannerPageHtml() {
           els.proposalId.value = state.proposalId;
           renderProposal(created);
         } else {
-          setStatus('Planning: Planner request accepted' + (state.requestId ? ': ' + text(state.requestId) : '') + '. Waiting for W01 roadmap proposal generation. W01 is preparing the roadmap proposal. Refresh proposal after planning completes.', 'success');
+          setStatus('W01 está preparando el roadmap... Actualizá el plan cuando esté listo.', 'success');
         }
       } catch (error) {
         setStatus('Planner request failed: ' + error.message, 'error');
@@ -627,7 +643,7 @@ function plannerPageHtml() {
     els.refresh.addEventListener('click', loadProposal);
     els.requestChanges.addEventListener('click', () => {
       if (!isProposed(state.proposal) || !isReviewComplete(state.proposal)) {
-        setStatus('Request Changes unavailable: roadmap must be a complete PROPOSED proposal awaiting approval.', 'error');
+        setStatus('Request Changes no está disponible hasta que el plan esté listo para revisar.', 'error');
         return;
       }
       els.requestChangesView.classList.remove('hidden');
@@ -646,14 +662,14 @@ function plannerPageHtml() {
       const feedback = els.revisionFeedback.value.trim();
       if (!proposalId) return setStatus('Request Changes failed: proposal ID is required.', 'error');
       if (!feedback) {
-        setStatus('Request Changes failed: feedback is required before W01 can revise the roadmap.', 'error');
+        setStatus('Request Changes failed: escribí qué querés ajustar antes de pedir cambios.', 'error');
         syncRevisionSubmitState();
         return;
       }
       if (state.revisionSubmitting) return;
       state.revisionSubmitting = true;
       syncRevisionSubmitState();
-      setStatus('Sending revision request to W01.', '');
+      setStatus('Enviando cambios a W01...', '');
       try {
         const revised = await fetch('/api/planner/roadmaps/' + encodeURIComponent(proposalId) + '/request-changes', {
           method: 'POST',
@@ -666,7 +682,7 @@ function plannerPageHtml() {
         els.start.classList.add('hidden');
         hideRevisionForm();
         renderProposal(revised);
-        setStatus('Changes requested. W01 is revising the roadmap based on persisted feedback.', 'success');
+        setStatus('Cambios pedidos. W01 está revisando el roadmap con tu feedback.', 'success');
       } catch (error) {
         setStatus('Request Changes failed: ' + error.message, 'error');
       } finally {
@@ -684,7 +700,7 @@ function plannerPageHtml() {
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ approve: true })
         }).then(parseResponse);
-        setStatus('Approval saved. Reloading persisted roadmap state.', 'success');
+        setStatus('Aprobación guardada. Actualizando el roadmap...', 'success');
         await loadProposal();
       } catch (error) {
         setStatus('Approval failed: ' + error.message, 'error');
@@ -726,7 +742,7 @@ function plannerPageHtml() {
       els.approve.classList.add('hidden');
       els.requestChanges.classList.add('hidden');
       els.start.classList.add('hidden');
-      setStatus('Enter workspace, project, and request text to begin.', '');
+      setStatus('Elegí el contexto y contame qué querés hacer.', '');
       syncSubmitState();
     });
 

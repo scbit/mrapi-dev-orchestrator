@@ -79,7 +79,8 @@ test('active application exposes the bounded Planner page route', async () => {
   const { html, headers } = await renderPlannerPage();
   assert.match(headers['content-type'], /text\/html/);
   assert.match(html, /Roadmap Planner/);
-  assert.match(html, /Review and approve the roadmap before any Autopilot execution can start/);
+  assert.match(html, /¿Qué querés hacer\?/);
+  assert.match(html, /recién ahí puede ejecutarse/);
 });
 
 test('Planner page contains request and workspace/project context controls with client validation', async () => {
@@ -93,7 +94,7 @@ test('Planner page contains request and workspace/project context controls with 
   assert.match(html, /function canSubmit\(\)/);
   assert.match(html, /els\.request\.value\.trim\(\)/);
   assert.match(html, /els\.submit\.disabled = !canSubmit\(\)/);
-  assert.match(html, /Workspace, project, and request are required before submission/);
+  assert.match(html, /Elegí workspace, project y contame qué querés hacer/);
 });
 
 test('Planner UI uses existing Planner APIs and does not expose direct Task or Run creation', async () => {
@@ -111,15 +112,15 @@ test('Planner UI uses existing Planner APIs and does not expose direct Task or R
 
 test('Planner page shows planning state and reloads proposals from persisted backend state', async () => {
   const { html } = await renderPlannerPage();
-  assert.match(html, /Planning: Planner request accepted/);
-  assert.match(html, /Waiting for W01 roadmap proposal generation/);
+  assert.match(html, /W01 está preparando el roadmap/);
+  assert.match(html, /Preparando tu plan/);
   assert.match(html, /state\.requestId = created\.planner_request_id \|\| created\.request_id \|\| created\.mission_id/);
   assert.match(html, /state\.brainRunId = created\.brain_run_id/);
   assert.match(html, /state\.proposalId = created\.roadmap_id \|\| created\.proposal_id \|\| created\.planner_roadmap_id/);
   assert.match(html, /discoverProposalFromMission/);
   assert.match(html, /\/api\/missions\//);
   assert.match(html, /\/api\/planner\/proposals\//);
-  assert.match(html, /Refresh proposal/);
+  assert.match(html, /Actualizar plan/);
 });
 
 test('proposal rendering includes proposal and ordered milestone review fields', async () => {
@@ -141,7 +142,7 @@ test('proposal rendering includes proposal and ordered milestone review fields',
 
 test('PROPOSED review requires explicit approval and read or refresh never approves', async () => {
   const { html } = await renderPlannerPage();
-  assert.match(html, /PROPOSED - awaiting human approval/);
+  assert.match(html, /Plan listo para revisar/);
   assert.match(html, /id="approveRoadmap"[^>]*>Approve roadmap/);
   assert.match(html, /const canApprove = proposed && !approved && !isTerminal\(proposal\)/);
   assert.match(html, /els\.approve\.classList\.toggle\('hidden', !canApprove\)/);

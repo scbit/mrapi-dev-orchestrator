@@ -67,19 +67,20 @@ function sectionFrom(html, startMarker, endMarker) {
   return html.slice(start, end);
 }
 
-test('/planner contains a clearly labeled New Planner Request form', async () => {
+test('/planner contains a clearly labeled conversation-first Planner request form', async () => {
   const html = await renderPlannerPage();
-  const form = sectionFrom(html, '<form class="panel" id="plannerForm">', '</form>');
+  const form = sectionFrom(html, '<form class="panel request-panel" id="plannerForm">', '</form>');
 
-  assert.match(form, /<h2>New Planner Request<\/h2>/);
-  assert.match(form, /Submit a high-level request for a W01 roadmap proposal/);
-  assert.match(form, /Review and approve the roadmap before any Autopilot execution can start/);
+  assert.match(form, /<h2>¿Qué querés hacer\?<\/h2>/);
+  assert.match(form, /W01 prepara el plan/);
+  assert.match(form, /recién ahí puede ejecutarse/);
 });
 
 test('workspace and project context controls are present and required', async () => {
   const html = await renderPlannerPage();
-  const form = sectionFrom(html, '<form class="panel" id="plannerForm">', '</form>');
+  const form = sectionFrom(html, '<form class="panel request-panel" id="plannerForm">', '</form>');
 
+  assert.match(form, /Contexto/);
   assert.match(form, /Workspace/);
   assert.match(form, /Project/);
   assert.match(form, /<select id="workspaceId" name="workspace_id"[^>]*required/);
@@ -88,14 +89,14 @@ test('workspace and project context controls are present and required', async ()
   assert.doesNotMatch(form, /<input id="projectId" name="project_id"/);
 });
 
-test('natural-language request is a required multiline textarea with product guidance', async () => {
+test('natural-language request is a required multiline textarea with conversational guidance', async () => {
   const html = await renderPlannerPage();
-  const form = sectionFrom(html, '<form class="panel" id="plannerForm">', '</form>');
+  const form = sectionFrom(html, '<form class="panel request-panel" id="plannerForm">', '</form>');
 
-  assert.match(form, /Natural-language product\/software request/);
+  assert.match(form, /Contale a W01 qué necesitás/);
   assert.match(form, /<textarea id="plannerRequest" name="request"[^>]*required[^>]*minlength="1"/);
-  assert.match(form, /Describe the product or software outcome you want/);
-  assert.match(form, /Example: Build an intake dashboard/);
+  assert.match(form, /Contame qué querés crear, cambiar o mejorar/);
+  assert.match(form, /W01 te va a proponer un plan antes de ejecutar nada/);
   assert.doesNotMatch(form, /hidden execution instructions/i);
 });
 
@@ -116,7 +117,7 @@ test('submit handler performs trimmed validation and blocks whitespace-only requ
   assert.match(submitHandler, /event\.preventDefault\(\)/);
   assert.match(submitHandler, /if \(state\.submitting\) return/);
   assert.match(submitHandler, /if \(!canSubmit\(\)\)/);
-  assert.match(submitHandler, /Workspace, project, and request are required before submission/);
+  assert.match(submitHandler, /Elegí workspace, project y contame qué querés hacer/);
   assert.match(submitHandler, /request: els\.request\.value\.trim\(\)/);
 });
 
@@ -140,10 +141,10 @@ test('in-flight planning state prevents duplicate clicks and restores after fail
   assert.match(html, /submitting: false/);
   assert.match(submitHandler, /if \(state\.submitting\) return/);
   assert.match(submitHandler, /state\.submitting = true/);
-  assert.match(submitHandler, /Submitting Planner request/);
+  assert.match(submitHandler, /Preparando tu plan/);
   assert.match(submitHandler, /state\.submitting = false/);
   assert.match(submitHandler, /Planner request failed: /);
-  assert.match(html, /els\.submit\.textContent = state\.submitting \? 'Submitting to Planner\.\.\.' : 'Submit to Planner'/);
+  assert.match(html, /els\.submit\.textContent = state\.submitting \? 'Preparando tu plan\.\.\.' : 'Pedir plan'/);
 });
 
 test('successful intake stores returned identifiers for discovery without approving or starting', async () => {
@@ -154,8 +155,7 @@ test('successful intake stores returned identifiers for discovery without approv
   assert.match(submitHandler, /state\.missionId = created\.mission_id \|\| state\.requestId/);
   assert.match(submitHandler, /state\.brainRunId = created\.brain_run_id/);
   assert.match(submitHandler, /state\.proposalId = created\.roadmap_id \|\| created\.proposal_id \|\| created\.planner_roadmap_id/);
-  assert.match(submitHandler, /Planner request accepted/);
-  assert.match(submitHandler, /W01 is preparing the roadmap proposal/);
+  assert.match(submitHandler, /W01 está preparando el roadmap/);
   assert.doesNotMatch(submitHandler, /approve:\s*true|\/approve|\/start|startAutopilot/);
 });
 
@@ -177,7 +177,6 @@ test('tenant_id is not exposed as an authoritative field and client creates no e
   const html = await renderPlannerPage();
   const source = read('src/routes/planner.ui.routes.js');
 
-  assert.match(html, /Tenant scope is supplied by the server request context/);
   assert.doesNotMatch(html, /name="tenant_id"|id="tenantId"/);
   assert.doesNotMatch(source, /fetch\('\/api\/tasks|fetch\('\/api\/runs|EXECUTION_RUN|createTask|createExecutionRun/);
 });
