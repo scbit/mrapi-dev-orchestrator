@@ -217,7 +217,7 @@ function validProposal(overrides = {}) {
       {
         id: 'm2',
         title: 'Implementation Plan',
-        expected_outcome: 'Define executable work for a future approval step.',
+        objective: 'Define executable work for a future approval step.',
         description: 'Order implementation work without starting it.',
         executor_required: true,
         dependencies: ['m1'],
@@ -441,7 +441,7 @@ test('ordered milestones preserve planning fields and do not auto-start', async 
 
   assert.deepEqual(proposal.milestones.map((item) => item.title), ['Understand Context', 'Implementation Plan']);
   assert.equal(proposal.milestones[0].objective, 'Capture trusted workspace and project context.');
-  assert.equal(proposal.milestones[1].expected_outcome, 'Define executable work for a future approval step.');
+  assert.equal(proposal.milestones[1].objective, 'Define executable work for a future approval step.');
   assert.equal(proposal.milestones[1].description, 'Order implementation work without starting it.');
   assert.equal(proposal.milestones[1].executor_required, true);
   assert.deepEqual(proposal.milestones[1].dependencies, ['m1']);

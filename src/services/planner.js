@@ -13,13 +13,36 @@ function cleanText(value, max = 4000) {
   return String(value ?? '').trim().slice(0, max);
 }
 
+function requiredText(value, fieldName, max = 4000) {
+  const text = cleanText(value, max);
+  if (!text) {
+    const error = new Error(`${fieldName}_REQUIRED`);
+    error.status = 400;
+    throw error;
+  }
+  return text;
+}
+
 function stringArray(value, fieldName) {
   if (!Array.isArray(value)) {
     const error = new Error(`${fieldName}_MUST_BE_ARRAY`);
     error.status = 400;
     throw error;
   }
-  return value.map((item) => cleanText(item, 1000)).filter(Boolean);
+  return value.map((item) => {
+    if (typeof item !== 'string') {
+      const error = new Error(`${fieldName}_MUST_BE_ARRAY_OF_STRINGS`);
+      error.status = 400;
+      throw error;
+    }
+    const text = cleanText(item, 1000);
+    if (!text) {
+      const error = new Error(`${fieldName}_MUST_BE_ARRAY_OF_STRINGS`);
+      error.status = 400;
+      throw error;
+    }
+    return text;
+  });
 }
 
 function findFirstJsonObject(source) {
@@ -92,14 +115,15 @@ function validateAcyclic(milestones) {
 }
 
 function validateProposal(rawProposal) {
-  const proposal = rawProposal && typeof rawProposal === 'object' ? rawProposal : {};
-  const title = cleanText(proposal.title, 500);
-  const objective = cleanText(proposal.objective, 6000);
-  if (!title || !objective) {
-    const error = new Error('PLANNER_PROPOSAL_TITLE_OBJECTIVE_REQUIRED');
+  if (!rawProposal || typeof rawProposal !== 'object' || Array.isArray(rawProposal)) {
+    const error = new Error('PLANNER_PROPOSAL_OBJECT_REQUIRED');
     error.status = 400;
     throw error;
   }
+  const proposal = rawProposal;
+  const title = requiredText(proposal.title, 'PLANNER_PROPOSAL_TITLE', 500);
+  const objective = requiredText(proposal.objective, 'PLANNER_PROPOSAL_OBJECTIVE', 6000);
+  const summary = requiredText(proposal.summary, 'PLANNER_PROPOSAL_SUMMARY', 10000);
 
   if (!Array.isArray(proposal.milestones) || proposal.milestones.length === 0) {
     const error = new Error('PLANNER_PROPOSAL_MILESTONES_REQUIRED');
@@ -109,14 +133,15 @@ function validateProposal(rawProposal) {
 
   const seen = new Set();
   const milestones = proposal.milestones.map((item, index) => {
-    const id = cleanText(item?.id, 160);
-    const milestoneTitle = cleanText(item?.title, 500);
-    const milestoneObjective = cleanText(item?.objective ?? item?.expected_outcome, 6000);
-    if (!id || !milestoneTitle || !milestoneObjective) {
-      const error = new Error('PLANNER_PROPOSAL_MILESTONE_ID_TITLE_OBJECTIVE_REQUIRED');
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      const error = new Error('PLANNER_PROPOSAL_MILESTONE_OBJECT_REQUIRED');
       error.status = 400;
       throw error;
     }
+    const id = requiredText(item.id, 'PLANNER_PROPOSAL_MILESTONE_ID', 160);
+    const milestoneTitle = requiredText(item.title, 'PLANNER_PROPOSAL_MILESTONE_TITLE', 500);
+    const milestoneObjective = requiredText(item.objective, 'PLANNER_PROPOSAL_MILESTONE_OBJECTIVE', 6000);
+    const description = requiredText(item.description, 'PLANNER_PROPOSAL_MILESTONE_DESCRIPTION', 8000);
     if (seen.has(id)) {
       const error = new Error('PLANNER_PROPOSAL_DUPLICATE_MILESTONE_ID');
       error.status = 400;
@@ -128,18 +153,25 @@ function validateProposal(rawProposal) {
       throw error;
     }
     seen.add(id);
+    const dependencies = stringArray(item.dependencies ?? [], 'PLANNER_PROPOSAL_MILESTONE_DEPENDENCIES');
+    const successCriteria = stringArray(item.success_criteria, 'PLANNER_PROPOSAL_MILESTONE_SUCCESS_CRITERIA');
+    if (successCriteria.length === 0) {
+      const error = new Error('PLANNER_PROPOSAL_MILESTONE_SUCCESS_CRITERIA_REQUIRED');
+      error.status = 400;
+      throw error;
+    }
 
     return {
       id,
       title: milestoneTitle,
       objective: milestoneObjective,
-      expected_outcome: cleanText(item?.expected_outcome ?? item?.objective, 6000),
-      description: cleanText(item?.description, 8000),
+      expected_outcome: milestoneObjective,
+      description,
       executor_required: item.executor_required,
-      dependencies: stringArray(item?.dependencies ?? item?.depends_on ?? [], 'PLANNER_PROPOSAL_MILESTONE_DEPENDENCIES'),
-      depends_on: stringArray(item?.dependencies ?? item?.depends_on ?? [], 'PLANNER_PROPOSAL_MILESTONE_DEPENDENCIES'),
+      dependencies,
+      depends_on: dependencies,
       risks: stringArray(item?.risks ?? [], 'PLANNER_PROPOSAL_MILESTONE_RISKS'),
-      success_criteria: stringArray(item?.success_criteria ?? [], 'PLANNER_PROPOSAL_MILESTONE_SUCCESS_CRITERIA'),
+      success_criteria: successCriteria,
       state: 'PROPOSED',
       order: index + 1
     };
@@ -147,6 +179,11 @@ function validateProposal(rawProposal) {
 
   for (const milestone of milestones) {
     for (const dependency of milestone.dependencies) {
+      if (dependency === milestone.id) {
+        const error = new Error('PLANNER_PROPOSAL_SELF_DEPENDENCY');
+        error.status = 400;
+        throw error;
+      }
       if (!seen.has(dependency)) {
         const error = new Error('PLANNER_PROPOSAL_UNKNOWN_DEPENDENCY');
         error.status = 400;
@@ -159,7 +196,7 @@ function validateProposal(rawProposal) {
   return {
     title,
     objective,
-    summary: cleanText(proposal.summary, 10000),
+    summary,
     risks: stringArray(proposal.risks ?? [], 'PLANNER_PROPOSAL_RISKS'),
     dependencies: stringArray(proposal.dependencies ?? [], 'PLANNER_PROPOSAL_DEPENDENCIES'),
     assumptions: stringArray(proposal.assumptions ?? [], 'PLANNER_PROPOSAL_ASSUMPTIONS'),
