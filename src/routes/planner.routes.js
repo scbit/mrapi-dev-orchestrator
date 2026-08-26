@@ -52,13 +52,25 @@ function createPlannerRouter({ db }) {
 
   router.post('/roadmaps/:roadmapId/start', async (req, res, next) => {
     try {
-      const started = await startPlannerRoadmap(db, req.tenantId, req.params.roadmapId, req.body || {});
+      const roadmapId = req.params.roadmapId;
+      const started = await startPlannerRoadmap(db, req.tenantId, roadmapId, req.body || {});
+      const current = await getPlannerProposal(db, req.tenantId, roadmapId);
+      const activeStates = new Set(['PLANNING', 'RUNNING', 'VERIFYING']);
+      const currentMilestone = started.milestone?.id
+        ? (current.milestones || []).find((milestone) => milestone.id === started.milestone.id) || started.milestone
+        : (current.milestones || []).find((milestone) => activeStates.has(String(milestone.state || '').toUpperCase())) || null;
       res.status(started.no_new_work ? 200 : 201).json(serializeFirestore({
         ok: true,
-        roadmap_id: started.roadmap?.id || req.params.roadmapId,
+        roadmap_id: started.roadmap?.id || roadmapId,
+        state: current.state || started.roadmap?.state || null,
+        approval_status: current.approval_status || started.roadmap?.approval_status || null,
         milestone_id: started.milestone?.id || null,
         mission_id: started.mission?.id || null,
         brain_run_id: started.brain_run?.id || null,
+        current_milestone: currentMilestone,
+        mission: started.mission || null,
+        brain_run: started.brain_run || null,
+        brain_context: started.brain_run?.brain_context || started.mission?.brain_context || null,
         reused: started.reused === true,
         no_new_work: started.no_new_work === true,
         already_complete: started.already_complete === true
