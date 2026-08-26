@@ -210,9 +210,16 @@ async function addGitEvidence(runId, taskId, git) {
 }
 
 async function completeExecution(runId, result, git = {}) {
-  const stdoutTail = String(result.stdout || '').slice(-50000);
-  const stderrTail = String(result.stderr || '').slice(-20000);
+  // Keep the Mission detail readable. The fuller process transcript is already
+  // persisted separately as LOG evidence by addLogEvidence().
+  const stdoutTail = String(result.stdout || '').slice(-12000);
+  const stderrTail = String(result.stderr || '').slice(-8000);
   const success = result.success === true;
+  const processExitedCleanly = Number(result.exitCode) === 0;
+  const validationFailedAfterCleanExit = !success && processExitedCleanly;
+  const validationMessage = result.scope_check?.ok === false
+    ? `MRAPI file-scope validation failed: ${(result.scope_check.unauthorized_files || []).join(', ') || 'unauthorized file change'}`
+    : null;
 
   return request(`/api/runner/runs/${encodeURIComponent(runId)}/complete`, {
     success,
@@ -220,11 +227,19 @@ async function completeExecution(runId, result, git = {}) {
       ? `Automatic Git flow failed: ${git.error}`
       : success
         ? `Codex CLI completed automatically with exit code ${result.exitCode}.`
-        : `Codex CLI failed with exit code ${result.exitCode}.`,
-    error: success ? null : (git.error || stderrTail || `Codex exit code ${result.exitCode}`),
+        : validationFailedAfterCleanExit
+          ? `Codex process exited with code 0, but MRAPI execution validation failed.`
+          : `Codex CLI failed with exit code ${result.exitCode}.`,
+    error: success
+      ? null
+      : (git.error || validationMessage || stderrTail || (validationFailedAfterCleanExit
+          ? 'MRAPI_EXECUTION_VALIDATION_FAILED'
+          : `Codex exit code ${result.exitCode}`)),
     output: {
       executor_mode: 'CODEX_CLI_AUTO',
       exit_code: result.exitCode,
+      process_exited_cleanly: processExitedCleanly,
+      validation_failed_after_clean_exit: validationFailedAfterCleanExit,
       stdout_tail: stdoutTail,
       stderr_tail: stderrTail,
       scope_check: result.scope_check || null,

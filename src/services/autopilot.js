@@ -329,6 +329,9 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
       if (!decision.execution_spec?.instructions) {
         decision.action = 'BLOCKED';
         decision.reason = `${decision.reason} RETRY requires execution_spec.instructions.`.trim();
+      } else if (!Array.isArray(decision.execution_spec.allowed_files) || decision.execution_spec.allowed_files.length === 0) {
+        decision.action = 'BLOCKED';
+        decision.reason = `${decision.reason} RETRY requires Brain-defined execution_spec.allowed_files.`.trim();
       } else {
         const taskRef = db.collection('tasks').doc();
         tx.set(taskRef, {
@@ -357,6 +360,7 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
               title: `Autopilot retry: ${milestone.title}`,
               objective: `Apply Brain correction for ${milestone.title}`,
               instructions: decision.execution_spec.instructions,
+              allowed_files: decision.execution_spec.allowed_files || [],
               success_criteria: decision.execution_spec.success_criteria,
               stop_conditions: decision.execution_spec.stop_conditions
             },
