@@ -23,19 +23,57 @@ function clean(value, max = 12000) {
   return String(value ?? '').trim().slice(0, max);
 }
 
-function parseAutopilotDecision(text) {
-  const raw = String(text || '');
-  const tagged = raw.match(/<MRAPI_AUTOPILOT>\s*([\s\S]*?)\s*<\/MRAPI_AUTOPILOT>/i);
-  let parsed = null;
-  if (tagged) {
-    try { parsed = JSON.parse(tagged[1]); } catch { parsed = null; }
-  }
-  if (!parsed) {
-    const candidate = raw.match(/\{[\s\S]*\}/);
-    if (candidate) {
-      try { parsed = JSON.parse(candidate[0]); } catch { parsed = null; }
+function normalizeBrainTransportText(text) {
+  return String(text || '').replace(/\\([<>_])/g, '$1');
+}
+
+function escapeInvalidJsonBackslashes(text) {
+  const source = String(text || '');
+  let out = '';
+  for (let i = 0; i < source.length; i += 1) {
+    const ch = source[i];
+    if (ch !== '\\') {
+      out += ch;
+      continue;
     }
+    const next = source[i + 1];
+    if (next === undefined) {
+      out += '\\\\';
+      continue;
+    }
+    if ('"\\/bfnrtu'.includes(next)) {
+      out += ch + next;
+      i += 1;
+      continue;
+    }
+    out += '\\\\' + next;
+    i += 1;
   }
+  return out;
+}
+
+function parseTaggedAutopilotJson(text) {
+  const raw = normalizeBrainTransportText(text);
+  const tagged = raw.match(/<MRAPI_AUTOPILOT>\s*([\s\S]*?)\s*<\/MRAPI_AUTOPILOT>/i);
+  if (tagged) {
+    try { return JSON.parse(tagged[1]); } catch {}
+    try { return JSON.parse(escapeInvalidJsonBackslashes(tagged[1])); } catch {}
+  }
+  const candidate = raw.match(/\{[\s\S]*\}/);
+  if (candidate) {
+    try { return JSON.parse(candidate[0]); } catch {}
+    try { return JSON.parse(escapeInvalidJsonBackslashes(candidate[0])); } catch {}
+  }
+  return null;
+}
+
+function normalizeStringList(value, maxItems = 30, maxLength = 2000) {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => clean(item, maxLength)).filter(Boolean).slice(0, maxItems);
+}
+
+function parseAutopilotDecision(text) {
+  const parsed = parseTaggedAutopilotJson(text);
   if (!parsed || !AUTOPILOT_ACTIONS.has(String(parsed.action || '').toUpperCase())) {
     return {
       action: 'BLOCKED',
@@ -48,16 +86,16 @@ function parseAutopilotDecision(text) {
     reason: clean(parsed.reason || parsed.summary || ''),
     execution_spec: parsed.execution_spec && typeof parsed.execution_spec === 'object'
       ? {
+          title: clean(parsed.execution_spec.title || '', 500),
+          objective: clean(parsed.execution_spec.objective || '', 6000),
           instructions: clean(parsed.execution_spec.instructions || '', 50000),
           allowed_files: Array.isArray(parsed.execution_spec.allowed_files)
             ? [...new Set(parsed.execution_spec.allowed_files.map((x) => clean(x, 1000).replace(/\\/g, '/')).filter(Boolean))].slice(0, 100)
             : [],
-          success_criteria: Array.isArray(parsed.execution_spec.success_criteria)
-            ? parsed.execution_spec.success_criteria.map((x) => clean(x, 1000)).filter(Boolean).slice(0, 30)
-            : [],
-          stop_conditions: Array.isArray(parsed.execution_spec.stop_conditions)
-            ? parsed.execution_spec.stop_conditions.map((x) => clean(x, 1000)).filter(Boolean).slice(0, 30)
-            : []
+          required_tests: normalizeStringList(parsed.execution_spec.required_tests, 30, 4000),
+          diagnostic_tests: normalizeStringList(parsed.execution_spec.diagnostic_tests, 30, 4000),
+          success_criteria: normalizeStringList(parsed.execution_spec.success_criteria, 30, 1000),
+          stop_conditions: normalizeStringList(parsed.execution_spec.stop_conditions, 30, 1000)
         }
       : null
   };
@@ -346,6 +384,9 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
       } else if (!Array.isArray(decision.execution_spec.allowed_files) || decision.execution_spec.allowed_files.length === 0) {
         decision.action = 'BLOCKED';
         decision.reason = `${decision.reason} RETRY requires Brain-defined execution_spec.allowed_files.`.trim();
+      } else if (!Array.isArray(decision.execution_spec.required_tests) || decision.execution_spec.required_tests.length === 0) {
+        decision.action = 'BLOCKED';
+        decision.reason = `${decision.reason} RETRY requires Brain-defined execution_spec.required_tests.`.trim();
       } else {
         const taskRef = db.collection('tasks').doc();
         const cumulativeAllowedFiles = [...new Set([
@@ -366,6 +407,8 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
             objective: `Apply Brain correction for ${milestone.title}`,
             instructions: decision.execution_spec.instructions,
             allowed_files: cumulativeAllowedFiles,
+            required_tests: decision.execution_spec.required_tests,
+            diagnostic_tests: decision.execution_spec.diagnostic_tests,
             success_criteria: decision.execution_spec.success_criteria,
             stop_conditions: decision.execution_spec.stop_conditions
           },
@@ -379,6 +422,8 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
               objective: `Apply Brain correction for ${milestone.title}`,
               instructions: decision.execution_spec.instructions,
               allowed_files: cumulativeAllowedFiles,
+              required_tests: decision.execution_spec.required_tests,
+              diagnostic_tests: decision.execution_spec.diagnostic_tests,
               success_criteria: decision.execution_spec.success_criteria,
               stop_conditions: decision.execution_spec.stop_conditions
             },

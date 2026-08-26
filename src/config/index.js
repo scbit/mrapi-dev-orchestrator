@@ -1,4 +1,4 @@
-const VERSION = 'v0.4.4.15';
+const VERSION = 'v0.4.4.16';
 
 function boolEnv(name, fallback) {
   const value = process.env[name];

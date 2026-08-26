@@ -52,7 +52,11 @@ function normalizeTaskSpec(task, brainRun) {
       title: String(spec.title || task.title || objective || 'Approved execution task').trim(),
       objective,
       instructions,
-      allowed_files: normalizeAllowedFiles(spec.allowed_files || task.allowed_files)
+      allowed_files: normalizeAllowedFiles(spec.allowed_files || task.allowed_files),
+      required_tests: Array.isArray(spec.required_tests) ? [...spec.required_tests] : [],
+      diagnostic_tests: Array.isArray(spec.diagnostic_tests) ? [...spec.diagnostic_tests] : [],
+      success_criteria: Array.isArray(spec.success_criteria) ? [...spec.success_criteria] : [],
+      stop_conditions: Array.isArray(spec.stop_conditions) ? [...spec.stop_conditions] : []
     };
   }
 
@@ -82,7 +86,11 @@ function normalizeTaskSpec(task, brainRun) {
     title: String(sourceSpec.title || task.title || objective || 'Codex execution task').trim(),
     objective,
     instructions,
-    allowed_files: normalizeAllowedFiles(sourceSpec.allowed_files || task.allowed_files)
+    allowed_files: normalizeAllowedFiles(sourceSpec.allowed_files || task.allowed_files),
+    required_tests: Array.isArray(sourceSpec.required_tests) ? [...sourceSpec.required_tests] : [],
+    diagnostic_tests: Array.isArray(sourceSpec.diagnostic_tests) ? [...sourceSpec.diagnostic_tests] : [],
+    success_criteria: Array.isArray(sourceSpec.success_criteria) ? [...sourceSpec.success_criteria] : [],
+    stop_conditions: Array.isArray(sourceSpec.stop_conditions) ? [...sourceSpec.stop_conditions] : []
   };
 }
 
