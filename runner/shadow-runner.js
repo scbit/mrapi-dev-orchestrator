@@ -40,7 +40,7 @@ async function register() {
     executor_type: 'CODEX_CLI_AUTO',
     host_name: cfg.hostName,
     host_type: 'SHADOW',
-    runner_version: 'v0.4.4.11',
+    runner_version: 'v0.4.4.12',
     capabilities: [
       'EXECUTION_RUN:CODEX_CLI_AUTO',
       'CODEX_HANDOFF:VALIDATED',
@@ -243,9 +243,36 @@ async function completeExecution(runId, result, git = {}) {
       stdout_tail: stdoutTail,
       stderr_tail: stderrTail,
       scope_check: result.scope_check || null,
+      executor_report: result.executor_report || null,
+      required_tests_failed: result.required_tests_failed === true,
       git
     }
   });
+}
+
+
+function parseExecutorReport(stdout) {
+  const raw = String(stdout || '');
+  const match = raw.match(/<MRAPI_EXECUTOR_REPORT>\s*([\s\S]*?)\s*<\/MRAPI_EXECUTOR_REPORT>/i);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1]);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function applyExecutorTestVerdict(result) {
+  const report = parseExecutorReport(result?.stdout);
+  result.executor_report = report;
+  if (!report) return result;
+  if (report.required_tests_passed === false) {
+    result.success = false;
+    result.stderr = `${result.stderr || ''}\nMRAPI_REQUIRED_TESTS_FAILED`;
+    result.required_tests_failed = true;
+  }
+  return result;
 }
 
 function gitMetadataFromError(error) {
@@ -410,6 +437,8 @@ async function executeClaim(claim) {
         return progress(executionRun.id, Math.max(10, Math.min(95, percent)), message);
       }
     });
+
+    applyExecutorTestVerdict(result);
 
     const afterStatus = workingTreeStatus(repositoryPath);
     const scopeCheck = afterStatus.available
@@ -596,5 +625,7 @@ module.exports = {
   isRunAlreadyTerminalError,
   workingTreeStatus,
   allowedFilesFromClaim,
-  validatePreExecutionWorktree
+  validatePreExecutionWorktree,
+  parseExecutorReport,
+  applyExecutorTestVerdict
 };

@@ -26,7 +26,8 @@ function buildCodexPrompt({ task, executionRun, cfg }) {
 - Do not invent business objectives.
 - Do not change Worker role.
 - Preserve multi-tenancy and existing functionality.
-- Run the requested tests.
+- Run REQUIRED TESTS first. Their outcome determines executor verification.
+- Run DIAGNOSTIC TESTS separately when supplied. Diagnostic failures are advisory and must not be used as the executor failure verdict when all REQUIRED TESTS pass; report them clearly for Brain verification.
 - Do not access GCP or Cloud Run.
 - Do not deploy.
 - Do not run git commit or git push; the Runner owns commit/push after successful Codex execution.
@@ -68,6 +69,12 @@ ${brainInstructions}
 ALLOWED FILES — HARD SCOPE
 ${JSON.stringify(handoff?.task_spec?.allowed_files || [], null, 2)}
 
+REQUIRED TESTS — VERDICT SCOPE
+${JSON.stringify(handoff?.task_spec?.required_tests || [], null, 2)}
+
+DIAGNOSTIC TESTS — ADVISORY
+${JSON.stringify(handoff?.task_spec?.diagnostic_tests || [], null, 2)}
+
 EXECUTION CONSTRAINTS
 ${JSON.stringify(handoff?.execution_constraints || {
   no_gcp: true,
@@ -94,10 +101,14 @@ ARTIFACT CONTRACT
 
 RETURN
 - changed files
-- tests run + results
-- success/failure
+- required tests run + results
+- diagnostic tests run + results, clearly marked advisory
 - concise summary
 - HUMAN MANUAL DEPLOY if deployment is required
+- End with exactly one machine-readable block:
+<MRAPI_EXECUTOR_REPORT>
+{"required_tests_passed":true,"required_tests":[{"command":"...","passed":true}],"diagnostic_tests":[{"command":"...","passed":false,"classification":"PRE_EXISTING_OR_UNRELATED"}],"summary":"..."}
+</MRAPI_EXECUTOR_REPORT>
 `;
 }
 
