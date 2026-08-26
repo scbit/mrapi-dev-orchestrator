@@ -716,3 +716,5 @@ const projectsContextNav = document.querySelector('#projectsContextNav');
 if (projectsContextNav) projectsContextNav.addEventListener('click', () => { window.location.href = '/roadmap.html#project-context'; });
 const roadmapNav = document.querySelector('#roadmapNav');
 if (roadmapNav) roadmapNav.addEventListener('click', () => { window.location.href = '/roadmap.html#roadmap'; });
+const plannerNav = document.querySelector('#plannerNav');
+if (plannerNav) plannerNav.addEventListener('click', () => { window.location.href = '/planner'; });

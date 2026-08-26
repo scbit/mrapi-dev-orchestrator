@@ -117,6 +117,44 @@ function plannerPageHtml() {
       revisionSubmitting: false
     };
 
+    const plannerStorageKey = 'mrapi.planner.active.v1';
+
+    function persistPlannerState() {
+      try {
+        localStorage.setItem(plannerStorageKey, JSON.stringify({
+          requestId: state.requestId,
+          missionId: state.missionId,
+          brainRunId: state.brainRunId,
+          proposalId: state.proposalId,
+          workspaceId: els?.workspace?.value || '',
+          projectId: els?.project?.value || '',
+          request: els?.request?.value || ''
+        }));
+      } catch {}
+    }
+
+    function clearPersistedPlannerState() {
+      try { localStorage.removeItem(plannerStorageKey); } catch {}
+    }
+
+    function restorePlannerState() {
+      try {
+        const saved = JSON.parse(localStorage.getItem(plannerStorageKey) || 'null');
+        if (!saved || typeof saved !== 'object') return false;
+        state.requestId = saved.requestId || null;
+        state.missionId = saved.missionId || state.requestId || null;
+        state.brainRunId = saved.brainRunId || null;
+        state.proposalId = saved.proposalId || null;
+        if (saved.workspaceId) els.workspace.value = saved.workspaceId;
+        if (saved.projectId) els.project.value = saved.projectId;
+        if (saved.request) els.request.value = saved.request;
+        if (state.proposalId) els.proposalId.value = state.proposalId;
+        return Boolean(state.requestId || state.proposalId);
+      } catch {
+        return false;
+      }
+    }
+
     const els = {
       form: document.getElementById('plannerForm'),
       workspace: document.getElementById('workspaceId'),
@@ -310,6 +348,7 @@ function plannerPageHtml() {
       state.proposal = proposal;
       state.proposalId = proposal?.roadmap_id || proposal?.proposal_id || proposal?.id || state.proposalId;
       if (state.proposalId) els.proposalId.value = state.proposalId;
+      persistPlannerState();
       els.proposalView.classList.remove('hidden');
       els.startView.classList.add('hidden');
       if (!isReviewComplete(proposal)) {
@@ -421,6 +460,7 @@ function plannerPageHtml() {
         state.missionId = created.mission_id || state.requestId;
         state.brainRunId = created.brain_run_id || null;
         state.proposalId = created.roadmap_id || created.proposal_id || created.planner_roadmap_id || null;
+        persistPlannerState();
         if (state.proposalId && (created.milestones || created.title || created.objective || created.summary)) {
           els.proposalId.value = state.proposalId;
           renderProposal(created);
@@ -524,6 +564,7 @@ function plannerPageHtml() {
 
     els.reset.addEventListener('click', () => {
       state.requestId = null; state.missionId = null; state.brainRunId = null; state.proposalId = null; state.proposal = null; state.submitting = false; state.revisionSubmitting = false;
+      clearPersistedPlannerState();
       els.form.reset();
       els.revisionFeedback.value = '';
       els.proposalId.value = '';
@@ -542,7 +583,12 @@ function plannerPageHtml() {
       els.project.addEventListener(name, syncSubmitState);
       els.request.addEventListener(name, syncSubmitState);
     });
+    const restoredPlanner = restorePlannerState();
     syncSubmitState();
+    if (restoredPlanner) {
+      setStatus('Restored active Planner request. Checking for the latest roadmap proposal...', 'success');
+      loadProposal();
+    }
   </script>
 </body>
 </html>`;
