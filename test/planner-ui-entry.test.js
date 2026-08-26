@@ -125,11 +125,13 @@ test('proposal rendering includes proposal and ordered milestone review fields',
   for (const label of ['ROADMAP PROPOSAL', 'Objective:', 'Summary:', 'Risks', 'Dependencies', 'Assumptions']) {
     assert.match(html, new RegExp(label.replace(':', ':')));
   }
-  assert.match(html, /milestones\.sort\(\(a, b\) => Number\(a\.order/);
+  assert.match(html, /milestones\.sort\(\(a, b\) => \{/);
+  assert.match(html, /return a\.index - b\.index/);
   assert.match(html, /renderMilestone/);
   assert.match(html, /Objective \/ expected outcome/);
   assert.match(html, /Description/);
-  assert.match(html, /executor_required \? 'Executor-required' : 'Brain-only'/);
+  assert.match(html, /executor_required \? 'Executor required' : 'Brain only'/);
+  assert.match(html, /Executor requirement/);
   assert.match(html, /Success criteria/);
   assert.match(html, /Persisted lifecycle state/);
   assert.match(html, /waiting on dependencies/);
@@ -139,7 +141,8 @@ test('PROPOSED review requires explicit approval and read or refresh never appro
   const { html } = await renderPlannerPage();
   assert.match(html, /PROPOSED - awaiting human approval/);
   assert.match(html, /id="approveRoadmap"[^>]*>Approve roadmap/);
-  assert.match(html, /els\.approve\.classList\.toggle\('hidden', !\(proposed && !approved\)\)/);
+  assert.match(html, /const canApprove = proposed && !approved && !isTerminal\(proposal\)/);
+  assert.match(html, /els\.approve\.classList\.toggle\('hidden', !canApprove\)/);
   assert.match(html, /body: JSON\.stringify\(\{ approve: true \}\)/);
 
   const loadProposalBody = html.slice(html.indexOf('async function loadProposal()'), html.indexOf("els.form.addEventListener('submit'"));
@@ -151,7 +154,8 @@ test('PROPOSED review requires explicit approval and read or refresh never appro
 test('Start Autopilot is hidden before approval, separate from approval, and reuses existing start handoff', async () => {
   const { html } = await renderPlannerPage();
   assert.match(html, /<button class="primary hidden" id="startAutopilot"[^>]*>Start Autopilot/);
-  assert.match(html, /els\.start\.classList\.toggle\('hidden', !approved\)/);
+  assert.match(html, /const canStart = approved && !isTerminal\(proposal\)/);
+  assert.match(html, /els\.start\.classList\.toggle\('hidden', !canStart\)/);
   assert.match(html, /Start failed: proposal ID is required/);
   assert.match(html, /\/api\/planner\/roadmaps\/' \+ encodeURIComponent\(proposalId\) \+ '\/start'/);
   assert.match(html, /Existing Autopilot work reused/);

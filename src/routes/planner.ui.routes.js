@@ -39,8 +39,14 @@ function plannerPageHtml() {
     .badge { display:inline-flex; align-items:center; min-height:24px; padding:4px 8px; border-radius:999px; border:1px solid var(--line); color:#dceaff; font-size:11px; font-weight:900; letter-spacing:.06em; text-transform:uppercase; }
     .badge.awaiting { color:#ffd38d; border-color:rgba(243,189,97,.26); background:rgba(243,189,97,.08); }
     .badge.active { color:#93efc4; border-color:rgba(72,213,151,.22); background:rgba(72,213,151,.08); }
+    .badge.blocked,.badge.cancelled { color:#ffb9bd; border-color:rgba(255,107,114,.28); background:rgba(255,107,114,.08); }
+    .badge.complete { color:#d6c7ff; border-color:rgba(185,157,255,.24); background:rgba(185,157,255,.08); }
+    .badge.executor { color:#07101d; border-color:rgba(186,245,216,.72); background:#baf5d8; }
+    .badge.brain { color:#dceaff; border-color:rgba(106,167,255,.34); background:rgba(106,167,255,.1); }
     .proposal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:10px; }
     .proposal-head h2 { margin:3px 0 0; }
+    .notice { margin:12px 0; padding:12px 13px; border:1px solid rgba(243,189,97,.28); border-radius:12px; background:rgba(243,189,97,.07); color:#ffdca4; }
+    .notice.terminal { border-color:rgba(255,107,114,.3); background:rgba(255,107,114,.07); color:#ffbec2; }
     .info-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:14px 0; }
     .info-grid div { border-top:1px solid var(--line); padding-top:10px; }
     ul { margin:7px 0 0; padding-left:18px; color:var(--muted); }
@@ -126,9 +132,16 @@ function plannerPageHtml() {
       })[char]);
     }
 
-    function list(items) {
-      const values = Array.isArray(items) ? items.filter((item) => text(item).trim()) : [];
-      if (!values.length) return '<span class="small">None recorded</span>';
+    function readableValue(value) {
+      if (value == null) return '';
+      if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return text(value);
+      if (typeof value === 'object') return text(value.title || value.name || value.id || value.milestone_id || value.key || '');
+      return '';
+    }
+
+    function list(items, emptyText = 'None recorded') {
+      const values = Array.isArray(items) ? items.map(readableValue).filter((item) => text(item).trim()) : [];
+      if (!values.length) return '<span class="small">' + escapeHtml(emptyText) + '</span>';
       return '<ul>' + values.map((item) => '<li>' + escapeHtml(item) + '</li>').join('') + '</ul>';
     }
 
@@ -156,50 +169,153 @@ function plannerPageHtml() {
       els.submit.textContent = state.submitting ? 'Submitting to Planner...' : 'Submit to Planner';
     }
 
+    function lifecycleState(proposal) {
+      return text(proposal?.state || proposal?.lifecycle_state || '').trim().toUpperCase();
+    }
+
+    function approvalStatus(proposal) {
+      return text(proposal?.approval_status || proposal?.approval?.status || '').trim().toUpperCase();
+    }
+
     function isApproved(proposal) {
-      const roadmapState = text(proposal?.state).toUpperCase();
-      const approvalStatus = text(proposal?.approval_status).toUpperCase();
-      return roadmapState === 'ACTIVE' || roadmapState === 'APPROVED' || approvalStatus === 'APPROVED';
+      const roadmapState = lifecycleState(proposal);
+      const status = approvalStatus(proposal);
+      return (roadmapState === 'ACTIVE' || roadmapState === 'APPROVED') && status === 'APPROVED';
     }
 
     function isProposed(proposal) {
+      const roadmapState = lifecycleState(proposal);
+      const status = approvalStatus(proposal);
+      return roadmapState === 'PROPOSED' && (status === 'PENDING' || status === 'AWAITING_APPROVAL' || !status);
+    }
+
+    function isTerminal(proposal) {
+      return ['BLOCKED', 'CANCELLED', 'CANCELED', 'COMPLETED'].includes(lifecycleState(proposal));
+    }
+
+    function isReviewComplete(proposal) {
+      if (!proposal || typeof proposal !== 'object') return false;
+      const requiredTextFields = ['title', 'objective', 'summary'];
+      if (requiredTextFields.some((field) => !text(proposal[field]).trim())) return false;
+      if (!Array.isArray(proposal.risks) || !Array.isArray(proposal.dependencies) || !Array.isArray(proposal.assumptions)) return false;
+      if (!lifecycleState(proposal)) return false;
+      if (!Array.isArray(proposal.milestones) || !proposal.milestones.length) return false;
+      return proposal.milestones.every((milestone) => (
+        milestone &&
+        text(milestone.id).trim() &&
+        text(milestone.title).trim() &&
+        text(milestone.objective || milestone.expected_outcome).trim() &&
+        text(milestone.description).trim() &&
+        typeof milestone.executor_required === 'boolean' &&
+        Array.isArray(milestone.dependencies || milestone.depends_on) &&
+        Array.isArray(milestone.risks) &&
+        Array.isArray(milestone.success_criteria)
+      ));
+    }
+
+    function stateClass(proposal) {
       const roadmapState = text(proposal?.state).toUpperCase();
-      const approvalStatus = text(proposal?.approval_status).toUpperCase();
-      return roadmapState === 'PROPOSED' || approvalStatus === 'PENDING';
+      if (roadmapState === 'ACTIVE' || roadmapState === 'APPROVED') return 'active';
+      if (roadmapState === 'BLOCKED') return 'blocked';
+      if (roadmapState === 'CANCELLED' || roadmapState === 'CANCELED') return 'cancelled';
+      if (roadmapState === 'COMPLETED') return 'complete';
+      return 'awaiting';
+    }
+
+    function stateLabel(proposal) {
+      const roadmapState = lifecycleState(proposal) || 'UNKNOWN';
+      const status = approvalStatus(proposal);
+      if (roadmapState === 'PROPOSED') return 'PROPOSED - awaiting human approval';
+      if ((roadmapState === 'ACTIVE' || roadmapState === 'APPROVED') && status === 'APPROVED') return 'ACTIVE / APPROVED';
+      if (roadmapState === 'COMPLETED') return 'COMPLETED';
+      if (roadmapState === 'BLOCKED') return 'BLOCKED';
+      if (roadmapState === 'CANCELLED' || roadmapState === 'CANCELED') return 'CANCELLED';
+      return roadmapState + (status ? ' / ' + status : '');
+    }
+
+    function approvalLabel(proposal) {
+      const status = approvalStatus(proposal);
+      if (status === 'APPROVED') return 'APPROVED';
+      if (status === 'PENDING' || status === 'AWAITING_APPROVAL') return 'Awaiting explicit approval';
+      return status || 'Not recorded';
+    }
+
+    function renderNotice(proposal) {
+      if (isProposed(proposal)) {
+        return '<div class="notice"><strong>Awaiting explicit human approval.</strong> No Autopilot execution has started from this proposal. Review the persisted roadmap before approving.</div>';
+      }
+      if (isApproved(proposal)) {
+        return '<div class="notice"><strong>Roadmap approval is persisted.</strong> Start Autopilot remains a separate action.</div>';
+      }
+      if (isTerminal(proposal)) {
+        return '<div class="notice terminal"><strong>This roadmap is ' + escapeHtml(stateLabel(proposal)) + '.</strong> It is not presented as ordinary executable approved work.</div>';
+      }
+      return '<div class="notice"><strong>Roadmap state is ' + escapeHtml(stateLabel(proposal)) + '.</strong> The UI is not inferring execution readiness from incomplete lifecycle data.</div>';
+    }
+
+    function renderOriginalRequest(proposal) {
+      const originalRequest = text(proposal.original_request || proposal.provenance?.original_request).trim();
+      const source = text(proposal.provenance?.source || proposal.proposal_type).trim();
+      if (!originalRequest && !source) return '';
+      return '<div class="info-grid"><div><span class="label">Original Planner request</span><p>' + escapeHtml(originalRequest || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Proposal source</span><p>' + escapeHtml(source || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Planner context</span><p>' + escapeHtml(text(proposal.workspace_id || 'Workspace not recorded')) + ' / ' + escapeHtml(text(proposal.project_id || 'Project not recorded')) + '</p></div></div>';
     }
 
     function renderProposal(proposal) {
       state.proposal = proposal;
-      state.proposalId = proposal.roadmap_id || proposal.proposal_id || proposal.id || state.proposalId;
+      state.proposalId = proposal?.roadmap_id || proposal?.proposal_id || proposal?.id || state.proposalId;
       if (state.proposalId) els.proposalId.value = state.proposalId;
+      els.proposalView.classList.remove('hidden');
+      els.startView.classList.add('hidden');
+      if (!isReviewComplete(proposal)) {
+        els.approve.classList.add('hidden');
+        els.start.classList.add('hidden');
+        els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>Proposal unavailable</h2></div><span class="badge blocked">INCOMPLETE</span></div>' +
+          '<div class="notice terminal"><strong>Proposal review data is incomplete or malformed.</strong> Refresh the persisted proposal after Brain planning completes. Approval is unavailable until required review fields are returned by the server.</div>';
+        setStatus('Proposal review data is incomplete or malformed. Approval is unavailable.', 'error');
+        return;
+      }
       const approved = isApproved(proposal);
       const proposed = isProposed(proposal);
-      els.approve.classList.toggle('hidden', !(proposed && !approved));
-      els.start.classList.toggle('hidden', !approved);
-      const stateClass = approved ? 'active' : 'awaiting';
-      const statusText = proposed && !approved ? 'PROPOSED - awaiting human approval' : text(proposal.state || proposal.approval_status || 'UNKNOWN');
-      const milestones = Array.isArray(proposal.milestones) ? [...proposal.milestones] : [];
-      milestones.sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+      const canApprove = proposed && !approved && !isTerminal(proposal);
+      const canStart = approved && !isTerminal(proposal);
+      els.approve.classList.toggle('hidden', !canApprove);
+      els.start.classList.toggle('hidden', !canStart);
+      const milestones = proposal.milestones.map((milestone, index) => ({ milestone, index }));
+      milestones.sort((a, b) => {
+        const aHasOrder = Number.isFinite(Number(a.milestone.order));
+        const bHasOrder = Number.isFinite(Number(b.milestone.order));
+        if (aHasOrder && bHasOrder) return Number(a.milestone.order) - Number(b.milestone.order);
+        if (aHasOrder) return -1;
+        if (bHasOrder) return 1;
+        return a.index - b.index;
+      });
       els.proposalView.classList.remove('hidden');
-      els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>' + escapeHtml(proposal.title) + '</h2></div><span class="badge ' + stateClass + '">' + escapeHtml(statusText) + '</span></div>' +
+      els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>' + escapeHtml(proposal.title) + '</h2></div><span class="badge ' + stateClass(proposal) + '">' + escapeHtml(stateLabel(proposal)) + '</span></div>' +
+        renderNotice(proposal) +
+        '<div class="info-grid"><div><span class="label">Lifecycle state</span><p>' + escapeHtml(lifecycleState(proposal)) + '</p></div><div><span class="label">Approval status</span><p>' + escapeHtml(approvalLabel(proposal)) + '</p></div><div><span class="label">Roadmap ID</span><p>' + escapeHtml(state.proposalId || 'Not recorded') + '</p></div></div>' +
         '<p><strong>Objective:</strong> ' + escapeHtml(proposal.objective) + '</p>' +
         '<p><strong>Summary:</strong> ' + escapeHtml(proposal.summary) + '</p>' +
-        '<div class="info-grid"><div><span class="label">Risks</span>' + list(proposal.risks) + '</div><div><span class="label">Dependencies</span>' + list(proposal.dependencies) + '</div><div><span class="label">Assumptions</span>' + list(proposal.assumptions) + '</div></div>' +
-        '<h2>Milestones</h2><div class="milestones">' + milestones.map(renderMilestone).join('') + '</div>';
+        '<div class="info-grid"><div><span class="label">Risks</span>' + list(proposal.risks, 'None recorded') + '</div><div><span class="label">Dependencies</span>' + list(proposal.dependencies, 'No dependencies') + '</div><div><span class="label">Assumptions</span>' + list(proposal.assumptions, 'None recorded') + '</div></div>' +
+        renderOriginalRequest(proposal) +
+        '<h2>Milestones</h2><div class="milestones">' + milestones.map((item) => renderMilestone(item.milestone, item.index)).join('') + '</div>';
       if (proposed && !approved) setStatus('Proposal is PROPOSED and waiting for explicit human approval.', '');
       else if (approved) setStatus('Roadmap approval is persisted. Start Autopilot is now available.', 'success');
       else setStatus('Roadmap is ' + text(proposal.state || 'not startable') + '.', '');
     }
 
-    function renderMilestone(milestone) {
-      const executorLabel = milestone.executor_required ? 'Executor-required' : 'Brain-only';
+    function renderMilestone(milestone, index) {
+      const executorLabel = milestone.executor_required ? 'Executor required' : 'Brain only';
+      const executorClass = milestone.executor_required ? 'executor' : 'brain';
       const blocked = ['BLOCKED', 'WAITING', 'PENDING'].includes(text(milestone.state).toUpperCase()) && Array.isArray(milestone.dependencies) && milestone.dependencies.length > 0;
-      return '<article class="milestone"><div class="milestone-top"><div><h3>' + escapeHtml(milestone.order || milestone.id) + '. ' + escapeHtml(milestone.title) + '</h3><div class="meta">' + escapeHtml(executorLabel) + (blocked ? ' - waiting on dependencies' : '') + '</div></div><span class="badge">' + escapeHtml(milestone.state || 'PROPOSED') + '</span></div>' +
+      return '<article class="milestone"><div class="milestone-top"><div><h3>' + escapeHtml(milestone.order || index + 1) + '. ' + escapeHtml(milestone.title) + '</h3><div class="meta">Milestone ID: ' + escapeHtml(milestone.id) + (blocked ? ' - waiting on dependencies' : '') + '</div></div><span class="badge">' + escapeHtml(milestone.state || 'PROPOSED') + '</span></div>' +
         '<div class="kv"><div><span class="label">Objective / expected outcome</span><p>' + escapeHtml(milestone.objective || milestone.expected_outcome) + '</p></div>' +
         '<div><span class="label">Description</span><p>' + escapeHtml(milestone.description) + '</p></div>' +
-        '<div><span class="label">Dependencies</span>' + list(milestone.dependencies || milestone.depends_on) + '</div>' +
-        '<div><span class="label">Risks</span>' + list(milestone.risks) + '</div>' +
-        '<div><span class="label">Success criteria</span>' + list(milestone.success_criteria) + '</div>' +
+        '<div><span class="label">Executor requirement</span><p><span class="badge ' + executorClass + '">' + escapeHtml(executorLabel) + '</span></p></div>' +
+        '<div><span class="label">Dependencies</span>' + list(milestone.dependencies || milestone.depends_on, 'No dependencies') + '</div>' +
+        '<div><span class="label">Risks</span>' + list(milestone.risks, 'None recorded') + '</div>' +
+        '<div><span class="label">Success criteria</span>' + list(milestone.success_criteria, 'None recorded') + '</div>' +
         '<div><span class="label">Persisted lifecycle state</span><p>' + escapeHtml(milestone.state || 'PROPOSED') + '</p></div></div></article>';
     }
 
