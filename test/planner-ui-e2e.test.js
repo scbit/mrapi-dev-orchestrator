@@ -416,6 +416,29 @@ function responseFromRoute(routeResponse) {
   };
 }
 
+async function flush() {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+}
+
+function contextResponse(db, url) {
+  if (url === '/api/workspaces') {
+    return {
+      ok: true,
+      json: async () => ({ items: values(db, 'workspaces').filter((item) => item.tenant_id === 'tenant_facundo_group') })
+    };
+  }
+  if (url === '/api/projects') {
+    return {
+      ok: true,
+      json: async () => ({ items: values(db, 'projects').filter((item) => item.tenant_id === 'tenant_facundo_group') })
+    };
+  }
+  return null;
+}
+
 function immutableProposal(roadmap) {
   return {
     title: roadmap.title,
@@ -456,10 +479,13 @@ test('integrated UI request changes approval and start lifecycle is persisted an
   const calls = [];
   const { planner } = createHarness(html, async (url, options = {}) => {
     calls.push({ url: String(url), options });
+    const context = contextResponse(db, String(url));
+    if (context) return context;
     const method = options.method || 'GET';
     const body = options.body ? JSON.parse(options.body) : null;
     return responseFromRoute(await requestJson(app, method, String(url), body, { 'x-tenant-id': 'tenant_facundo_group' }));
   });
+  await flush();
 
   planner.els.workspace.value = ' workspace_scb ';
   planner.els.project.value = ' project_scb_development ';
@@ -467,8 +493,8 @@ test('integrated UI request changes approval and start lifecycle is persisted an
   planner.els.request.listeners.input();
   await planner.els.form.listeners.submit({ preventDefault() {} });
 
-  assert.equal(calls[0].url, '/api/planner/requests');
-  assert.equal(calls[0].options.body, JSON.stringify({
+  const intakeCall = calls.find((call) => call.url === '/api/planner/requests');
+  assert.equal(intakeCall.options.body, JSON.stringify({
     workspace_id: 'workspace_scb',
     project_id: 'project_scb_development',
     request: 'Build a coherent Planner UI workflow'
@@ -576,10 +602,13 @@ test('direct approval UI flow keeps approval and start distinct', async () => {
   const calls = [];
   const { planner } = createHarness(html, async (url, options = {}) => {
     calls.push({ url: String(url), options });
+    const context = contextResponse(db, String(url));
+    if (context) return context;
     const method = options.method || 'GET';
     const body = options.body ? JSON.parse(options.body) : null;
     return responseFromRoute(await requestJson(app, method, String(url), body, { 'x-tenant-id': 'tenant_facundo_group' }));
   });
+  await flush();
 
   planner.els.workspace.value = 'workspace_scb';
   planner.els.project.value = 'project_scb_development';
@@ -617,10 +646,13 @@ test('tenant isolation terminal controls dependency gating and UI source boundar
   const app = plannerApp(db);
   const html = await renderPlannerPage();
   const { planner } = createHarness(html, async (url, options = {}) => {
+    const context = contextResponse(db, String(url));
+    if (context) return context;
     const method = options.method || 'GET';
     const body = options.body ? JSON.parse(options.body) : null;
     return responseFromRoute(await requestJson(app, method, String(url), body, { 'x-tenant-id': 'tenant_facundo_group' }));
   });
+  await flush();
 
   planner.els.workspace.value = 'workspace_scb';
   planner.els.project.value = 'project_scb_development';

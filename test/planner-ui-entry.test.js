@@ -85,8 +85,10 @@ test('active application exposes the bounded Planner page route', async () => {
 test('Planner page contains request and workspace/project context controls with client validation', async () => {
   const { html } = await renderPlannerPage();
   assert.match(html, /id="plannerForm"/);
-  assert.match(html, /id="workspaceId" name="workspace_id"[^>]+required/);
-  assert.match(html, /id="projectId" name="project_id"[^>]+required/);
+  assert.match(html, /<select id="workspaceId" name="workspace_id"[^>]+required/);
+  assert.match(html, /<select id="projectId" name="project_id"[^>]+required/);
+  assert.doesNotMatch(html, /<input id="workspaceId" name="workspace_id"/);
+  assert.doesNotMatch(html, /<input id="projectId" name="project_id"/);
   assert.match(html, /id="plannerRequest" name="request"[^>]+required/);
   assert.match(html, /function canSubmit\(\)/);
   assert.match(html, /els\.request\.value\.trim\(\)/);

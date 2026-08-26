@@ -6,6 +6,7 @@ const { tenantMiddleware } = require('./middleware/tenant');
 const { createHealthRouter } = require('./routes/health.routes');
 const { createDashboardRouter } = require('./routes/dashboard.routes');
 const { createWorkersRouter } = require('./routes/workers.routes');
+const { createWorkspacesRouter } = require('./routes/workspaces.routes');
 const { createProjectsRouter } = require('./routes/projects.routes');
 const { createRoadmapsRouter } = require('./routes/roadmaps.routes');
 const { createMissionsRouter } = require('./routes/missions.routes');
@@ -32,6 +33,7 @@ function createApp(options = {}) {
   app.use('/health', createHealthRouter({ db }));
   app.use('/api/dashboard', createDashboardRouter({ db, repos }));
   app.use('/api/workers', createWorkersRouter({ repos }));
+  app.use('/api/workspaces', createWorkspacesRouter({ repos }));
   app.use('/api/projects', createProjectsRouter({ repos }));
   app.use('/api/roadmaps', createRoadmapsRouter({ repos, db }));
   app.use('/api/missions', createMissionsRouter({ repos }));

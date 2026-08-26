@@ -12,7 +12,7 @@ function plannerPageHtml() {
     :root { color-scheme: dark; --bg:#07101d; --panel:rgba(13,25,42,.88); --line:rgba(255,255,255,.1); --text:#edf4ff; --muted:#8fa1b8; --blue:#6aa7ff; --green:#48d597; --amber:#f3bd61; --red:#ff6b72; font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
     * { box-sizing:border-box; }
     body { margin:0; min-height:100vh; background:linear-gradient(180deg,#081321 0%,#07101d 100%); color:var(--text); }
-    button,input,textarea { font:inherit; }
+    button,input,textarea,select { font:inherit; }
     button { cursor:pointer; }
     .shell { width:min(1120px,100%); margin:0 auto; padding:28px 18px 48px; }
     .topbar { display:flex; align-items:center; justify-content:space-between; gap:16px; border-bottom:1px solid var(--line); padding-bottom:18px; margin-bottom:24px; }
@@ -24,9 +24,9 @@ function plannerPageHtml() {
     .panel,.milestone { border:1px solid var(--line); background:var(--panel); border-radius:15px; padding:18px; }
     .field { display:flex; flex-direction:column; gap:7px; margin-bottom:13px; }
     .field span,.label { color:var(--muted); font-size:12px; font-weight:800; }
-    input,textarea { width:100%; color:var(--text); background:#081220; border:1px solid rgba(255,255,255,.13); border-radius:10px; padding:11px 12px; outline:none; }
+    input,textarea,select { width:100%; color:var(--text); background:#081220; border:1px solid rgba(255,255,255,.13); border-radius:10px; padding:11px 12px; outline:none; }
     textarea { min-height:150px; resize:vertical; }
-    input:focus,textarea:focus { border-color:rgba(106,167,255,.65); box-shadow:0 0 0 3px rgba(106,167,255,.08); }
+    input:focus,textarea:focus,select:focus { border-color:rgba(106,167,255,.65); box-shadow:0 0 0 3px rgba(106,167,255,.08); }
     .actions { display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
     .primary,.secondary,.danger { border-radius:9px; padding:10px 14px; font-weight:800; }
     .primary { border:1px solid rgba(106,167,255,.55); background:#dceaff; color:#07101d; }
@@ -73,8 +73,8 @@ function plannerPageHtml() {
       <form class="panel" id="plannerForm">
         <h2>New Planner Request</h2>
         <p>Submit a high-level request for a W01 roadmap proposal. Review and approve the roadmap before any Autopilot execution can start.</p>
-        <label class="field"><span>Workspace ID</span><input id="workspaceId" name="workspace_id" autocomplete="off" required></label>
-        <label class="field"><span>Project ID</span><input id="projectId" name="project_id" autocomplete="off" required></label>
+        <label class="field"><span>Workspace</span><select id="workspaceId" name="workspace_id" required disabled><option value="">Loading workspaces...</option></select></label>
+        <label class="field"><span>Project</span><select id="projectId" name="project_id" required disabled><option value="">Select a workspace first</option></select></label>
         <label class="field"><span>Natural-language product/software request</span><textarea id="plannerRequest" name="request" required minlength="1" placeholder="Describe the product or software outcome you want. Example: Build an intake dashboard that lets operators review pending customer setup requests across workspaces."></textarea></label>
         <div class="actions">
           <button class="primary" id="submitPlannerRequest" type="submit">Submit to Planner</button>
@@ -114,7 +114,13 @@ function plannerPageHtml() {
       proposalId: null,
       proposal: null,
       submitting: false,
-      revisionSubmitting: false
+      revisionSubmitting: false,
+      contextLoading: true,
+      contextError: '',
+      workspaces: [],
+      projects: [],
+      restoredPlanner: false,
+      activeContext: null
     };
 
     const plannerStorageKey = 'mrapi.planner.active.v1';
@@ -169,9 +175,7 @@ function plannerPageHtml() {
     function restoreRememberedContext() {
       const remembered = readRememberedContext();
       if (!remembered) return false;
-      els.workspace.value = remembered.workspaceId;
-      els.project.value = remembered.projectId;
-      return true;
+      return applyContextSelection(remembered);
     }
 
     function restorePlannerState() {
@@ -182,8 +186,12 @@ function plannerPageHtml() {
         state.missionId = saved.missionId || state.requestId || null;
         state.brainRunId = saved.brainRunId || null;
         state.proposalId = saved.proposalId || null;
-        if (saved.workspaceId) els.workspace.value = saved.workspaceId;
-        if (saved.projectId) els.project.value = saved.projectId;
+        if (saved.workspaceId || saved.projectId) {
+          state.activeContext = {
+            workspaceId: typeof saved.workspaceId === 'string' ? saved.workspaceId.trim() : '',
+            projectId: typeof saved.projectId === 'string' ? saved.projectId.trim() : ''
+          };
+        }
         if (saved.request) els.request.value = saved.request;
         if (state.proposalId) els.proposalId.value = state.proposalId;
         return Boolean(state.requestId || state.proposalId);
@@ -241,6 +249,67 @@ function plannerPageHtml() {
       els.status.textContent = message;
     }
 
+    function optionHtml(value, label) {
+      return '<option value="' + escapeHtml(value) + '">' + escapeHtml(label || value) + '</option>';
+    }
+
+    function projectWorkspaceId(project) {
+      return text(project?.workspace_id || project?.workspaceId).trim();
+    }
+
+    function workspaceLabel(workspace) {
+      return text(workspace?.name || workspace?.id).trim();
+    }
+
+    function projectLabel(project) {
+      return text(project?.name || project?.title || project?.id).trim();
+    }
+
+    function projectsForWorkspace(workspaceId) {
+      return state.projects.filter((project) => projectWorkspaceId(project) === workspaceId);
+    }
+
+    function renderWorkspaceOptions(selectedWorkspaceId = '') {
+      els.workspace.innerHTML = '<option value="">Select a workspace</option>' +
+        state.workspaces.map((workspace) => optionHtml(workspace.id, workspaceLabel(workspace))).join('');
+      els.workspace.value = state.workspaces.some((workspace) => workspace.id === selectedWorkspaceId) ? selectedWorkspaceId : '';
+    }
+
+    function renderProjectOptions(workspaceId, selectedProjectId = '') {
+      if (!workspaceId) {
+        els.project.innerHTML = '<option value="">Select a workspace first</option>';
+        els.project.value = '';
+        return;
+      }
+      const projects = projectsForWorkspace(workspaceId);
+      els.project.innerHTML = '<option value="">Select a project</option>' +
+        projects.map((project) => optionHtml(project.id, projectLabel(project))).join('');
+      els.project.value = projects.some((project) => project.id === selectedProjectId) ? selectedProjectId : '';
+      if (!els.project.value && projects.length === 1 && !selectedProjectId) {
+        els.project.value = projects[0].id;
+      }
+    }
+
+    function applyContextSelection(context) {
+      if (!context || !state.workspaces.length) return false;
+      const workspaceId = text(context.workspaceId).trim();
+      const projectId = text(context.projectId).trim();
+      if (!state.workspaces.some((workspace) => workspace.id === workspaceId)) {
+        renderWorkspaceOptions('');
+        renderProjectOptions('', '');
+        return false;
+      }
+      renderWorkspaceOptions(workspaceId);
+      renderProjectOptions(workspaceId, projectId);
+      return Boolean(els.workspace.value && (!projectId || els.project.value === projectId));
+    }
+
+    function syncContextControlState() {
+      const disabled = state.contextLoading || Boolean(state.contextError);
+      els.workspace.disabled = disabled || !state.workspaces.length;
+      els.project.disabled = disabled || !els.workspace.value || !projectsForWorkspace(els.workspace.value).length;
+    }
+
     async function parseResponse(response) {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) {
@@ -251,10 +320,11 @@ function plannerPageHtml() {
     }
 
     function canSubmit() {
-      return Boolean(els.workspace.value.trim() && els.project.value.trim() && els.request.value.trim());
+      return Boolean(!state.contextLoading && !state.contextError && els.workspace.value.trim() && els.project.value.trim() && els.request.value.trim());
     }
 
     function syncSubmitState() {
+      syncContextControlState();
       els.submit.disabled = !canSubmit();
       if (state.submitting) els.submit.disabled = true;
       els.submit.textContent = state.submitting ? 'Submitting to Planner...' : 'Submit to Planner';
@@ -472,6 +542,47 @@ function plannerPageHtml() {
       }
     }
 
+    async function loadPlannerContextOptions() {
+      state.contextLoading = true;
+      state.contextError = '';
+      renderWorkspaceOptions('');
+      renderProjectOptions('', '');
+      setStatus('Loading Planner context options...', '');
+      syncSubmitState();
+      try {
+        const [workspaceData, projectData] = await Promise.all([
+          fetch('/api/workspaces').then(parseResponse),
+          fetch('/api/projects').then(parseResponse)
+        ]);
+        state.workspaces = Array.isArray(workspaceData.items) ? workspaceData.items : [];
+        state.projects = Array.isArray(projectData.items) ? projectData.items : [];
+        state.contextLoading = false;
+        renderWorkspaceOptions('');
+        renderProjectOptions('', '');
+        if (state.restoredPlanner && state.activeContext) {
+          applyContextSelection(state.activeContext);
+        } else {
+          restoreRememberedContext();
+        }
+        if (state.restoredPlanner) {
+          setStatus('Restored active Planner request. Checking for the latest roadmap proposal...', 'success');
+          await loadProposal();
+        } else if (!state.workspaces.length) {
+          setStatus('No tenant-visible workspaces are available for Planner requests.', 'error');
+        } else {
+          setStatus('Select a workspace, project, and request text to begin.', '');
+        }
+      } catch (error) {
+        state.contextLoading = false;
+        state.contextError = 'Planner context failed to load.';
+        renderWorkspaceOptions('');
+        renderProjectOptions('', '');
+        setStatus('Planner context failed to load. Workspace and project selections are unavailable.', 'error');
+      } finally {
+        syncSubmitState();
+      }
+    }
+
     els.form.addEventListener('submit', async (event) => {
       event.preventDefault();
       if (state.submitting) return;
@@ -604,6 +715,8 @@ function plannerPageHtml() {
       state.requestId = null; state.missionId = null; state.brainRunId = null; state.proposalId = null; state.proposal = null; state.submitting = false; state.revisionSubmitting = false;
       clearPersistedPlannerState();
       els.form.reset();
+      renderWorkspaceOptions('');
+      renderProjectOptions('', '');
       restoreRememberedContext();
       els.revisionFeedback.value = '';
       els.proposalId.value = '';
@@ -622,13 +735,13 @@ function plannerPageHtml() {
       els.project.addEventListener(name, syncSubmitState);
       els.request.addEventListener(name, syncSubmitState);
     });
-    const restoredPlanner = restorePlannerState();
-    if (!restoredPlanner) restoreRememberedContext();
+    els.workspace.addEventListener('change', () => {
+      renderProjectOptions(els.workspace.value, els.project.value);
+      syncSubmitState();
+    });
+    state.restoredPlanner = restorePlannerState();
     syncSubmitState();
-    if (restoredPlanner) {
-      setStatus('Restored active Planner request. Checking for the latest roadmap proposal...', 'success');
-      loadProposal();
-    }
+    loadPlannerContextOptions();
   </script>
 </body>
 </html>`;

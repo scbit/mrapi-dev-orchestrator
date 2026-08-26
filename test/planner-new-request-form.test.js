@@ -80,10 +80,12 @@ test('workspace and project context controls are present and required', async ()
   const html = await renderPlannerPage();
   const form = sectionFrom(html, '<form class="panel" id="plannerForm">', '</form>');
 
-  assert.match(form, /Workspace ID/);
-  assert.match(form, /Project ID/);
-  assert.match(form, /<input id="workspaceId" name="workspace_id"[^>]*required/);
-  assert.match(form, /<input id="projectId" name="project_id"[^>]*required/);
+  assert.match(form, /Workspace/);
+  assert.match(form, /Project/);
+  assert.match(form, /<select id="workspaceId" name="workspace_id"[^>]*required/);
+  assert.match(form, /<select id="projectId" name="project_id"[^>]*required/);
+  assert.doesNotMatch(form, /<input id="workspaceId" name="workspace_id"/);
+  assert.doesNotMatch(form, /<input id="projectId" name="project_id"/);
 });
 
 test('natural-language request is a required multiline textarea with product guidance', async () => {
@@ -100,7 +102,7 @@ test('natural-language request is a required multiline textarea with product gui
 test('submit button is disabled until trimmed required fields are valid', async () => {
   const html = await renderPlannerPage();
 
-  assert.match(html, /function canSubmit\(\) \{\s*return Boolean\(els\.workspace\.value\.trim\(\) && els\.project\.value\.trim\(\) && els\.request\.value\.trim\(\)\);/);
+  assert.match(html, /function canSubmit\(\) \{\s*return Boolean\(!state\.contextLoading && !state\.contextError && els\.workspace\.value\.trim\(\) && els\.project\.value\.trim\(\) && els\.request\.value\.trim\(\)\);/);
   assert.match(html, /els\.submit\.disabled = !canSubmit\(\)/);
   assert.match(html, /if \(state\.submitting\) els\.submit\.disabled = true/);
   assert.match(html, /\['input', 'change'\]\.forEach/);
