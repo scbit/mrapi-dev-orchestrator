@@ -125,18 +125,24 @@ test('Planner page shows planning state and reloads proposals from persisted bac
 
 test('proposal rendering includes proposal and ordered milestone review fields', async () => {
   const { html } = await renderPlannerPage();
-  for (const label of ['ROADMAP PROPOSAL', 'Objective:', 'Summary:', 'Risks', 'Dependencies', 'Assumptions']) {
+  for (const label of ['ROADMAP PROPOSAL', 'ROADMAP SUMMARY', 'Objective:', 'Major risks', 'Major dependencies', 'Advanced roadmap details']) {
     assert.match(html, new RegExp(label.replace(':', ':')));
   }
+  assert.match(html, /renderSummaryCard/);
+  assert.match(html, /requiresHumanAction/);
+  assert.match(html, /human_action_required/);
+  assert.match(html, /requires_human_action/);
   assert.match(html, /milestones\.sort\(\(a, b\) => \{/);
   assert.match(html, /return a\.index - b\.index/);
   assert.match(html, /renderMilestone/);
-  assert.match(html, /Objective \/ expected outcome/);
+  assert.match(html, /friendlyMilestoneState/);
+  assert.match(html, /<details class="milestone">/);
   assert.match(html, /Description/);
   assert.match(html, /executor_required \? 'Executor required' : 'Brain only'/);
+  assert.match(html, /Advanced milestone details/);
   assert.match(html, /Executor requirement/);
   assert.match(html, /Success criteria/);
-  assert.match(html, /Persisted lifecycle state/);
+  assert.match(html, /Raw lifecycle state/);
   assert.match(html, /waiting on dependencies/);
 });
 

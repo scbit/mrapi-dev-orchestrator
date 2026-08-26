@@ -21,7 +21,7 @@ function plannerPageHtml() {
     p { color:var(--muted); line-height:1.55; }
     a { color:#b9d4ff; }
     .grid { display:grid; grid-template-columns:minmax(0,.92fr) minmax(320px,1.08fr); gap:18px; align-items:start; }
-    .panel,.milestone { border:1px solid var(--line); background:var(--panel); border-radius:15px; padding:18px; }
+    .panel,.milestone,.summary-card,.advanced-details { border:1px solid var(--line); background:var(--panel); border-radius:15px; padding:18px; }
     .request-panel { padding:20px; }
     .request-panel h2 { margin:0 0 8px; font-size:28px; }
     .flow { margin:0 0 18px; color:#cfe0f7; }
@@ -56,6 +56,13 @@ function plannerPageHtml() {
     .badge.brain { color:#dceaff; border-color:rgba(106,167,255,.34); background:rgba(106,167,255,.1); }
     .proposal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:10px; }
     .proposal-head h2 { margin:3px 0 0; }
+    .summary-card { margin:14px 0; background:rgba(255,255,255,.035); }
+    .summary-card h3 { margin:6px 0 8px; font-size:24px; }
+    .summary-card .objective { color:#f7fbff; font-size:17px; margin:0 0 8px; }
+    .summary-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:16px 0; }
+    .metric { border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:10px; background:rgba(255,255,255,.025); }
+    .metric strong { display:block; color:#f7fbff; font-size:22px; margin-top:3px; }
+    .bounded-summary { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:12px; }
     .notice { margin:12px 0; padding:12px 13px; border:1px solid rgba(243,189,97,.28); border-radius:12px; background:rgba(243,189,97,.07); color:#ffdca4; }
     .notice.terminal { border-color:rgba(255,107,114,.3); background:rgba(255,107,114,.07); color:#ffbec2; }
     .info-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:14px 0; }
@@ -63,13 +70,18 @@ function plannerPageHtml() {
     ul { margin:7px 0 0; padding-left:18px; color:var(--muted); }
     .milestones { display:grid; gap:12px; margin-top:14px; }
     .milestone h3 { margin:0; font-size:17px; }
+    .milestone summary,.advanced-details summary { cursor:pointer; }
+    .milestone summary:focus-visible,.advanced-details summary:focus-visible { outline:3px solid rgba(106,167,255,.45); outline-offset:4px; border-radius:8px; }
+    .milestone-summary { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; list-style:none; }
+    .milestone-summary::-webkit-details-marker { display:none; }
     .milestone-top { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; }
     .meta { color:var(--muted); font-size:12px; margin-top:5px; }
     .kv { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px 14px; margin-top:12px; }
     .kv div { min-width:0; }
+    .advanced-details { margin-top:14px; background:rgba(255,255,255,.025); }
     .hidden { display:none !important; }
     .small { color:var(--muted); font-size:12px; }
-    @media (max-width:820px) { .grid,.info-grid,.kv,.context-grid { grid-template-columns:1fr; } .topbar { align-items:flex-start; flex-direction:column; } }
+    @media (max-width:820px) { .grid,.info-grid,.kv,.context-grid,.summary-metrics,.bounded-summary { grid-template-columns:1fr; } .topbar { align-items:flex-start; flex-direction:column; } }
   </style>
 </head>
 <body>
@@ -260,6 +272,19 @@ function plannerPageHtml() {
       return '<ul>' + values.map((item) => '<li>' + escapeHtml(item) + '</li>').join('') + '</ul>';
     }
 
+    function boundedList(items, limit, emptyText = 'None recorded') {
+      const values = Array.isArray(items) ? items.map(readableValue).filter((item) => text(item).trim()) : [];
+      if (!values.length) return '<span class="small">' + escapeHtml(emptyText) + '</span>';
+      const shown = values.slice(0, limit);
+      const more = values.length > shown.length ? '<p class="small">+' + escapeHtml(values.length - shown.length) + ' more in Advanced details.</p>' : '';
+      return '<ul>' + shown.map((item) => '<li>' + escapeHtml(item) + '</li>').join('') + '</ul>' + more;
+    }
+
+    function renderJson(value, emptyText = 'Not recorded') {
+      if (value == null || value === '') return '<span class="small">' + escapeHtml(emptyText) + '</span>';
+      return '<pre class="small">' + escapeHtml(JSON.stringify(value, null, 2)) + '</pre>';
+    }
+
     function setStatus(message, kind) {
       els.status.className = 'status' + (kind ? ' ' + kind : '');
       els.status.textContent = message;
@@ -421,6 +446,85 @@ function plannerPageHtml() {
       return status || 'Not recorded';
     }
 
+    function titleCaseState(value) {
+      const raw = text(value).trim();
+      if (!raw) return 'Waiting';
+      return raw.toLowerCase().replace(/[_-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase());
+    }
+
+    function friendlyMilestoneState(milestone) {
+      const raw = text(milestone?.state || 'PROPOSED').trim().toUpperCase();
+      if (raw === 'PROPOSED') return 'Waiting';
+      if (raw === 'PENDING') return 'Pending';
+      if (raw === 'PLANNING') return 'Planning';
+      if (raw === 'RUNNING' || raw === 'EXECUTING' || raw === 'VERIFYING') return 'Running';
+      if (raw === 'COMPLETED' || raw === 'COMPLETE' || raw === 'DONE') return 'Completed';
+      if (raw === 'BLOCKED') return 'Blocked';
+      if (raw === 'CANCELLED' || raw === 'CANCELED') return 'Cancelled';
+      return titleCaseState(raw);
+    }
+
+    function explicitHumanActionMarker(value) {
+      const marker = text(value).trim().toUpperCase();
+      return [
+        'HUMAN_ACTION',
+        'HUMAN_CHECKPOINT',
+        'MANUAL_ACTION',
+        'MANUAL_REVIEW',
+        'REVIEW_CHECKPOINT',
+        'APPROVAL_CHECKPOINT'
+      ].includes(marker);
+    }
+
+    function requiresHumanAction(milestone) {
+      if (!milestone || typeof milestone !== 'object') return false;
+      if (milestone.human_action_required === true || milestone.requires_human_action === true) return true;
+      if (explicitHumanActionMarker(milestone.action_type || milestone.checkpoint_type || milestone.type)) return true;
+      if (milestone.action && typeof milestone.action === 'object' && explicitHumanActionMarker(milestone.action.type || milestone.action.kind)) return true;
+      if (milestone.checkpoint && typeof milestone.checkpoint === 'object' && explicitHumanActionMarker(milestone.checkpoint.type || milestone.checkpoint.kind)) return true;
+      return milestone.executor_required === false && (
+        explicitHumanActionMarker(milestone.handoff_type) ||
+        explicitHumanActionMarker(milestone.review_type)
+      );
+    }
+
+    function renderSummaryCard(proposal, milestones) {
+      const total = milestones.length;
+      const executorCount = milestones.filter((item) => item.milestone.executor_required === true).length;
+      const humanActionCount = milestones.filter((item) => requiresHumanAction(item.milestone)).length;
+      const humanActionText = humanActionCount > 0 ? escapeHtml(humanActionCount) : 'none identified';
+      return '<section class="summary-card" aria-label="Roadmap summary">' +
+        '<span class="label">ROADMAP SUMMARY</span><h3>' + escapeHtml(proposal.title) + '</h3>' +
+        '<p class="objective"><strong>Objective:</strong> ' + escapeHtml(proposal.objective) + '</p>' +
+        '<p>' + escapeHtml(proposal.summary) + '</p>' +
+        '<div class="summary-metrics">' +
+        '<div class="metric"><span class="label">Milestones</span><strong>' + escapeHtml(total) + '</strong></div>' +
+        '<div class="metric"><span class="label">Executor required</span><strong>' + escapeHtml(executorCount) + '</strong></div>' +
+        '<div class="metric"><span class="label">Human actions</span><strong>' + humanActionText + '</strong></div>' +
+        '</div>' +
+        '<div class="bounded-summary"><div><span class="label">Major risks</span>' + boundedList(proposal.risks, 3, 'None recorded') + '</div>' +
+        '<div><span class="label">Major dependencies</span>' + boundedList(proposal.dependencies, 3, 'No dependencies') + '</div></div>' +
+        '</section>';
+    }
+
+    function renderRoadmapAdvancedDetails(proposal) {
+      return '<details class="advanced-details"><summary><strong>Advanced roadmap details</strong></summary>' +
+        '<div class="info-grid"><div><span class="label">Lifecycle state</span><p>' + escapeHtml(lifecycleState(proposal)) + '</p></div>' +
+        '<div><span class="label">Approval status</span><p>' + escapeHtml(approvalLabel(proposal)) + '</p></div>' +
+        '<div><span class="label">Roadmap ID</span><p>' + escapeHtml(state.proposalId || 'Not recorded') + '</p></div></div>' +
+        renderRevisionContext(proposal) +
+        '<div class="info-grid"><div><span class="label">Risks</span>' + list(proposal.risks, 'None recorded') + '</div>' +
+        '<div><span class="label">Dependencies</span>' + list(proposal.dependencies, 'No dependencies') + '</div>' +
+        '<div><span class="label">Assumptions</span>' + list(proposal.assumptions, 'None recorded') + '</div></div>' +
+        renderOriginalRequest(proposal) +
+        '<div class="info-grid"><div><span class="label">Planner Mission ID</span><p>' + escapeHtml(text(proposal.planner_mission_id || proposal.mission_id || state.missionId || 'Not recorded')) + '</p></div>' +
+        '<div><span class="label">Brain Run ID</span><p>' + escapeHtml(text(proposal.brain_run_id || proposal.active_revision_brain_run_id || state.brainRunId || 'Not recorded')) + '</p></div>' +
+        '<div><span class="label">Proposal type</span><p>' + escapeHtml(text(proposal.proposal_type || 'Not recorded')) + '</p></div></div>' +
+        '<div class="kv"><div><span class="label">Provenance</span>' + renderJson(proposal.provenance) + '</div>' +
+        '<div><span class="label">Revision history</span>' + renderJson(proposal.revision_history) + '</div></div>' +
+        '</details>';
+    }
+
     function renderNotice(proposal) {
       if (isProposed(proposal)) {
         return '<div class="notice"><strong>Plan listo para revisar.</strong> Todavía no se ejecutó nada. Revisá el roadmap antes de aprobarlo.</div>';
@@ -505,12 +609,8 @@ function plannerPageHtml() {
       els.proposalView.classList.remove('hidden');
       els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>' + escapeHtml(proposal.title) + '</h2></div><span class="badge ' + stateClass(proposal) + '">' + escapeHtml(stateLabel(proposal)) + '</span></div>' +
         renderNotice(proposal) +
-        '<div class="info-grid"><div><span class="label">Lifecycle state</span><p>' + escapeHtml(lifecycleState(proposal)) + '</p></div><div><span class="label">Approval status</span><p>' + escapeHtml(approvalLabel(proposal)) + '</p></div><div><span class="label">Roadmap ID</span><p>' + escapeHtml(state.proposalId || 'Not recorded') + '</p></div></div>' +
-        renderRevisionContext(proposal) +
-        '<p><strong>Objective:</strong> ' + escapeHtml(proposal.objective) + '</p>' +
-        '<p><strong>Summary:</strong> ' + escapeHtml(proposal.summary) + '</p>' +
-        '<div class="info-grid"><div><span class="label">Risks</span>' + list(proposal.risks, 'None recorded') + '</div><div><span class="label">Dependencies</span>' + list(proposal.dependencies, 'No dependencies') + '</div><div><span class="label">Assumptions</span>' + list(proposal.assumptions, 'None recorded') + '</div></div>' +
-        renderOriginalRequest(proposal) +
+        renderSummaryCard(proposal, milestones) +
+        renderRoadmapAdvancedDetails(proposal) +
         '<h2>Milestones</h2><div class="milestones">' + milestones.map((item) => renderMilestone(item.milestone, item.index)).join('') + '</div>';
       if (proposed && !approved) setStatus('Plan listo - revisalo antes de aprobar.', '');
       else if (isRevisionPending(proposal)) setStatus('Cambios pedidos. W01 está revisando el roadmap con tu feedback.', 'success');
@@ -521,15 +621,18 @@ function plannerPageHtml() {
     function renderMilestone(milestone, index) {
       const executorLabel = milestone.executor_required ? 'Executor required' : 'Brain only';
       const executorClass = milestone.executor_required ? 'executor' : 'brain';
-      const blocked = ['BLOCKED', 'WAITING', 'PENDING'].includes(text(milestone.state).toUpperCase()) && Array.isArray(milestone.dependencies) && milestone.dependencies.length > 0;
-      return '<article class="milestone"><div class="milestone-top"><div><h3>' + escapeHtml(milestone.order || index + 1) + '. ' + escapeHtml(milestone.title) + '</h3><div class="meta">Milestone ID: ' + escapeHtml(milestone.id) + (blocked ? ' - waiting on dependencies' : '') + '</div></div><span class="badge">' + escapeHtml(milestone.state || 'PROPOSED') + '</span></div>' +
-        '<div class="kv"><div><span class="label">Objective / expected outcome</span><p>' + escapeHtml(milestone.objective || milestone.expected_outcome) + '</p></div>' +
-        '<div><span class="label">Description</span><p>' + escapeHtml(milestone.description) + '</p></div>' +
+      const dependencyItems = Array.isArray(milestone.dependencies) ? milestone.dependencies : milestone.depends_on;
+      const blocked = ['BLOCKED', 'WAITING', 'PENDING'].includes(text(milestone.state).toUpperCase()) && Array.isArray(dependencyItems) && dependencyItems.length > 0;
+      return '<details class="milestone"><summary class="milestone-summary"><div><h3>' + escapeHtml(milestone.order || index + 1) + '. ' + escapeHtml(milestone.title) + '</h3><div class="meta">' + escapeHtml(milestone.objective || milestone.expected_outcome) + (blocked ? ' - waiting on dependencies' : '') + '</div></div><span class="badge">' + escapeHtml(friendlyMilestoneState(milestone)) + '</span></summary>' +
+        '<div class="kv"><div><span class="label">Description</span><p>' + escapeHtml(milestone.description) + '</p></div></div>' +
+        '<details class="advanced-details"><summary><strong>Advanced milestone details</strong></summary><div class="kv">' +
+        '<div><span class="label">Milestone ID</span><p>' + escapeHtml(milestone.id) + '</p></div>' +
+        '<div><span class="label">Raw lifecycle state</span><p>' + escapeHtml(milestone.state || 'PROPOSED') + '</p></div>' +
         '<div><span class="label">Executor requirement</span><p><span class="badge ' + executorClass + '">' + escapeHtml(executorLabel) + '</span></p></div>' +
-        '<div><span class="label">Dependencies</span>' + list(milestone.dependencies || milestone.depends_on, 'No dependencies') + '</div>' +
+        '<div><span class="label">Dependencies</span>' + list(dependencyItems, 'No dependencies') + '</div>' +
         '<div><span class="label">Risks</span>' + list(milestone.risks, 'None recorded') + '</div>' +
         '<div><span class="label">Success criteria</span>' + list(milestone.success_criteria, 'None recorded') + '</div>' +
-        '<div><span class="label">Persisted lifecycle state</span><p>' + escapeHtml(milestone.state || 'PROPOSED') + '</p></div></div></article>';
+        '<div><span class="label">Order</span><p>' + escapeHtml(milestone.order || index + 1) + '</p></div></div></details></details>';
     }
 
     async function discoverProposalFromMission() {

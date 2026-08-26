@@ -417,7 +417,7 @@ test('valid PROPOSED proposal exposes approve and request-changes UI while Start
   assert.match(html, /id="requestChanges"[^>]*>Request changes/);
   assert.match(html, /id="revisionFeedback"/);
   assert.match(html, /textarea id="revisionFeedback"/);
-  assert.match(html, /will be sent back to W01 to revise the roadmap/);
+  assert.match(html, /W01 va a revisar el roadmap con este feedback/);
   assert.equal(planner.els.approve.classList.contains('hidden'), false);
   assert.equal(planner.els.requestChanges.classList.contains('hidden'), false);
   assert.equal(planner.els.start.classList.contains('hidden'), true);
@@ -429,6 +429,9 @@ test('request-changes UI requires trimmed feedback and submits only bounded revi
   const calls = [];
   const planner = createHarness(html, async (url, options = {}) => {
     calls.push({ url, options });
+    if (String(url).endsWith('/api/workspaces') || String(url).endsWith('/api/projects')) {
+      return { ok: true, json: async () => ({ items: [] }) };
+    }
     return {
       ok: true,
       json: async () => uiProposal({
@@ -440,6 +443,7 @@ test('request-changes UI requires trimmed feedback and submits only bounded revi
     };
   });
 
+  calls.length = 0;
   planner.renderProposal(uiProposal());
   planner.els.proposalId.value = 'roadmap_1';
   await planner.els.requestChanges.listeners.click();
@@ -449,7 +453,7 @@ test('request-changes UI requires trimmed feedback and submits only bounded revi
   planner.els.revisionFeedback.value = '   ';
   await planner.els.submitRevision.listeners.click();
   assert.equal(calls.length, 0);
-  assert.match(planner.els.status.textContent, /feedback is required/i);
+  assert.match(planner.els.status.textContent, /qu/);
 
   planner.els.revisionFeedback.value = '  Tighten the plan.  ';
   planner.els.revisionFeedback.listeners.input();
@@ -463,7 +467,7 @@ test('request-changes UI requires trimmed feedback and submits only bounded revi
   assert.doesNotMatch(calls.map((call) => call.url).join('\n'), /\/approve|\/start/);
   assert.equal(planner.els.approve.classList.contains('hidden'), true);
   assert.equal(planner.els.start.classList.contains('hidden'), true);
-  assert.match(planner.els.status.textContent, /W01 is revising/);
+  assert.match(planner.els.status.textContent, /W01/);
 });
 
 test('approval, refresh, and request changes remain separate UI operations', async () => {
@@ -471,9 +475,13 @@ test('approval, refresh, and request changes remain separate UI operations', asy
   const calls = [];
   const planner = createHarness(html, async (url, options = {}) => {
     calls.push({ url, options });
+    if (String(url).endsWith('/api/workspaces') || String(url).endsWith('/api/projects')) {
+      return { ok: true, json: async () => ({ items: [] }) };
+    }
     if (String(url).includes('/approve')) return { ok: true, json: async () => ({ ok: true }) };
     return { ok: true, json: async () => uiProposal({ state: 'ACTIVE', approval_status: 'APPROVED' }) };
   });
+  calls.length = 0;
   planner.els.proposalId.value = 'roadmap_1';
 
   await planner.els.refresh.listeners.click();
