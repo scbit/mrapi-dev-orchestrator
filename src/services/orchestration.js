@@ -1714,6 +1714,42 @@ async function completeBrainRun(db, tenantId, runId, input) {
       return;
     }
 
+    if (mission.autopilot_mode === true && String(mission.autopilot_phase || run.autopilot_phase || '') === 'PROGRAM') {
+      const allowedFiles = Array.isArray(taskSpec.allowed_files)
+        ? taskSpec.allowed_files.map((item) => String(item || '').trim()).filter(Boolean)
+        : [];
+      if (allowedFiles.length === 0) {
+        tx.update(runRef, {
+          state: 'FAILED',
+          progress_percent: Number(run.progress_percent || 0),
+          progress_message: 'Autopilot Brain package missing allowed_files',
+          error: 'BRAIN_AUTOPILOT_ALLOWED_FILES_REQUIRED',
+          output_text: outputText,
+          brain_output: brainOutput,
+          brain_chat_url: input.brain_chat_url || null,
+          completed_at: timestamp(),
+          updated_at: timestamp()
+        });
+        tx.set(missionRef, {
+          state: 'BLOCKED',
+          block_reason: 'BRAIN_AUTOPILOT_ALLOWED_FILES_REQUIRED',
+          blocked_reason: 'BRAIN_AUTOPILOT_ALLOWED_FILES_REQUIRED',
+          blocker_code: 'BRAIN_AUTOPILOT_ALLOWED_FILES_REQUIRED',
+          blocker_message: 'W01 Brain did not provide a non-empty task_spec.allowed_files after automatic contract repair. No Executor task was created.',
+          blocker_stage: 'BRAIN_CONTRACT',
+          updated_at: timestamp()
+        }, { merge: true });
+        result = {
+          success: false,
+          mission_id: run.mission_id,
+          task_id: null,
+          brain_run_id: runId,
+          error: 'BRAIN_AUTOPILOT_ALLOWED_FILES_REQUIRED'
+        };
+        return;
+      }
+    }
+
     tx.update(runRef, {
       state: 'COMPLETED',
       progress_percent: 100,
