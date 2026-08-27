@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const { nextMilestone } = require('./roadmap');
 
-const AUTOPILOT_ACTIONS = new Set(['COMPLETE', 'RETRY', 'BLOCKED']);
+const AUTOPILOT_ACTIONS = new Set(['COMPLETE', 'RETRY', 'BLOCKED', 'NEED_HUMAN_ACTION']);
 
 function timestamp() {
   try {
@@ -72,6 +72,70 @@ function normalizeStringList(value, maxItems = 30, maxLength = 2000) {
   return value.map((item) => clean(item, maxLength)).filter(Boolean).slice(0, maxItems);
 }
 
+function checkpointId(seed) {
+  return `human_action_${crypto.createHash('sha256').update(String(seed || '')).digest('hex').slice(0, 24)}`;
+}
+
+function sanitizeMetadata(value) {
+  if (!value || typeof value !== 'object') return {};
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (/secret|token|password|credential|private[_-]?key|value/i.test(key)) continue;
+    if (item === null || ['string', 'number', 'boolean'].includes(typeof item)) {
+      out[key] = typeof item === 'string' ? clean(item, 1000) : item;
+    } else if (Array.isArray(item)) {
+      out[key] = item
+        .filter((entry) => entry === null || ['string', 'number', 'boolean'].includes(typeof entry))
+        .map((entry) => typeof entry === 'string' ? clean(entry, 1000) : entry)
+        .slice(0, 50);
+    }
+  }
+  return out;
+}
+
+function normalizeHumanActionCheckpoint(input = {}, existing = null) {
+  const now = milestoneTimestamp();
+  const checkpointType = clean(input.checkpoint_type || input.type || 'PREREQUISITE', 120).toUpperCase();
+  const requirementType = clean(input.requirement_type || checkpointType, 120).toUpperCase();
+  const seed = input.checkpoint_seed || [
+    input.tenant_id,
+    input.roadmap_id,
+    input.milestone_id,
+    input.mission_id,
+    checkpointType,
+    requirementType,
+    input.requirement_key || input.human_action_request || input.user_action
+  ].filter(Boolean).join(':');
+  const prior = existing && existing.human_action_required === true ? existing : null;
+  return {
+    human_action_required: true,
+    checkpoint_id: prior?.checkpoint_id || input.checkpoint_id || checkpointId(seed),
+    checkpoint_type: checkpointType,
+    requirement_type: requirementType,
+    human_action_request: clean(input.human_action_request || input.request || input.reason || 'Human action is required.', 2000),
+    user_action: clean(input.user_action || input.human_action_request || 'Complete the requested action, then rerun validation.', 2000),
+    action_location: clean(input.action_location || 'external', 1000),
+    validation_method: clean(input.validation_method || 'manual_confirmation', 1000),
+    validation_metadata: sanitizeMetadata(input.validation_metadata),
+    status: 'WAITING_FOR_HUMAN',
+    waiting_status: 'WAITING_FOR_HUMAN',
+    roadmap_id: input.roadmap_id || null,
+    milestone_id: input.milestone_id || null,
+    mission_id: input.mission_id || null,
+    reason: clean(input.reason || input.blocker_code || '', 1000) || null,
+    blocker_code: clean(input.blocker_code || requirementType, 200),
+    created_at: prior?.created_at || now,
+    updated_at: now
+  };
+}
+
+function unresolvedHumanActionCheckpoint(milestone) {
+  const checkpoint = milestone?.human_action_checkpoint || milestone?.human_action || null;
+  if (!checkpoint || checkpoint.human_action_required !== true) return null;
+  const status = String(checkpoint.status || checkpoint.waiting_status || '').toUpperCase();
+  return status === 'WAITING_FOR_HUMAN' || status === 'NEED_HUMAN_ACTION' ? checkpoint : null;
+}
+
 function parseAutopilotDecision(text) {
   const parsed = parseTaggedAutopilotJson(text);
   if (!parsed || !AUTOPILOT_ACTIONS.has(String(parsed.action || '').toUpperCase())) {
@@ -81,9 +145,16 @@ function parseAutopilotDecision(text) {
       execution_spec: null
     };
   }
+  const action = String(parsed.action).toUpperCase();
+  const humanAction = parsed.human_action && typeof parsed.human_action === 'object'
+    ? parsed.human_action
+    : parsed.human_action_request && typeof parsed.human_action_request === 'object'
+      ? parsed.human_action_request
+      : null;
   return {
-    action: String(parsed.action).toUpperCase(),
+    action,
     reason: clean(parsed.reason || parsed.summary || ''),
+    human_action: humanAction,
     execution_spec: parsed.execution_spec && typeof parsed.execution_spec === 'object'
       ? {
           title: clean(parsed.execution_spec.title || '', 500),
@@ -92,7 +163,11 @@ function parseAutopilotDecision(text) {
           allowed_files: Array.isArray(parsed.execution_spec.allowed_files)
             ? [...new Set(parsed.execution_spec.allowed_files.map((x) => clean(x, 1000).replace(/\\/g, '/')).filter(Boolean))].slice(0, 100)
             : [],
-          required_tests: normalizeStringList(parsed.execution_spec.required_tests, 30, 4000),
+          required_tests: normalizeStringList(
+            parsed.execution_spec.required_tests || parsed.execution_spec.tests || parsed.execution_spec.success_criteria,
+            30,
+            4000
+          ),
           diagnostic_tests: normalizeStringList(parsed.execution_spec.diagnostic_tests, 30, 4000),
           success_criteria: normalizeStringList(parsed.execution_spec.success_criteria, 30, 1000),
           stop_conditions: normalizeStringList(parsed.execution_spec.stop_conditions, 30, 1000)
@@ -102,7 +177,7 @@ function parseAutopilotDecision(text) {
 }
 
 const TERMINAL_MISSION_STATES = new Set(['BLOCKED', 'COMPLETED', 'FAILED', 'CANCELLED']);
-const ACTIVE_MILESTONE_STATES = new Set(['PLANNING', 'RUNNING', 'VERIFYING']);
+const ACTIVE_MILESTONE_STATES = new Set(['PLANNING', 'RUNNING', 'VERIFYING', 'NEED_HUMAN_ACTION']);
 const PLANNER_START_ALLOWED_STATES = new Set(['ACTIVE']);
 
 function linkedMissionBlocksFreshStart(mission, tenantId) {
@@ -387,6 +462,46 @@ async function startNextRoadmapMilestone(db, tenantId, roadmapId, options = {}) 
   return created;
 }
 
+function milestoneWithHumanAction(roadmap, milestoneId, checkpoint) {
+  return milestoneWithState(roadmap, milestoneId, 'NEED_HUMAN_ACTION', {
+    human_action_required: true,
+    human_action_checkpoint: checkpoint,
+    waiting_status: checkpoint.waiting_status,
+    blocked_reason: checkpoint.blocker_code
+  });
+}
+
+function failClosedHumanActionReason(decision) {
+  if (decision.action !== 'NEED_HUMAN_ACTION') return null;
+  if (!clean(decision.reason)) return 'NEED_HUMAN_ACTION requires a non-empty reason.';
+  const source = decision.human_action && typeof decision.human_action === 'object' ? decision.human_action : {};
+  const request = source.human_action_request || source.request || source.reason;
+  const userAction = source.user_action;
+  const location = source.action_location;
+  const validation = source.validation_method;
+  if (![request, userAction, location, validation].every((item) => clean(item))) {
+    return 'NEED_HUMAN_ACTION requires human_action_request, user_action, action_location, and validation_method.';
+  }
+  return null;
+}
+
+function checkpointFromAutopilotDecision(decision, scope, existing = null) {
+  const source = decision.human_action && typeof decision.human_action === 'object' ? decision.human_action : {};
+  return normalizeHumanActionCheckpoint({
+    ...scope,
+    checkpoint_type: source.checkpoint_type || 'AUTOPILOT_VERIFICATION',
+    requirement_type: source.requirement_type || 'HUMAN_ACTION',
+    human_action_request: source.human_action_request || source.request || decision.reason,
+    user_action: source.user_action,
+    action_location: source.action_location,
+    validation_method: source.validation_method,
+    validation_metadata: source.validation_metadata,
+    reason: decision.reason,
+    blocker_code: source.blocker_code || 'AUTOPILOT_NEED_HUMAN_ACTION',
+    requirement_key: source.requirement_key || decision.reason
+  }, existing);
+}
+
 async function queueVerificationBrainRun(db, tenantId, executionResult) {
   const missionRef = db.collection('missions').doc(executionResult.mission_id);
   const runRef = db.collection('runs').doc();
@@ -542,6 +657,11 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
       decision.action = 'BLOCKED';
       decision.reason = `Automatic retry limit reached (${attempt}/${maxAttempts}). ${decision.reason}`.trim();
     }
+    const malformedHumanAction = failClosedHumanActionReason(decision);
+    if (malformedHumanAction) {
+      decision.action = 'BLOCKED';
+      decision.reason = `Malformed NEED_HUMAN_ACTION decision: ${malformedHumanAction}`;
+    }
 
     tx.set(runRef, {
       state: 'COMPLETED',
@@ -577,6 +697,40 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
         milestone_id: milestone.id,
         mission_id: mission.id,
         auto_advance: roadmap.auto_advance === true && !roadmapCompleted,
+        reason: decision.reason
+      };
+      return;
+    }
+
+    if (decision.action === 'NEED_HUMAN_ACTION') {
+      const existing = unresolvedHumanActionCheckpoint(milestone);
+      const checkpoint = checkpointFromAutopilotDecision(decision, {
+        tenant_id: tenantId,
+        roadmap_id: roadmap.id,
+        milestone_id: milestone.id,
+        mission_id: mission.id
+      }, existing);
+      tx.set(roadmapRef, {
+        milestones: milestoneWithHumanAction(roadmap, milestone.id, checkpoint),
+        updated_at: timestamp()
+      }, { merge: true });
+      tx.set(missionRef, {
+        state: 'NEED_HUMAN_ACTION',
+        autopilot_phase: 'NEED_HUMAN_ACTION',
+        human_action_required: true,
+        human_action_checkpoint: checkpoint,
+        blocker_code: checkpoint.blocker_code,
+        blocker_message: checkpoint.human_action_request,
+        updated_at: timestamp()
+      }, { merge: true });
+      result = {
+        success: false,
+        action: 'NEED_HUMAN_ACTION',
+        roadmap_id: roadmap.id,
+        milestone_id: milestone.id,
+        mission_id: mission.id,
+        checkpoint_id: checkpoint.checkpoint_id,
+        human_action_checkpoint: checkpoint,
         reason: decision.reason
       };
       return;
@@ -723,6 +877,10 @@ module.exports = {
   linkedMissionBlocksFreshStart,
   AUTOPILOT_ACTIONS,
   parseAutopilotDecision,
+  normalizeHumanActionCheckpoint,
+  unresolvedHumanActionCheckpoint,
+  milestoneWithHumanAction,
+  failClosedHumanActionReason,
   startNextRoadmapMilestone,
   plannerAutopilotBrainContext,
   queueVerificationBrainRun,

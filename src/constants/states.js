@@ -13,6 +13,7 @@ const MISSION_STATES = Object.freeze([
   'READY',
   'PLANNING',
   'RUNNING',
+  'NEED_HUMAN_ACTION',
   'BLOCKED',
   'COMPLETED',
   'FAILED',

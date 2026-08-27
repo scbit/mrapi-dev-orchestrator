@@ -7,7 +7,12 @@ try {
 const { RUN_TYPES } = require('../constants/runTypes');
 const { EVIDENCE_TYPES } = require('../constants/evidenceTypes');
 const { buildCodexHandoff } = require('./codexHandoff');
-const { queueVerificationBrainRun, completeVerificationBrainRun } = require('./autopilot');
+const {
+  queueVerificationBrainRun,
+  completeVerificationBrainRun,
+  normalizeHumanActionCheckpoint,
+  unresolvedHumanActionCheckpoint
+} = require('./autopilot');
 
 function getEvidenceBucket() {
   return require('./storage').getEvidenceBucket();
@@ -1067,6 +1072,179 @@ function roadmapCompletedAfter(milestones) {
   return milestones.every((item) => ['COMPLETED', 'SKIPPED'].includes(item.state));
 }
 
+function cleanPreflightText(value, max = 2000) {
+  return String(value || '').trim().slice(0, max);
+}
+
+function normalizeStructuredPrerequisites(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.filter((item) => item && typeof item === 'object');
+  if (typeof value === 'object') return [value];
+  return [];
+}
+
+function localPathFromProject(project = {}) {
+  const runtime = project.runtime_context && typeof project.runtime_context === 'object'
+    ? project.runtime_context
+    : {};
+  return String(runtime.repository_path || runtime.local_path || project.repository_path || project.local_path || '').trim();
+}
+
+function structuredPreflightSources({ brainOutput, mission, milestone, project }) {
+  const taskSpec = brainOutput?.task_spec && typeof brainOutput.task_spec === 'object' ? brainOutput.task_spec : {};
+  return {
+    taskSpec,
+    prerequisites: [
+      ...normalizeStructuredPrerequisites(taskSpec.prerequisites),
+      ...normalizeStructuredPrerequisites(taskSpec.execution_prerequisites),
+      ...normalizeStructuredPrerequisites(taskSpec.preflight),
+      ...normalizeStructuredPrerequisites(milestone?.prerequisites),
+      ...normalizeStructuredPrerequisites(milestone?.execution_prerequisites),
+      ...normalizeStructuredPrerequisites(mission?.execution_prerequisites),
+      ...normalizeStructuredPrerequisites(project?.execution_prerequisites)
+    ]
+  };
+}
+
+function explicitStringList(...values) {
+  return values.flatMap((value) => Array.isArray(value) ? value : []).map((item) => String(item || '').trim()).filter(Boolean);
+}
+
+function capabilityIsUnavailable(name, project = {}, mission = {}) {
+  const contexts = [
+    mission.capabilities,
+    mission.permissions,
+    mission.access,
+    project.capabilities,
+    project.permissions,
+    project.access,
+    project.runtime_context?.capabilities,
+    project.runtime_context?.permissions,
+    project.runtime_context?.access
+  ].filter((item) => item && typeof item === 'object');
+  for (const context of contexts) {
+    if (Object.prototype.hasOwnProperty.call(context, name)) {
+      return context[name] === false || context[name] === 'unavailable' || context[name] === 'denied';
+    }
+  }
+  return false;
+}
+
+function checkpointForMissingPreflight({ tenantId, mission, run, roadmap, milestone, project, blocker }) {
+  const existing = unresolvedHumanActionCheckpoint(milestone);
+  return normalizeHumanActionCheckpoint({
+    tenant_id: tenantId,
+    roadmap_id: roadmap?.id || mission.roadmap_id || run.roadmap_id || null,
+    milestone_id: milestone?.id || mission.milestone_id || run.milestone_id || null,
+    mission_id: mission.id || run.mission_id || null,
+    checkpoint_type: 'PROGRAM_PREFLIGHT',
+    requirement_type: blocker.requirement_type,
+    human_action_request: blocker.human_action_request,
+    user_action: blocker.user_action,
+    action_location: blocker.action_location,
+    validation_method: blocker.validation_method,
+    validation_metadata: blocker.validation_metadata,
+    reason: blocker.reason,
+    blocker_code: blocker.blocker_code,
+    requirement_key: blocker.requirement_key
+  }, existing);
+}
+
+function deterministicProgramPreflight({ tenantId, brainOutput, mission, run, roadmap, milestone, project }) {
+  const { taskSpec, prerequisites } = structuredPreflightSources({ brainOutput, mission, milestone, project });
+  const repositoryRequired = taskSpec.requires_repository === true || taskSpec.repository_required === true ||
+    prerequisites.some((item) => ['REPOSITORY_LOCAL_PATH', 'REPOSITORY', 'LOCAL_PATH'].includes(String(item.type || item.requirement_type || '').toUpperCase()));
+  if (repositoryRequired && !localPathFromProject(project)) {
+    return checkpointForMissingPreflight({
+      tenantId, mission, run, roadmap, milestone, project,
+      blocker: {
+        requirement_type: 'REPOSITORY_LOCAL_PATH',
+        blocker_code: 'PROGRAM_PREFLIGHT_REPOSITORY_LOCAL_PATH_REQUIRED',
+        human_action_request: 'A repository local path is required before Executor work can be created.',
+        user_action: 'Configure the project repository local path for this workspace.',
+        action_location: 'project.runtime_context.repository_path',
+        validation_method: 'project_repository_local_path_present',
+        validation_metadata: { project_id: project?.id || mission.project_id || null },
+        reason: 'Missing configured repository local path.',
+        requirement_key: 'repository_local_path'
+      }
+    });
+  }
+
+  const envVars = explicitStringList(taskSpec.required_env_vars, taskSpec.required_environment_variables)
+    .concat(prerequisites.flatMap((item) => {
+      const type = String(item.type || item.requirement_type || '').toUpperCase();
+      if (!['ENV_VAR', 'ENVIRONMENT_VARIABLE', 'ENVIRONMENT_VARIABLES'].includes(type)) return [];
+      return explicitStringList(item.names, item.env_vars, item.variables, item.required_env_vars);
+    }));
+  const missingEnv = [...new Set(envVars)].find((name) => !process.env[name]);
+  if (missingEnv) {
+    return checkpointForMissingPreflight({
+      tenantId, mission, run, roadmap, milestone, project,
+      blocker: {
+        requirement_type: 'ENV_VAR',
+        blocker_code: 'PROGRAM_PREFLIGHT_ENV_VAR_REQUIRED',
+        human_action_request: `Environment variable ${missingEnv} must be configured before Executor work can be created.`,
+        user_action: `Set ${missingEnv} in the execution environment, then retry this milestone.`,
+        action_location: 'process.env',
+        validation_method: 'environment_variable_present',
+        validation_metadata: { env_var_name: missingEnv },
+        reason: `Missing required environment variable ${missingEnv}.`,
+        requirement_key: `env:${missingEnv}`
+      }
+    });
+  }
+
+  for (const prerequisite of prerequisites) {
+    const type = String(prerequisite.type || prerequisite.requirement_type || '').toUpperCase();
+    const name = String(prerequisite.name || prerequisite.capability || prerequisite.permission || prerequisite.access || '').trim();
+    if (['CAPABILITY', 'PERMISSION', 'ACCESS'].includes(type) && name && capabilityIsUnavailable(name, project, mission)) {
+      return checkpointForMissingPreflight({
+        tenantId, mission, run, roadmap, milestone, project,
+        blocker: {
+          requirement_type: type,
+          blocker_code: `PROGRAM_PREFLIGHT_${type}_UNAVAILABLE`,
+          human_action_request: cleanPreflightText(prerequisite.human_action_request || `${type.toLowerCase()} ${name} is unavailable.`),
+          user_action: cleanPreflightText(prerequisite.user_action || `Grant or enable ${name}, then retry this milestone.`),
+          action_location: cleanPreflightText(prerequisite.action_location || name),
+          validation_method: cleanPreflightText(prerequisite.validation_method || 'structured_context_reports_available'),
+          validation_metadata: { name },
+          reason: `${type} ${name} is unavailable.`,
+          requirement_key: `${type}:${name}`
+        }
+      });
+    }
+    if (['EXTERNAL_ACCESS', 'MANUAL_HUMAN', 'MANUAL_DEPLOY'].includes(type)) {
+      return checkpointForMissingPreflight({
+        tenantId, mission, run, roadmap, milestone, project,
+        blocker: {
+          requirement_type: type,
+          blocker_code: `PROGRAM_PREFLIGHT_${type}_REQUIRED`,
+          human_action_request: cleanPreflightText(prerequisite.human_action_request || prerequisite.request || `${type} prerequisite must be completed by a human.`),
+          user_action: cleanPreflightText(prerequisite.user_action || 'Complete the declared prerequisite, then retry this milestone.'),
+          action_location: cleanPreflightText(prerequisite.action_location || prerequisite.location || 'external'),
+          validation_method: cleanPreflightText(prerequisite.validation_method || 'manual_confirmation'),
+          validation_metadata: sanitizePreflightMetadata(prerequisite.validation_metadata || { name: prerequisite.name || null }),
+          reason: cleanPreflightText(prerequisite.reason || `${type} prerequisite is required.`),
+          requirement_key: `${type}:${prerequisite.name || prerequisite.action_location || prerequisite.human_action_request || ''}`
+        }
+      });
+    }
+  }
+
+  return null;
+}
+
+function sanitizePreflightMetadata(value) {
+  if (!value || typeof value !== 'object') return {};
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (/secret|token|password|credential|private[_-]?key|value/i.test(key)) continue;
+    if (item === null || ['string', 'number', 'boolean'].includes(typeof item)) out[key] = item;
+  }
+  return out;
+}
+
 function arrayOfStrings(value) {
   return Array.isArray(value)
     ? value.map((item) => typeof item === 'string' ? item.trim() : String(item?.title || item?.description || '')).filter(Boolean)
@@ -1646,6 +1824,13 @@ async function completeBrainRun(db, tenantId, runId, input) {
     const taskSpec = brainOutput.task_spec || {};
     const mission = missionSnap.data();
     const autopilotRoadmap = await getAutopilotRoadmapForRun(tx, db, tenantId, mission, run);
+    let project = null;
+    if (mission.project_id || run.project_id) {
+      const projectSnap = await tx.get(db.collection('projects').doc(mission.project_id || run.project_id));
+      if (projectSnap.exists && projectSnap.data().tenant_id === tenantId) {
+        project = { id: projectSnap.id, ...projectSnap.data() };
+      }
+    }
 
     if (mission.planning_mode === 'REQUIRED' && mission.approval_status !== 'APPROVED') {
       const revision = Number(mission.plan_revision_number || 0) + 1;
@@ -1835,7 +2020,7 @@ async function completeBrainRun(db, tenantId, runId, input) {
       return;
     }
 
-    if (mission.autopilot_mode === true && String(mission.autopilot_phase || run.autopilot_phase || '') === 'PROGRAM') {
+    if (mission.autopilot_mode === true && String(run.autopilot_phase || mission.autopilot_phase || '') === 'PROGRAM') {
       const allowedFiles = Array.isArray(taskSpec.allowed_files)
         ? taskSpec.allowed_files.map((item) => String(item || '').trim()).filter(Boolean)
         : [];
@@ -1919,6 +2104,63 @@ async function completeBrainRun(db, tenantId, runId, input) {
           task_id: null,
           brain_run_id: runId,
           error: 'BRAIN_AUTOPILOT_REQUIRED_TESTS_REQUIRED'
+        };
+        return;
+      }
+
+      const checkpoint = deterministicProgramPreflight({
+        tenantId,
+        brainOutput,
+        mission: { id: run.mission_id, ...mission },
+        run: { id: runId, ...run },
+        roadmap: autopilotRoadmap?.roadmap || null,
+        milestone: autopilotRoadmap?.milestone || null,
+        project
+      });
+      if (checkpoint) {
+        tx.update(runRef, {
+          state: 'COMPLETED',
+          progress_percent: 100,
+          progress_message: 'Autopilot PROGRAM preflight requires human action',
+          output_text: outputText,
+          brain_output: brainOutput,
+          brain_chat_url: input.brain_chat_url || null,
+          completed_at: timestamp(),
+          updated_at: timestamp()
+        });
+        tx.set(missionRef, {
+          state: 'NEED_HUMAN_ACTION',
+          autopilot_phase: 'NEED_HUMAN_ACTION',
+          brain_run_id: runId,
+          human_action_required: true,
+          human_action_checkpoint: checkpoint,
+          blocker_code: checkpoint.blocker_code,
+          blocker_message: checkpoint.human_action_request,
+          updated_at: timestamp()
+        }, { merge: true });
+        if (autopilotRoadmap) {
+          tx.set(autopilotRoadmap.roadmapRef, {
+            milestones: roadmapMilestonesWithState(autopilotRoadmap.roadmap, autopilotRoadmap.milestone.id, 'NEED_HUMAN_ACTION', {
+              mission_id: run.mission_id,
+              brain_run_id: runId,
+              human_action_required: true,
+              human_action_checkpoint: checkpoint,
+              waiting_status: checkpoint.waiting_status,
+              blocked_reason: checkpoint.blocker_code
+            }),
+            updated_at: timestamp()
+          }, { merge: true });
+        }
+        result = {
+          success: false,
+          action: 'NEED_HUMAN_ACTION',
+          mission_id: run.mission_id,
+          task_id: null,
+          brain_run_id: runId,
+          requires_execution: true,
+          checkpoint_id: checkpoint.checkpoint_id,
+          human_action_checkpoint: checkpoint,
+          error: checkpoint.blocker_code
         };
         return;
       }

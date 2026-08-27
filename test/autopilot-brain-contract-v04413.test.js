@@ -14,8 +14,9 @@ test('PROGRAM contract requires non-empty allowed_files and required_tests', () 
   assert.equal(hasValidAutopilotProgramControl(missingTests), false);
 });
 
-test('verification contract still accepts COMPLETE RETRY BLOCKED', () => {
+test('verification contract accepts COMPLETE RETRY BLOCKED NEED_HUMAN_ACTION', () => {
   assert.equal(hasValidAutopilotDecision('<MRAPI_AUTOPILOT>{"action":"COMPLETE","reason":"ok","execution_spec":null}</MRAPI_AUTOPILOT>'), true);
+  assert.equal(hasValidAutopilotDecision('<MRAPI_AUTOPILOT>{"action":"NEED_HUMAN_ACTION","reason":"approval","human_action":{"human_action_request":"Approve","user_action":"Approve","action_location":"settings","validation_method":"manual"},"execution_spec":null}</MRAPI_AUTOPILOT>'), true);
   assert.equal(hasValidAutopilotDecision('<MRAPI_AUTOPILOT>{"action":"NOPE"}</MRAPI_AUTOPILOT>'), false);
 });
 

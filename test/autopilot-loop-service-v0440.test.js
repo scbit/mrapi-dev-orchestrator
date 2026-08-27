@@ -44,7 +44,7 @@ test('verification RETRY creates bounded Brain-authored executor task', async()=
   const db=new DB(); seed(db);
   db.set('missions','mission1',{id:'mission1',tenant_id:'t1',workspace_id:'w1',project_id:'p1',preferred_worker_id:'W01',priority:'HIGH',state:'RUNNING',autopilot_mode:true,autopilot_attempt_count:1,autopilot_max_attempts:3,roadmap_id:'r1',milestone_id:'m1'});
   db.set('runs','verify1',{id:'verify1',tenant_id:'t1',run_type:'BRAIN_RUN',state:'RUNNING',mission_id:'mission1',roadmap_id:'r1',milestone_id:'m1',autopilot_phase:'VERIFY_EXECUTION'});
-  const out=await completeVerificationBrainRun(db,'t1','verify1',{output_text:'<MRAPI_AUTOPILOT>{"action":"RETRY","reason":"fix test","execution_spec":{"instructions":"Change x.js exactly, then run tests.","allowed_files":["x.js"],"success_criteria":["all pass"],"stop_conditions":["DO NOT DEPLOY"]}}</MRAPI_AUTOPILOT>'});
+  const out=await completeVerificationBrainRun(db,'t1','verify1',{output_text:'<MRAPI_AUTOPILOT>{"action":"RETRY","reason":"fix test","execution_spec":{"instructions":"Change x.js exactly, then run tests.","allowed_files":["x.js"],"required_tests":["node --test x.test.js"],"success_criteria":["all pass"],"stop_conditions":["DO NOT DEPLOY"]}}</MRAPI_AUTOPILOT>'});
   assert.equal(out.action,'RETRY');
   const task=db.get('tasks',out.task_id);
   assert.match(task.task_spec.instructions,/Change x\.js exactly/);

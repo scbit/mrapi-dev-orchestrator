@@ -130,20 +130,23 @@ ROLE CONTRACT
 - If a correction is needed, YOU define the exact correction and return it as execution_spec for Codex to apply.
 - Do not deploy Cloud Run. Human manual deploy only.
 - Use RETRY only when another bounded executor pass can fix or verify the issue.
-- Use BLOCKED when human input/permission is required or automatic retries should stop.
+- Use NEED_HUMAN_ACTION when human input, permission, external access, or manual validation is required and the same milestone should wait.
+- Use BLOCKED when automatic retries should stop because the milestone cannot continue safely.
 - Use COMPLETE only when the current milestone is genuinely verified.
 
 FORMAT IS A HARD CONTRACT
-- action MUST be exactly one of: COMPLETE, RETRY, BLOCKED.
-- For COMPLETE or BLOCKED, execution_spec MUST be null.
+- action MUST be exactly one of: COMPLETE, RETRY, BLOCKED, NEED_HUMAN_ACTION.
+- For COMPLETE, BLOCKED, or NEED_HUMAN_ACTION, execution_spec MUST be null.
 - For RETRY, execution_spec.instructions MUST contain the exact bounded executor instructions.
 - For RETRY repository work, execution_spec.allowed_files MUST list every repo-relative file Codex may create/modify/delete.
+- For NEED_HUMAN_ACTION, reason MUST be non-empty and human_action MUST contain human_action_request, user_action, action_location, validation_method, and optional validation_metadata with names/identifiers only, never secret values.
 - Return ONLY the block below. No markdown fences and no prose before or after it.
 
 <MRAPI_AUTOPILOT>
 {
   "action": "COMPLETE",
   "reason": "concise verification reasoning",
+  "human_action": null,
   "execution_spec": null
 }
 </MRAPI_AUTOPILOT>`;

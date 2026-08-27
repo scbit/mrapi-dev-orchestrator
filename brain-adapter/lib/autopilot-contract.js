@@ -56,7 +56,7 @@ function hasValidAutopilotProgramControl(text) {
 
 function hasValidAutopilotDecision(text) {
   const parsed = parseTaggedJson(text, 'MRAPI_AUTOPILOT');
-  return Boolean(parsed && ['COMPLETE', 'RETRY', 'BLOCKED'].includes(String(parsed.action || '').toUpperCase()));
+  return Boolean(parsed && ['COMPLETE', 'RETRY', 'BLOCKED', 'NEED_HUMAN_ACTION'].includes(String(parsed.action || '').toUpperCase()));
 }
 
 module.exports = {
