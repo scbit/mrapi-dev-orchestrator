@@ -315,11 +315,54 @@ function capabilityAvailable(name, project = {}, mission = {}) {
 }
 
 function validationMethod(checkpoint) {
-  return clean(checkpoint?.validation_method || '', 1000).toLowerCase().replace(/[\s-]+/g, '_');
+  const metadata = checkpoint?.validation_metadata && typeof checkpoint.validation_metadata === 'object'
+    ? checkpoint.validation_metadata
+    : {};
+  return clean(
+    checkpoint?.validation_method ||
+    checkpoint?.validator ||
+    checkpoint?.validator_key ||
+    checkpoint?.validator_name ||
+    metadata.validation_method ||
+    metadata.validator ||
+    metadata.validator_key ||
+    '',
+    1000
+  ).toLowerCase().replace(/[\s-]+/g, '_');
 }
 
 function manualConfirmationAllowed(checkpoint) {
   return ['manual_confirmation', 'manual_confirm', 'human_confirmation'].includes(validationMethod(checkpoint));
+}
+
+function repositoryCleanValidator(checkpoint) {
+  const method = validationMethod(checkpoint);
+  if (['repository_clean', 'repository_worktree_clean', 'worktree_clean', 'git_worktree_clean'].includes(method)) {
+    return true;
+  }
+  return checkpoint?.repository_clean === true;
+}
+
+function validateRepositoryCleanCheckpoint(checkpoint, { project = {} } = {}) {
+  const metadata = checkpoint?.validation_metadata && typeof checkpoint.validation_metadata === 'object'
+    ? checkpoint.validation_metadata
+    : {};
+  const repositoryPath = clean(metadata.repository_path || metadata.local_path || localPathFromProject(project), 2000);
+  if (!repositoryPath) return { ok: false, message: 'Project repository local path is not configured.' };
+
+  let gitFlow = null;
+  try {
+    gitFlow = require('../../runner/adapters/git-flow');
+  } catch {
+    return { ok: false, message: 'Git status validator is not available for repository-clean validation.' };
+  }
+  const command = gitFlow.resolveGitCommand();
+  if (!command) return { ok: false, message: 'Git command is not available for repository-clean validation.' };
+  const status = gitFlow.getStatus(repositoryPath, command);
+  if (!status.ok) return { ok: false, message: 'Repository worktree status could not be read.' };
+  return gitFlow.hasChanges(status.stdout)
+    ? { ok: false, message: 'Repository worktree remains dirty.' }
+    : { ok: true, message: 'Repository worktree is clean.' };
 }
 
 function validateHumanActionCheckpoint(checkpoint, { project = {}, mission = {} } = {}) {
@@ -334,6 +377,10 @@ function validateHumanActionCheckpoint(checkpoint, { project = {}, mission = {} 
       ok: false,
       message: 'Deployment identity validation is not implemented until the Cloud Run deploy checkpoint milestone.'
     };
+  }
+
+  if (repositoryCleanValidator(checkpoint)) {
+    return validateRepositoryCleanCheckpoint(checkpoint, { project, mission });
   }
 
   if (['ENV_VAR', 'ENVIRONMENT_VARIABLE', 'ENVIRONMENT_VARIABLES', 'REQUIRED_ENV_VAR'].includes(requirement)) {

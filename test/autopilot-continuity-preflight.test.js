@@ -184,6 +184,28 @@ test('explicit external, manual, and manual deploy prerequisites persist structu
   }
 });
 
+test('repository-clean Human Action preflight persists validator shape consumed by LISTO', async () => {
+  const db = new DB(); seedProgram(db, { project: { local_path: 'C:/repo' } });
+  const out = await completeBrainRun(db, 'tenant_a', 'brain_a', {
+    output_text: programOutput({
+      preflight: [{
+        type: 'MANUAL_HUMAN',
+        name: 'repository_dirty',
+        human_action_request: 'Clean the repository worktree before continuing.',
+        user_action: 'Remove or commit local changes, then press LISTO.',
+        action_location: 'project.runtime_context.repository_path',
+        validation_method: 'repository_clean',
+        validation_metadata: { repository_path: 'C:/repo' }
+      }]
+    })
+  });
+  assert.equal(out.action, 'NEED_HUMAN_ACTION');
+  assert.equal(values(db, 'tasks').length, 0);
+  assert.equal(checkpoint(db).requirement_type, 'MANUAL_HUMAN');
+  assert.equal(checkpoint(db).validation_method, 'repository_clean');
+  assert.equal(checkpoint(db).validation_metadata.repository_path, 'C:/repo');
+});
+
 test('repeat unresolved preflight reuses checkpoint and creates no duplicate work', async () => {
   const db = new DB(); seedProgram(db);
   await completeBrainRun(db, 'tenant_a', 'brain_a', { output_text: programOutput({ requires_repository: true }) });

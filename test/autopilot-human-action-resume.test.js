@@ -1,5 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
+const gitFlow = require('../runner/adapters/git-flow');
 const { completeBrainRun } = require('../src/services/orchestration');
 const { completeVerificationBrainRun, confirmHumanActionReady } = require('../src/services/autopilot');
 
@@ -45,6 +50,32 @@ class DB {
 
 function values(db, c) { return Object.values(db.collections[c] || {}); }
 function checkpoint(db, index = 1) { return db.get('roadmaps', 'roadmap_a').milestones[index].human_action_checkpoint; }
+function workCounts(db) {
+  return {
+    missions: values(db, 'missions').length,
+    tasks: values(db, 'tasks').length,
+    brainRuns: values(db, 'runs').filter((run) => run.run_type === 'BRAIN_RUN').length,
+    executionRuns: values(db, 'runs').filter((run) => run.run_type === 'EXECUTION_RUN').length
+  };
+}
+
+function gitRepo(t) {
+  const git = gitFlow.resolveGitCommand();
+  if (!git) {
+    t.skip('Git command is not available in this environment.');
+    return null;
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mrapi-human-action-repo-'));
+  const run = (args) => spawnSync(git, args, { cwd: dir, encoding: 'utf8' });
+  assert.equal(run(['init', '-b', 'main']).status, 0);
+  assert.equal(run(['config', 'user.email', 'test@example.com']).status, 0);
+  assert.equal(run(['config', 'user.name', 'MRAPI Test']).status, 0);
+  fs.writeFileSync(path.join(dir, 'tracked.txt'), 'clean\n');
+  assert.equal(run(['add', '--', 'tracked.txt']).status, 0);
+  assert.equal(run(['commit', '-m', 'initial']).status, 0);
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  return { dir };
+}
 
 function seedProgram(db, overrides = {}) {
   db.set('projects', 'project_a', {
@@ -170,11 +201,100 @@ test('repository local path checkpoint resolves only after structured project pa
   assert.equal(values(db, 'tasks').length, 1);
 });
 
+test('persisted repository-clean validator with clean repo resolves and resumes same Mission idempotently', async (t) => {
+  const repo = gitRepo(t);
+  if (!repo) return;
+  const db = new DB(); seedProgram(db, { project: { local_path: repo.dir } });
+  const cp = await pauseWith(db, {
+    prerequisites: [{
+      type: 'MANUAL_HUMAN',
+      human_action_request: 'Clean the repository worktree.',
+      user_action: 'Commit, stash, or remove local changes, then press LISTO.',
+      action_location: 'project repository',
+      validation_method: 'repository_clean',
+      validation_metadata: { repository_path: repo.dir }
+    }]
+  });
+  const before = workCounts(db);
+  const out = await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp.checkpoint_id, { ready: true });
+  assert.equal(out.resumed, true);
+  assert.equal(out.roadmap_id, 'roadmap_a');
+  assert.equal(out.milestone_id, 'm1');
+  assert.equal(out.mission_id, 'mission_a');
+  assert.equal(checkpoint(db).status, 'RESOLVED');
+  assert.equal(checkpoint(db).validation_method, 'repository_clean');
+  assert.deepEqual(workCounts(db), { ...before, tasks: before.tasks + 1 });
+
+  const replay = await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp.checkpoint_id, { ready: true });
+  assert.equal(replay.reused, true);
+  assert.deepEqual(workCounts(db), { ...before, tasks: before.tasks + 1 });
+});
+
+test('persisted repository-clean validator with dirty repo leaves same checkpoint unresolved', async (t) => {
+  const repo = gitRepo(t);
+  if (!repo) return;
+  const db = new DB(); seedProgram(db, { project: { local_path: repo.dir } });
+  const cp = await pauseWith(db, {
+    prerequisites: [{
+      type: 'MANUAL_HUMAN',
+      human_action_request: 'Clean the repository worktree.',
+      user_action: 'Commit, stash, or remove local changes, then press LISTO.',
+      action_location: 'project repository',
+      validation_method: 'repository_clean',
+      validation_metadata: { repository_path: repo.dir }
+    }]
+  });
+  fs.writeFileSync(path.join(repo.dir, 'untracked.txt'), 'dirty\n');
+  const before = workCounts(db);
+  const out = await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp.checkpoint_id, { ready: true });
+  assert.equal(out.resumed, false);
+  assert.equal(out.checkpoint_id, cp.checkpoint_id);
+  assert.equal(checkpoint(db).checkpoint_id, cp.checkpoint_id);
+  assert.equal(checkpoint(db).status, 'WAITING_FOR_HUMAN');
+  assert.equal(db.get('missions', 'mission_a').state, 'NEED_HUMAN_ACTION');
+  assert.match(out.message, /worktree remains dirty/i);
+  assert.doesNotMatch(out.message, /untracked\.txt/);
+  assert.deepEqual(workCounts(db), before);
+});
+
 test('manual confirmation resolves only when persisted validator allows it', async () => {
   const db = new DB(); seedProgram(db);
   const cp = await pauseWith(db, { prerequisites: [{ type: 'MANUAL_HUMAN', human_action_request: 'Confirm', user_action: 'Confirm', action_location: 'operator', validation_method: 'manual_confirmation' }] });
   const out = await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp.checkpoint_id, { ready: true });
   assert.equal(out.resumed, true);
+  assert.equal(checkpoint(db).status, 'RESOLVED');
+});
+
+test('request validator substitution cannot replace persisted validator', async (t) => {
+  const repo = gitRepo(t);
+  if (!repo) return;
+  const db = new DB(); seedProgram(db, { project: { local_path: repo.dir } });
+  const cp = await pauseWith(db, {
+    prerequisites: [{
+      type: 'MANUAL_HUMAN',
+      human_action_request: 'Clean the repository worktree.',
+      user_action: 'Clean it.',
+      action_location: 'project repository',
+      validation_method: 'repository_clean',
+      validation_metadata: { repository_path: repo.dir }
+    }]
+  });
+  fs.writeFileSync(path.join(repo.dir, 'dirty.txt'), 'dirty\n');
+  const out = await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp.checkpoint_id, {
+    ready: true,
+    validation_method: 'manual_confirmation',
+    validator: 'manual_confirmation'
+  });
+  assert.equal(out.resumed, false);
+  assert.equal(checkpoint(db).status, 'WAITING_FOR_HUMAN');
+  assert.equal(values(db, 'tasks').length, 0);
+
+  fs.rmSync(path.join(repo.dir, 'dirty.txt'));
+  const pass = await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp.checkpoint_id, {
+    ready: true,
+    validation_method: 'manual_confirmation'
+  });
+  assert.equal(pass.resumed, true);
   assert.equal(checkpoint(db).status, 'RESOLVED');
 });
 
