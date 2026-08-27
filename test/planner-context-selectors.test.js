@@ -206,12 +206,13 @@ test('/planner renders Workspace and Project selects instead of manual ID inputs
   assert.doesNotMatch(html, /<input id="projectId" name="project_id"/);
 });
 
-test('Planner startup fetches only tenant-scoped Workspace and Project context APIs', async () => {
+test('Planner startup fetches only tenant-scoped Workspace, Project, and recent history APIs', async () => {
   const html = await renderPlannerPage();
   const { calls } = createHarness(html);
   await flush();
 
-  assert.deepEqual(calls.map((call) => call.url), ['/api/workspaces', '/api/projects']);
+  assert.deepEqual(calls.map((call) => call.url), ['/api/planner/recent?limit=10', '/api/workspaces', '/api/projects']);
+  assert.equal(calls.every((call) => !call.options?.method || call.options.method === 'GET'), true);
   assert.equal(calls.some((call) => /\/api\/(tasks|runs|planner\/requests|planner\/roadmaps)/.test(call.url)), false);
 });
 

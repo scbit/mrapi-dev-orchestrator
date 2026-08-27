@@ -195,6 +195,7 @@ test('successful intake persists remembered context only after the accepted resp
     fetchImpl: async (url, fetchOptions = {}) => {
       if (url === '/api/workspaces') return response(true, { items: [{ id: 'workspace_scb', name: 'SCB Workspace' }] });
       if (url === '/api/projects') return response(true, { items: [{ id: 'project_scb_development', workspace_id: 'workspace_scb', name: 'SCB Development' }] });
+      if (url === '/api/planner/recent?limit=10') return response(true, { items: [] });
       durableBeforeResponse = storage.snapshot()['mrapi.planner.context.v1'];
       submittedPayload = JSON.parse(fetchOptions.body);
       return response(true, {
@@ -232,6 +233,7 @@ test('successful intake is remembered and a later fresh page preloads only conte
     fetchImpl: async (url) => {
       if (url === '/api/workspaces') return response(true, { items: [{ id: 'workspace_scb', name: 'SCB Workspace' }] });
       if (url === '/api/projects') return response(true, { items: [{ id: 'project_scb_development', workspace_id: 'workspace_scb', name: 'SCB Development' }] });
+      if (url === '/api/planner/recent?limit=10') return response(true, { items: [] });
       return response(true, {
       planner_request_id: 'request_1',
       mission_id: 'mission_1',
@@ -264,7 +266,8 @@ test('successful intake is remembered and a later fresh page preloads only conte
   assert.equal(second.planner.state.brainRunId, null);
   assert.equal(second.planner.state.proposalId, null);
   assert.equal(second.planner.els.proposalId.value, '');
-  assert.deepEqual(second.calls.map((call) => call.url), ['/api/workspaces', '/api/projects']);
+  assert.deepEqual(second.calls.map((call) => call.url), ['/api/planner/recent?limit=10', '/api/workspaces', '/api/projects']);
+  assert.equal(second.calls.every((call) => !call.options?.method || call.options.method === 'GET'), true);
 });
 
 test('failed intake does not replace existing remembered context', async () => {
@@ -312,7 +315,8 @@ test('fresh Planner page with no preference starts empty after loading tenant co
   assert.equal(planner.state.brainRunId, null);
   assert.equal(planner.state.proposalId, null);
   assert.equal(planner.state.proposal, null);
-  assert.deepEqual(calls.map((call) => call.url), ['/api/workspaces', '/api/projects']);
+  assert.deepEqual(calls.map((call) => call.url), ['/api/planner/recent?limit=10', '/api/workspaces', '/api/projects']);
+  assert.equal(calls.every((call) => !call.options?.method || call.options.method === 'GET'), true);
 });
 
 test('remembered context prefills only workspace and project when no active Planner state exists', async () => {
@@ -331,7 +335,8 @@ test('remembered context prefills only workspace and project when no active Plan
   assert.equal(planner.state.brainRunId, null);
   assert.equal(planner.state.proposalId, null);
   assert.equal(planner.els.proposalId.value, '');
-  assert.deepEqual(calls.map((call) => call.url), ['/api/workspaces', '/api/projects']);
+  assert.deepEqual(calls.map((call) => call.url), ['/api/planner/recent?limit=10', '/api/workspaces', '/api/projects']);
+  assert.equal(calls.every((call) => !call.options?.method || call.options.method === 'GET'), true);
 });
 
 test('remembered context alone calls only context APIs, not lifecycle or work endpoints', async () => {
@@ -349,8 +354,9 @@ test('remembered context alone calls only context APIs, not lifecycle or work en
   });
   await flush();
 
-  assert.deepEqual(calls.map((call) => call.url), ['/api/workspaces', '/api/projects']);
-  assert.equal(calls.some((call) => /\/api\/(planner\/requests|planner\/proposals|planner\/roadmaps|missions|tasks|runs)/.test(call.url)), false);
+  assert.deepEqual(calls.map((call) => call.url), ['/api/planner/recent?limit=10', '/api/workspaces', '/api/projects']);
+  assert.equal(calls.every((call) => !call.options?.method || call.options.method === 'GET'), true);
+  assert.equal(calls.some((call) => /\/api\/(planner\/requests|planner\/proposals|planner\/roadmaps\/.+\/(?:approve|request-changes|start)|missions|tasks|runs)/.test(call.url)), false);
 });
 
 test('active Planner state restores lifecycle values and takes precedence over remembered context', async () => {
@@ -490,6 +496,7 @@ test('preloaded remembered context still goes through normal intake validation a
     localStorage: storage,
     fetchImpl: async (url, fetchOptions = {}) => {
       calls.push({ url: String(url), options: fetchOptions });
+      if (url === '/api/planner/recent?limit=10') return response(true, { items: [] });
       if (url === '/api/workspaces') return response(true, { items: [{ id: 'workspace_old' }] });
       if (url === '/api/projects') return response(true, { items: [{ id: 'project_old', workspace_id: 'workspace_old' }] });
       if (url === '/api/planner/requests') {
@@ -513,7 +520,8 @@ test('preloaded remembered context still goes through normal intake validation a
   planner.els.request.value = 'Use remembered but unauthorized context';
   await planner.els.form.listeners.submit({ preventDefault() {} });
 
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
+  assert.equal(calls.filter((call) => call.url === '/api/planner/recent?limit=10').length, 1);
   assert.deepEqual(lifecycleWork, []);
   assert.equal(storage.snapshot()['mrapi.planner.context.v1'], remembered);
   assert.equal(storage.snapshot()['mrapi.planner.active.v1'], undefined);
@@ -534,6 +542,7 @@ test('later successful valid context replaces remembered pair only after success
     fetchImpl: async (url) => {
       if (url === '/api/workspaces') return response(true, { items: [{ id: 'workspace_new' }] });
       if (url === '/api/projects') return response(true, { items: [{ id: 'project_new', workspace_id: 'workspace_new' }] });
+      if (url === '/api/planner/recent?limit=10') return response(true, { items: [] });
       durableBeforeSuccess = storage.snapshot()['mrapi.planner.context.v1'];
       return response(true, {
         planner_request_id: 'request_new',
