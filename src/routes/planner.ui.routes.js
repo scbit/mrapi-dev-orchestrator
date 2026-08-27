@@ -21,7 +21,7 @@ function plannerPageHtml() {
     p { color:var(--muted); line-height:1.55; }
     a { color:#b9d4ff; }
     .grid { display:grid; grid-template-columns:minmax(0,.92fr) minmax(320px,1.08fr); gap:18px; align-items:start; }
-    .panel,.milestone,.summary-card,.advanced-details { border:1px solid var(--line); background:var(--panel); border-radius:15px; padding:18px; }
+    .panel,.milestone,.summary-card,.advanced-details,.human-action-panel { border:1px solid var(--line); background:var(--panel); border-radius:15px; padding:18px; }
     .request-panel { padding:20px; }
     .request-panel h2 { margin:0 0 8px; font-size:28px; }
     .flow { margin:0 0 18px; color:#cfe0f7; }
@@ -70,6 +70,12 @@ function plannerPageHtml() {
     .completion-summary .final-narrative { color:#f7fbff; font-size:16px; }
     .summary-card h3 { margin:6px 0 8px; font-size:24px; }
     .summary-card .objective { color:#f7fbff; font-size:17px; margin:0 0 8px; }
+    .human-action-panel { margin:14px 0; border-color:rgba(243,189,97,.45); background:rgba(243,189,97,.095); }
+    .human-action-panel.is-current { border-color:rgba(255,211,141,.78); box-shadow:0 0 0 1px rgba(255,211,141,.24); }
+    .human-action-panel h3 { margin:7px 0 10px; font-size:22px; }
+    .human-action-panel p { margin:7px 0 0; color:#ffe7bc; }
+    .human-action-panel .checkpoint-source { color:var(--muted); font-size:12px; margin-top:4px; }
+    .human-action-actions { margin-top:14px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
     .summary-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:16px 0; }
     .metric { border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:10px; background:rgba(255,255,255,.025); }
     .metric strong { display:block; color:#f7fbff; font-size:22px; margin-top:3px; }
@@ -432,6 +438,135 @@ function plannerPageHtml() {
       );
     }
 
+    function explicitTextField(item, fields) {
+      if (!item || typeof item !== 'object') return '';
+      for (const field of fields) {
+        const value = item[field];
+        if (typeof value === 'string' || typeof value === 'number') {
+          const normalized = text(value).trim();
+          if (normalized) return normalized;
+        }
+      }
+      return '';
+    }
+
+    function explicitHumanActionObjects(item) {
+      if (!item || typeof item !== 'object') return [];
+      const objects = [item];
+      if (item.action && typeof item.action === 'object') objects.push(item.action);
+      if (item.checkpoint && typeof item.checkpoint === 'object') objects.push(item.checkpoint);
+      return objects;
+    }
+
+    function explicitHumanActionValue(item, fields) {
+      for (const candidate of explicitHumanActionObjects(item)) {
+        const value = explicitTextField(candidate, fields);
+        if (value) return value;
+      }
+      return '';
+    }
+
+    function checkpointFriendlyStatus(rawValue, source) {
+      if (explicitHumanActionMarker(rawValue)) return 'Need human action';
+      if (!text(rawValue).trim() && requiresHumanAction(source)) return 'Need human action';
+      return titleCaseState(rawValue, 'Need human action');
+    }
+
+    function humanActionViewModel(source, options = {}) {
+      if (!requiresHumanAction(source)) return null;
+      const sourceMilestoneId = text(options.sourceMilestoneId || source?.id || '').trim();
+      const sourceMilestoneTitle = text(options.sourceMilestoneTitle || source?.title || '').trim();
+      const id = explicitHumanActionValue(source, ['checkpoint_id', 'human_action_id', 'action_id']);
+      const type = explicitHumanActionValue(source, ['checkpoint_type', 'human_action_type', 'action_type', 'type']);
+      const rawStatus = explicitHumanActionValue(source, ['checkpoint_state', 'checkpoint_status', 'human_action_state', 'human_action_status', 'status', 'revision_status', 'state', 'lifecycle_state']);
+      const requirement = explicitHumanActionValue(source, ['human_action', 'human_action_request', 'checkpoint_message', 'requirement', 'reason']);
+      const userAction = explicitHumanActionValue(source, ['user_action', 'required_action', 'action_instruction', 'instructions']);
+      return {
+        id,
+        type,
+        rawStatus,
+        friendlyStatus: checkpointFriendlyStatus(rawStatus, source),
+        requirement,
+        requirementText: requirement || 'MRAPI is waiting for a user action.',
+        userAction,
+        userActionText: userAction || 'No specific user instruction was recorded.',
+        sourceKind: options.sourceKind || 'roadmap',
+        sourceMilestoneId,
+        sourceMilestoneTitle,
+        isCurrent: Boolean(options.isCurrent),
+        identity: id
+          ? 'id:' + id
+          : [
+            'source:' + (sourceMilestoneId || options.sourceKind || 'roadmap'),
+            'type:' + type,
+            'status:' + rawStatus,
+            'requirement:' + requirement,
+            'action:' + userAction
+          ].join('|')
+      };
+    }
+
+    function sortedMilestoneItems(proposal) {
+      const milestones = Array.isArray(proposal?.milestones) ? proposal.milestones.map((milestone, index) => ({ milestone, index })) : [];
+      milestones.sort((a, b) => {
+        const aHasOrder = Number.isFinite(Number(a.milestone.order));
+        const bHasOrder = Number.isFinite(Number(b.milestone.order));
+        if (aHasOrder && bHasOrder) return Number(a.milestone.order) - Number(b.milestone.order);
+        if (aHasOrder) return -1;
+        if (bHasOrder) return 1;
+        return a.index - b.index;
+      });
+      return milestones;
+    }
+
+    function humanActionViewModels(proposal, milestones) {
+      const candidates = [];
+      const views = [];
+      const seen = new Set();
+      const currentId = text(proposal?.current_milestone_id || proposal?.milestone_id || '').trim();
+      const currentObject = currentMilestone(proposal);
+      const addCandidate = (view) => {
+        if (view) candidates.push(view);
+      };
+
+      addCandidate(humanActionViewModel(proposal, {
+        sourceKind: 'roadmap',
+        isCurrent: !currentId && currentObject && currentObject === proposal
+      }));
+
+      for (const item of milestones) {
+        const milestone = item.milestone;
+        const milestoneId = text(milestone?.id).trim();
+        addCandidate(humanActionViewModel(milestone, {
+          sourceKind: 'milestone',
+          sourceMilestoneId: milestoneId,
+          sourceMilestoneTitle: milestone?.title,
+          isCurrent: Boolean(milestoneId && milestoneId === currentId) || (currentObject && currentObject === milestone)
+        }));
+      }
+      if (currentObject && currentObject !== proposal && !milestones.some((item) => item.milestone === currentObject)) {
+        const milestoneId = text(currentObject.id || currentId).trim();
+        addCandidate(humanActionViewModel(currentObject, {
+          sourceKind: 'milestone',
+          sourceMilestoneId: milestoneId,
+          sourceMilestoneTitle: currentObject.title,
+          isCurrent: true
+        }));
+      }
+
+      candidates.sort((a, b) => {
+        if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
+        if (a.sourceKind !== b.sourceKind) return a.sourceKind === 'roadmap' ? -1 : 1;
+        return 0;
+      });
+      for (const view of candidates) {
+        if (seen.has(view.identity)) continue;
+        seen.add(view.identity);
+        views.push(view);
+      }
+      return views;
+    }
+
     function titleCaseState(value, emptyText = 'Pending') {
       const raw = text(value).trim();
       if (!raw) return emptyText;
@@ -689,6 +824,39 @@ function plannerPageHtml() {
         '</section>';
     }
 
+    function renderHumanActionAdvancedDetails(view) {
+      return '<details class="advanced-details"><summary><strong>Advanced checkpoint details</strong></summary>' +
+        '<div class="info-grid">' +
+        '<div><span class="label">Checkpoint ID</span><p>' + escapeHtml(view.id || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Checkpoint type</span><p>' + escapeHtml(view.type || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Raw checkpoint state</span><p>' + escapeHtml(view.rawStatus || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Source milestone ID</span><p>' + escapeHtml(view.sourceMilestoneId || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Persisted requirement field</span><p>' + escapeHtml(view.requirement || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Persisted action field</span><p>' + escapeHtml(view.userAction || 'Not recorded') + '</p></div>' +
+        '</div></details>';
+    }
+
+    function renderHumanActionPanel(view) {
+      const source = view.sourceKind === 'milestone'
+        ? 'Milestone: ' + (view.sourceMilestoneTitle || view.sourceMilestoneId || 'Not recorded')
+        : 'Roadmap-level checkpoint';
+      return '<section class="human-action-panel' + (view.isCurrent ? ' is-current' : '') + '" aria-label="Human action required">' +
+        '<span class="label">HUMAN ACTION</span><h3>Need human action</h3>' +
+        '<div class="checkpoint-source">' + escapeHtml(source) + '</div>' +
+        '<p><strong>MRAPI needs:</strong> ' + escapeHtml(view.requirementText) + '</p>' +
+        '<p><strong>What you need to do:</strong> ' + escapeHtml(view.userActionText) + '</p>' +
+        '<p><strong>Current checkpoint status:</strong> ' + escapeHtml(view.friendlyStatus) + '</p>' +
+        '<div class="human-action-actions"><button class="primary" type="button" disabled>LISTO</button>' +
+        '<span class="small">Confirmation will be enabled when MRAPI provides a continuation endpoint.</span></div>' +
+        renderHumanActionAdvancedDetails(view) +
+        '</section>';
+    }
+
+    function renderHumanActionPanels(views) {
+      if (!views.length) return '';
+      return views.map(renderHumanActionPanel).join('');
+    }
+
     function renderRoadmapAdvancedDetails(proposal) {
       return '<details class="advanced-details"><summary><strong>Advanced roadmap details</strong></summary>' +
         '<div class="info-grid"><div><span class="label">Lifecycle state</span><p>' + escapeHtml(rawLifecycleState(proposal) || 'Not recorded') + '</p></div>' +
@@ -785,19 +953,13 @@ function plannerPageHtml() {
       els.requestChanges.classList.toggle('hidden', !canRequestChanges);
       els.start.classList.toggle('hidden', !canStart);
       if (!canRequestChanges || isRevisionPending(proposal)) hideRevisionForm();
-      const milestones = proposal.milestones.map((milestone, index) => ({ milestone, index }));
-      milestones.sort((a, b) => {
-        const aHasOrder = Number.isFinite(Number(a.milestone.order));
-        const bHasOrder = Number.isFinite(Number(b.milestone.order));
-        if (aHasOrder && bHasOrder) return Number(a.milestone.order) - Number(b.milestone.order);
-        if (aHasOrder) return -1;
-        if (bHasOrder) return 1;
-        return a.index - b.index;
-      });
+      const milestones = sortedMilestoneItems(proposal);
+      const humanActionViews = humanActionViewModels(proposal, milestones);
       els.proposalView.classList.remove('hidden');
       els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>' + escapeHtml(proposal.title) + '</h2></div><span class="badge ' + stateClass(proposal) + '">' + escapeHtml(stateLabel(proposal)) + '</span></div>' +
         renderNotice(proposal) +
         (isCompleted(proposal) ? renderCompletedSummary(proposal, milestones) : renderSummaryCard(proposal, milestones)) +
+        renderHumanActionPanels(humanActionViews) +
         renderRoadmapAdvancedDetails(proposal) +
         '<h2>Milestones</h2><div class="milestones">' + milestones.map((item) => renderMilestone(item.milestone, item.index)).join('') + '</div>';
       if (isRunning(proposal)) setStatus('Running - current milestone is in progress.', 'success');
