@@ -161,6 +161,8 @@ function humanMilestone(overrides = {}) {
     human_action_required: true,
     human_action_request: 'MRAPI needs access confirmation.',
     user_action: 'Confirm the account has access.',
+    action_location: 'Admin console',
+    validation_method: 'manual_confirmation',
     checkpoint_id: 'checkpoint_1',
     checkpoint_type: 'MANUAL_ACTION',
     status: 'WAITING_FOR_HUMAN',
@@ -213,6 +215,8 @@ test('explicit Human Action renders requirement, instruction, friendly status, f
   assert.match(rendered, /Need human action/);
   assert.match(rendered, /MRAPI needs:<\/strong> MRAPI needs &lt;b&gt;credential approval&lt;\/b&gt;/);
   assert.match(rendered, /What you need to do:<\/strong> Open &lt;script&gt;alert\(1\)&lt;\/script&gt; and approve access/);
+  assert.match(rendered, /Action location:<\/strong> Admin console/);
+  assert.match(rendered, /Validation method:<\/strong> manual_confirmation/);
   assert.match(rendered, /Current checkpoint status:<\/strong> Need human action/);
   assert.doesNotMatch(rendered, /<script>alert\(1\)<\/script>|<b>credential approval<\/b>/);
 
@@ -226,6 +230,34 @@ test('explicit Human Action renders requirement, instruction, friendly status, f
   }));
   assert.match(planner.els.proposalView.innerHTML, /MRAPI is waiting for a user action/);
   assert.match(planner.els.proposalView.innerHTML, /No specific user instruction was recorded/);
+});
+
+test('Proposal unavailable still renders explicit active Human Action continuity panel', async () => {
+  const planner = createHarness();
+  planner.renderProposal(proposal({
+    summary: '',
+    current_milestone_id: 'human_m1',
+    current_milestone: humanMilestone({
+      human_action_request: 'MRAPI needs OAuth client access.',
+      user_action: 'Grant the service account access.',
+      action_location: 'Google Cloud IAM',
+      validation_method: 'service_account_access_check',
+      last_validation_message: 'Service account is still missing the required role.'
+    }),
+    milestones: null
+  }));
+
+  const rendered = planner.els.proposalView.innerHTML;
+  assert.match(rendered, /Proposal unavailable/);
+  assert.match(rendered, /Proposal review data is incomplete or malformed/);
+  assert.match(rendered, /human-action-panel is-current/);
+  assert.match(rendered, /MRAPI needs:<\/strong> MRAPI needs OAuth client access/);
+  assert.match(rendered, /What you need to do:<\/strong> Grant the service account access/);
+  assert.match(rendered, /Action location:<\/strong> Google Cloud IAM/);
+  assert.match(rendered, /Validation method:<\/strong> service_account_access_check/);
+  assert.match(rendered, /Latest validation message:<\/strong> Service account is still missing the required role/);
+  assert.match(rendered, /data-human-action-ready="1" data-checkpoint-id="checkpoint_1">LISTO<\/button>/);
+  assert.deepEqual(visibleActions(planner), { approve: false, requestChanges: false, start: false });
 });
 
 test('checkpoint IDs, types, source milestone, and raw status stay in Advanced details', async () => {
@@ -365,6 +397,19 @@ test('multiple Human Action checkpoints render deterministically, deduplicate by
   assert.equal((rendered.match(/checkpoint_1/g) || []).length >= 1, true);
   assert.equal((rendered.match(/checkpoint_2/g) || []).length >= 1, true);
   assert.equal(rendered.indexOf('MRAPI needs current confirmation') < rendered.indexOf('MRAPI needs first confirmation'), true);
+});
+
+test('normal renderable proposal renders a single Human Action panel for one checkpoint', async () => {
+  const planner = createHarness();
+  planner.renderProposal(proposal({
+    current_milestone_id: 'human_m1',
+    milestones: [humanMilestone()]
+  }));
+
+  const rendered = planner.els.proposalView.innerHTML;
+  assert.doesNotMatch(rendered, /Proposal unavailable/);
+  assert.equal((rendered.match(/<section class="human-action-panel/g) || []).length, 1);
+  assert.match(rendered, /data-human-action-ready="1" data-checkpoint-id="checkpoint_1">LISTO<\/button>/);
 });
 
 test('history rows do not fabricate checkpoint text; reopen fetches canonical proposal read-only', async () => {

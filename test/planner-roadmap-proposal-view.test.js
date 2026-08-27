@@ -368,6 +368,41 @@ test('proposals missing historical renderability facts still fail closed', async
   }
 });
 
+test('malformed proposal review stays unavailable while explicit Human Action continuity renders', async () => {
+  const html = await renderPlannerPage();
+  const { planner } = createHarness(html);
+  planner.renderProposal(proposal({
+    summary: '',
+    current_milestone_id: 'human_m1',
+    current_milestone: {
+      id: 'human_m1',
+      title: 'Persisted Human Action',
+      objective: 'Wait for explicit user action.',
+      human_action_required: true,
+      checkpoint_id: 'checkpoint_roadmap_view',
+      checkpoint_type: 'MANUAL_ACTION',
+      status: 'NEED_HUMAN_ACTION',
+      human_action_request: 'MRAPI needs the deployment confirmation.',
+      user_action: 'Confirm the manual deployment completed.',
+      action_location: 'Deployment checklist',
+      validation_method: 'manual_confirmation'
+    },
+    milestones: null
+  }));
+
+  const rendered = planner.els.proposalView.innerHTML;
+  assert.match(rendered, /Proposal unavailable/);
+  assert.match(rendered, /incomplete or malformed/i);
+  assert.match(rendered, /MRAPI needs:<\/strong> MRAPI needs the deployment confirmation/);
+  assert.match(rendered, /What you need to do:<\/strong> Confirm the manual deployment completed/);
+  assert.match(rendered, /Action location:<\/strong> Deployment checklist/);
+  assert.match(rendered, /Validation method:<\/strong> manual_confirmation/);
+  assert.match(rendered, /data-human-action-ready="1" data-checkpoint-id="checkpoint_roadmap_view">LISTO<\/button>/);
+  assert.equal(planner.els.approve.classList.contains('hidden'), true);
+  assert.equal(planner.els.requestChanges.classList.contains('hidden'), true);
+  assert.equal(planner.els.start.classList.contains('hidden'), true);
+});
+
 test('full current proposals keep existing proposal actions and presentation', async () => {
   const html = await renderPlannerPage();
   const { planner } = createHarness(html);

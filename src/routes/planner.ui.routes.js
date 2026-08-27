@@ -556,6 +556,9 @@ function plannerPageHtml() {
       const rawStatus = explicitHumanActionValue(source, ['checkpoint_state', 'checkpoint_status', 'human_action_state', 'human_action_status', 'status', 'waiting_status', 'revision_status', 'state', 'lifecycle_state']);
       const requirement = explicitHumanActionValue(source, ['human_action', 'human_action_request', 'checkpoint_message', 'requirement', 'reason']);
       const userAction = explicitHumanActionValue(source, ['user_action', 'required_action', 'action_instruction', 'instructions']);
+      const actionLocation = explicitHumanActionValue(source, ['action_location', 'location', 'where']);
+      const validationMethod = explicitHumanActionValue(source, ['validation_method', 'validation', 'validator']);
+      const validationMessage = explicitHumanActionValue(source, ['last_validation_message', 'validation_message', 'safe_validation_message']);
       return {
         id,
         type,
@@ -565,6 +568,11 @@ function plannerPageHtml() {
         requirementText: requirement || 'MRAPI is waiting for a user action.',
         userAction,
         userActionText: userAction || 'No specific user instruction was recorded.',
+        actionLocation,
+        actionLocationText: actionLocation || 'Not recorded',
+        validationMethod,
+        validationMethodText: validationMethod || 'Not recorded',
+        validationMessage,
         sourceKind: options.sourceKind || 'roadmap',
         sourceMilestoneId,
         sourceMilestoneTitle,
@@ -942,7 +950,10 @@ function plannerPageHtml() {
         '<div class="checkpoint-source">' + escapeHtml(source) + '</div>' +
         '<p><strong>MRAPI needs:</strong> ' + escapeHtml(view.requirementText) + '</p>' +
         '<p><strong>What you need to do:</strong> ' + escapeHtml(view.userActionText) + '</p>' +
+        '<p><strong>Action location:</strong> ' + escapeHtml(view.actionLocationText) + '</p>' +
+        '<p><strong>Validation method:</strong> ' + escapeHtml(view.validationMethodText) + '</p>' +
         '<p><strong>Current checkpoint status:</strong> ' + escapeHtml(view.friendlyStatus) + '</p>' +
+        (view.validationMessage ? '<p><strong>Latest validation message:</strong> ' + escapeHtml(view.validationMessage) + '</p>' : '') +
         '<div class="human-action-actions">' + readyAction + '</div>' +
         renderHumanActionAdvancedDetails(view) +
         '</section>';
@@ -1058,18 +1069,19 @@ function plannerPageHtml() {
       els.proposalView.classList.remove('hidden');
       els.startView.classList.add('hidden');
       const reviewComplete = isReviewComplete(proposal);
+      const milestones = sortedMilestoneItems(proposal);
+      const humanActionViews = humanActionViewModels(proposal, milestones);
       if (!isProposalRenderable(proposal)) {
         els.approve.classList.add('hidden');
         els.requestChanges.classList.add('hidden');
         els.start.classList.add('hidden');
         hideRevisionForm();
         els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>Proposal unavailable</h2></div><span class="badge blocked">INCOMPLETE</span></div>' +
-          '<div class="notice terminal"><strong>Proposal review data is incomplete or malformed.</strong> Refresh the persisted proposal after Brain planning completes. Approval is unavailable until required review fields are returned by the server.</div>';
+          '<div class="notice terminal"><strong>Proposal review data is incomplete or malformed.</strong> Refresh the persisted proposal after Brain planning completes. Approval is unavailable until required review fields are returned by the server.</div>' +
+          renderHumanActionPanels(humanActionViews);
         setStatus('Proposal review data is incomplete or malformed. Approval is unavailable.', 'error');
         return;
       }
-      const milestones = sortedMilestoneItems(proposal);
-      const humanActionViews = humanActionViewModels(proposal, milestones);
       if (!reviewComplete) {
         els.approve.classList.add('hidden');
         els.requestChanges.classList.add('hidden');
