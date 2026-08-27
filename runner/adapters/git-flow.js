@@ -74,8 +74,8 @@ function ensureGitCommand(gitCommand) {
   return command;
 }
 
-function getStatus(repoPath, gitCommand) {
-  return run(gitCommand, ['status', '--porcelain=v1'], { cwd: repoPath });
+function getStatus(repoPath, gitCommand, commandRunner = run) {
+  return commandRunner(gitCommand, ['status', '--porcelain=v1'], { cwd: repoPath });
 }
 
 function hasChanges(statusText) {
@@ -122,29 +122,29 @@ function hasEnvFile(statusText) {
   });
 }
 
-function currentBranch(repoPath, gitCommand) {
-  const branch = run(gitCommand, ['branch', '--show-current'], { cwd: repoPath });
+function currentBranch(repoPath, gitCommand, commandRunner = run) {
+  const branch = commandRunner(gitCommand, ['branch', '--show-current'], { cwd: repoPath });
   if (!branch.ok || !branch.stdout) {
     throw new Error(`GIT_BRANCH_FAILED: ${branch.stderr || branch.stdout}`);
   }
   return branch.stdout;
 }
 
-function gitDir(repoPath, gitCommand) {
-  const dir = run(gitCommand, ['rev-parse', '--git-dir'], { cwd: repoPath });
+function gitDir(repoPath, gitCommand, commandRunner = run) {
+  const dir = commandRunner(gitCommand, ['rev-parse', '--git-dir'], { cwd: repoPath });
   if (!dir.ok || !dir.stdout) {
     throw new Error(`GIT_DIR_FAILED: ${dir.stderr || dir.stdout}`);
   }
   return path.resolve(repoPath, dir.stdout);
 }
 
-function verifyPreconditions(repoPath, gitCommand) {
-  const tree = run(gitCommand, ['rev-parse', '--is-inside-work-tree'], { cwd: repoPath });
+function verifyPreconditions(repoPath, gitCommand, commandRunner = run) {
+  const tree = commandRunner(gitCommand, ['rev-parse', '--is-inside-work-tree'], { cwd: repoPath });
   if (!tree.ok || tree.stdout !== 'true') {
     throw new Error('GIT_NOT_WORK_TREE');
   }
 
-  const dir = gitDir(repoPath, gitCommand);
+  const dir = gitDir(repoPath, gitCommand, commandRunner);
   const blocked = [
     'MERGE_HEAD',
     'REBASE_HEAD',
@@ -153,7 +153,7 @@ function verifyPreconditions(repoPath, gitCommand) {
   ].some((entry) => fs.existsSync(path.join(dir, entry)));
   if (blocked) throw new Error('GIT_UNRESOLVED_MERGE_OR_REBASE');
 
-  return { branch: currentBranch(repoPath, gitCommand), gitDir: dir };
+  return { branch: currentBranch(repoPath, gitCommand, commandRunner), gitDir: dir };
 }
 
 function shortObjective(value) {
@@ -316,6 +316,12 @@ function safeFailure(reason, extra = {}) {
   };
 }
 
+function sameSet(left, right) {
+  if (left.length !== right.length) return false;
+  const rightSet = new Set(right);
+  return left.every((item) => rightSet.has(item));
+}
+
 function humanActionFailure(reason, checkpointType, extra = {}) {
   return {
     changed: true,
@@ -344,8 +350,8 @@ function humanActionFailure(reason, checkpointType, extra = {}) {
   };
 }
 
-function headSha(repoPath, command) {
-  const sha = run(command, ['rev-parse', 'HEAD'], { cwd: repoPath });
+function headSha(repoPath, command, commandRunner = run) {
+  const sha = commandRunner(command, ['rev-parse', 'HEAD'], { cwd: repoPath });
   if (!sha.ok) throw new Error(`GIT_SHA_FAILED: ${sha.stderr || sha.stdout}`);
   return sha.stdout;
 }
@@ -360,7 +366,8 @@ function runSafeGitStage({
   objective,
   allowedFiles,
   gitCommand,
-  priorResult
+  priorResult,
+  commandRunner = run
 }) {
   const permissions = normalizePermissions(gitPermissions);
   let command;
@@ -372,13 +379,15 @@ function runSafeGitStage({
   const branch = permissions.allowedBranch;
   const commitMessage = commitMessageFor({ missionId, roadmapId, milestoneId, attempt, objective });
 
-  if (priorResult?.status === 'SUCCESS' && (priorResult.reason === 'NO_CHANGES' || priorResult.commit_sha || priorResult.sha)) {
+  const priorCommitSha = priorResult?.commit_sha || priorResult?.sha || null;
+  const priorSucceeded = String(priorResult?.status || priorResult?.classification || '').toUpperCase() === 'SUCCESS';
+  if (priorSucceeded && (priorResult.reason === 'NO_CHANGES' || (priorCommitSha && priorResult.pushed === true))) {
     return { ...priorResult, changed: priorResult.changed === true, committed: priorResult.committed === true, pushed: priorResult.pushed === true, status: 'SUCCESS', classification: 'SUCCESS', reason: priorResult.reason || null };
   }
 
   let meta;
   try {
-    meta = verifyPreconditions(repoPath, command);
+    meta = verifyPreconditions(repoPath, command, commandRunner);
   } catch (error) {
     const reason = String(error.message || error).includes('GIT_COMMAND_NOT_FOUND') ? 'GIT_COMMAND_NOT_FOUND' : String(error.message || error).split(':')[0];
     return reason === 'GIT_COMMAND_NOT_FOUND'
@@ -388,11 +397,21 @@ function runSafeGitStage({
 
   const current = meta.branch;
   const allowed = allowedSet(allowedFiles);
+  const allowedSnapshot = [...allowed];
+  const evidenceBase = {
+    allowed_files: allowedSnapshot,
+    commit_message: commitMessage,
+    timestamp: new Date().toISOString(),
+    attempt: Number(attempt || 1),
+    mission_id: missionId || null,
+    roadmap_id: roadmapId || null,
+    milestone_id: milestoneId || null
+  };
   const invalidAllowed = envFiles([...allowed]);
   if (allowed.size === 0) return safeFailure('GIT_INVALID_ALLOWLIST', { branch: current, target_branch: branch });
   if (invalidAllowed.length) return safeFailure('GIT_REFUSES_ENV_FILE', { branch: current, target_branch: branch, unauthorized_files: invalidAllowed });
 
-  const status = getStatus(repoPath, command);
+  const status = getStatus(repoPath, command, commandRunner);
   if (!status.ok) return safeFailure('GIT_STATUS_FAILED', { branch: current, target_branch: branch, error: status.stderr || status.stdout });
 
   const changedFiles = [...new Set(changedPathsForValidation(status.stdout))];
@@ -408,19 +427,21 @@ function runSafeGitStage({
   if (unauthorized.length) {
     return safeFailure('GIT_UNAUTHORIZED_DIRTY_PATHS', { branch: current, target_branch: branch, changed_files: changedFiles, unauthorized_files: unauthorized });
   }
-  if (!changedFiles.length) {
-    return { changed: false, committed: false, pushed: false, branch: current, target_branch: branch, status: 'SUCCESS', classification: 'SUCCESS', reason: 'NO_CHANGES', changed_files: [], staged_files: [], attempt: Number(attempt || 1), mission_id: missionId || null, roadmap_id: roadmapId || null, milestone_id: milestoneId || null, completed_at: new Date().toISOString() };
+  if (!changedFiles.length && !priorCommitSha) {
+    return { changed: false, committed: false, pushed: false, branch: current, target_branch: branch, status: 'SUCCESS', classification: 'SUCCESS', reason: 'NO_CHANGES', changed_files: [], staged_files: [], ...evidenceBase, completed_at: new Date().toISOString() };
   }
   if (!permissions.allowCommit) {
     return humanActionFailure('GIT_COMMIT_NOT_ALLOWED', 'GIT_REMOTE_PERMISSION', { branch: current, target_branch: branch, changed_files: changedFiles });
   }
 
-  let commitSha = priorResult?.commit_sha || priorResult?.sha || null;
+  let commitSha = priorCommitSha;
   let committed = Boolean(commitSha);
-  let staged = preStaged;
+  let staged = Array.isArray(priorResult?.staged_files)
+    ? priorResult.staged_files.map(normalizeRepoRelative).filter(Boolean)
+    : preStaged;
   if (!commitSha) {
     const changedAllowedFiles = changedFiles.filter((file) => allowed.has(file));
-    const add = run(command, ['add', '--', ...changedAllowedFiles], { cwd: repoPath });
+    const add = commandRunner(command, ['add', '--', ...changedAllowedFiles], { cwd: repoPath });
     if (!add.ok) {
       const classified = classifyGitFailure('git add', add.stderr || add.stdout);
       return classified.action === 'NEED_HUMAN_ACTION'
@@ -428,31 +449,34 @@ function runSafeGitStage({
         : safeFailure(classified.reason, { branch: current, target_branch: branch, changed_files: changedFiles, error: add.stderr || add.stdout });
     }
 
-    const cached = run(command, ['diff', '--cached', '--name-only'], { cwd: repoPath });
+    const cached = commandRunner(command, ['diff', '--cached', '--name-only'], { cwd: repoPath });
     if (!cached.ok) return safeFailure('GIT_CACHED_DIFF_FAILED', { branch: current, target_branch: branch, changed_files: changedFiles, error: cached.stderr || cached.stdout });
     staged = cached.stdout.split(/\r?\n/).map(normalizeRepoRelative).filter(Boolean);
     const unauthorizedCached = staged.filter((file) => !allowed.has(file));
     if (unauthorizedCached.length) {
       return safeFailure('GIT_UNAUTHORIZED_STAGED_PATHS', { branch: current, target_branch: branch, changed_files: changedFiles, staged_files: staged, unauthorized_files: unauthorizedCached });
     }
-    const commit = run(command, ['commit', '-m', commitMessage], { cwd: repoPath });
+    if (!sameSet(staged, changedAllowedFiles)) {
+      return safeFailure('GIT_STAGED_SCOPE_MISMATCH', { branch: current, target_branch: branch, changed_files: changedFiles, staged_files: staged, expected_staged_files: changedAllowedFiles });
+    }
+    const commit = commandRunner(command, ['commit', '-m', commitMessage], { cwd: repoPath });
     if (!commit.ok) {
       const classified = classifyGitFailure('git commit', commit.stderr || commit.stdout);
       return classified.action === 'NEED_HUMAN_ACTION'
         ? humanActionFailure(classified.reason, classified.checkpoint_type, { branch: current, target_branch: branch, changed_files: changedFiles, staged_files: staged, error: commit.stderr || commit.stdout })
         : safeFailure(classified.reason, { branch: current, target_branch: branch, changed_files: changedFiles, staged_files: staged, error: commit.stderr || commit.stdout });
     }
-    commitSha = headSha(repoPath, command);
+    commitSha = headSha(repoPath, command, commandRunner);
     committed = true;
   }
 
   if (!permissions.allowPush) {
-    return { changed: true, committed, pushed: false, commit_sha: commitSha, sha: commitSha, branch: current, target_branch: branch, status: 'SUCCESS', classification: 'SUCCESS', reason: 'GIT_PUSH_NOT_ALLOWED', changed_files: changedFiles, staged_files: staged, attempt: Number(attempt || 1), mission_id: missionId || null, roadmap_id: roadmapId || null, milestone_id: milestoneId || null, committed_at: new Date().toISOString() };
+    return { changed: true, committed, pushed: false, commit_sha: commitSha, sha: commitSha, branch: current, target_branch: branch, status: 'SUCCESS', classification: 'SUCCESS', reason: 'GIT_PUSH_NOT_ALLOWED', changed_files: changedFiles, staged_files: staged, ...evidenceBase, committed_at: new Date().toISOString() };
   }
   if (current !== branch) {
     return safeFailure('GIT_BRANCH_NOT_ALLOWED', { branch: current, target_branch: branch, changed_files: changedFiles, staged_files: staged, commit_sha: commitSha, sha: commitSha, committed });
   }
-  const push = run(command, ['push', 'origin', `HEAD:${branch}`], { cwd: repoPath });
+  const push = commandRunner(command, ['push', 'origin', `HEAD:${branch}`], { cwd: repoPath });
   if (!push.ok) {
     const classified = classifyGitFailure('git push', push.stderr || push.stdout);
     return classified.action === 'NEED_HUMAN_ACTION'
@@ -460,7 +484,7 @@ function runSafeGitStage({
       : safeFailure(classified.reason, { branch: current, target_branch: branch, changed_files: changedFiles, staged_files: staged, commit_sha: commitSha, sha: commitSha, committed, error: push.stderr || push.stdout });
   }
 
-  return { changed: true, committed: true, pushed: true, commit_sha: commitSha, sha: commitSha, pushed_sha: commitSha, branch: current, target_branch: branch, status: 'SUCCESS', classification: 'SUCCESS', reason: null, changed_files: changedFiles, staged_files: staged, attempt: Number(attempt || 1), mission_id: missionId || null, roadmap_id: roadmapId || null, milestone_id: milestoneId || null, pushed_at: new Date().toISOString() };
+  return { changed: true, committed: true, pushed: true, commit_sha: commitSha, sha: commitSha, pushed_sha: commitSha, branch: current, target_branch: branch, status: 'SUCCESS', classification: 'SUCCESS', reason: null, changed_files: changedFiles, staged_files: staged, ...evidenceBase, pushed_at: new Date().toISOString() };
 }
 
 function runGitFlow({ repoPath, gitPermissions, missionId, objective, gitCommand, allowedFiles, roadmapId, milestoneId, attempt, priorResult, safeStage }) {

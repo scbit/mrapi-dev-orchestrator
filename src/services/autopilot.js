@@ -1647,7 +1647,7 @@ async function completeGitStageExecutionRun(db, tenantId, runId, input = {}) {
 
     const git = input.output?.git && typeof input.output.git === 'object' ? sanitizeGitStageResult(input.output.git) : {};
     const classification = clean(git.classification || git.status || '', 120).toUpperCase();
-    const success = input.success === true && (classification === 'SUCCESS' || git.reason === 'NO_CHANGES' || git.committed === true);
+    const success = input.success === true && (classification === 'SUCCESS' || git.reason === 'NO_CHANGES');
     const resultRef = db.collection('results').doc();
 
     tx.set(resultRef, {

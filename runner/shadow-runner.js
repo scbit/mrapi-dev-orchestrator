@@ -585,6 +585,7 @@ async function runTrustedGitFlow({ claim, result }) {
       target_branch: outcome.target_branch || permissions.allowed_branch || null,
       changed_files: outcome.changed_files || [],
       staged_files: outcome.staged_files || [],
+      allowed_files: outcome.allowed_files || allowedFilesFromClaim(claim),
       status: outcome.status || outcome.classification || null,
       classification: outcome.classification || outcome.status || null,
       checkpoint: outcome.checkpoint || null,
@@ -592,6 +593,8 @@ async function runTrustedGitFlow({ claim, result }) {
       mission_id: outcome.mission_id || handoff.mission_id || claim.task?.mission_id || null,
       roadmap_id: outcome.roadmap_id || handoff.roadmap_id || claim.task?.roadmap_id || claim.run?.roadmap_id || null,
       milestone_id: outcome.milestone_id || handoff.milestone_id || claim.task?.milestone_id || claim.run?.milestone_id || null,
+      commit_message: outcome.commit_message || null,
+      timestamp: outcome.timestamp || null,
       reason: outcome.reason || null,
       error: outcome.classification === 'BLOCKED' || outcome.status === 'BLOCKED' ? (outcome.reason || 'GIT_STAGE_BLOCKED') : null
     };
@@ -610,7 +613,7 @@ async function executeGitStageClaim(claim, executionRun) {
   } catch (gitEvidenceError) {
     console.error('[SHADOW GIT EVIDENCE ERROR]', gitEvidenceError.message);
   }
-  const success = git.classification === 'SUCCESS' || git.status === 'SUCCESS' || git.reason === 'NO_CHANGES' || git.committed === true;
+  const success = git.classification === 'SUCCESS' || git.status === 'SUCCESS' || git.reason === 'NO_CHANGES';
   await completeExecution(
     executionRun.id,
     {
