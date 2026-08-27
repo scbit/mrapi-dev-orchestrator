@@ -736,7 +736,7 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
       }, now);
       const brainRunId = checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null;
       tx.set(roadmapRef, {
-        milestones: milestoneWithState(roadmap, milestone.id, resumesVerification ? 'VERIFYING' : (resumesGitStage ? 'RUNNING' : 'NEED_HUMAN_ACTION'), {
+        milestones: milestoneWithState(roadmap, milestone.id, resumesVerification ? 'VERIFYING' : 'RUNNING', {
           mission_id: mission.id,
           brain_run_id: milestone.brain_run_id || mission.brain_run_id || null,
           verification_brain_run_id: milestone.verification_brain_run_id || mission.verification_brain_run_id || null,
@@ -748,8 +748,8 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
         updated_at: timestamp()
       }, { merge: true });
       tx.set(missionRef, {
-        state: resumesVerification || resumesGitStage ? 'RUNNING' : 'NEED_HUMAN_ACTION',
-        autopilot_phase: resumesVerification ? 'VERIFYING' : (resumesGitStage ? 'GIT_STAGE' : 'NEED_HUMAN_ACTION'),
+        state: resumesVerification || resumesGitStage ? 'RUNNING' : 'PLANNING',
+        autopilot_phase: resumesVerification ? 'VERIFYING' : (resumesGitStage ? 'GIT_STAGE' : 'PROGRAM'),
         human_action_required: false,
         human_action_checkpoint: updatedCheckpoint,
         updated_at: timestamp()
@@ -2397,10 +2397,17 @@ async function confirmHumanActionReady(db, tenantId, roadmapId, checkpointId, in
         ? 'VERIFY_EXECUTION'
         : '';
       const resolvedPausePhase = clean(checkpoint.paused_from_phase || checkpoint.resume_phase || mission.paused_from_phase || inferredResolvedPausePhase, 120).toUpperCase();
+      const shouldResumeResolvedProgram = (
+        resolvedPausePhase !== 'VERIFY_EXECUTION' &&
+        resolvedPausePhase !== 'VERIFYING' &&
+        resolvedPausePhase !== 'GIT_STAGE' &&
+        !checkpoint.continuation_task_id &&
+        (checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id)
+      );
       outcome = {
         resumed: true,
         reused: true,
-        no_new_work: true,
+        no_new_work: !shouldResumeResolvedProgram,
         state: resolvedPausePhase === 'VERIFY_EXECUTION' || resolvedPausePhase === 'VERIFYING' ? 'VERIFYING' : 'RESOLVED',
         roadmap_id: roadmap.id,
         milestone_id: milestone.id,
@@ -2474,7 +2481,7 @@ async function confirmHumanActionReady(db, tenantId, roadmapId, checkpointId, in
     const resumesVerification = pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING';
     const resumesGitStage = pausePhase === 'GIT_STAGE';
     tx.set(roadmapRef, {
-      milestones: milestoneWithState(roadmap, milestone.id, resumesVerification ? 'VERIFYING' : (resumesGitStage ? 'RUNNING' : 'NEED_HUMAN_ACTION'), {
+      milestones: milestoneWithState(roadmap, milestone.id, resumesVerification ? 'VERIFYING' : 'RUNNING', {
         mission_id: mission.id,
         brain_run_id: milestone.brain_run_id || mission.brain_run_id || null,
         verification_brain_run_id: milestone.verification_brain_run_id || mission.verification_brain_run_id || null,
@@ -2486,8 +2493,8 @@ async function confirmHumanActionReady(db, tenantId, roadmapId, checkpointId, in
       updated_at: timestamp()
     }, { merge: true });
     tx.set(missionRef, {
-      state: resumesVerification || resumesGitStage ? 'RUNNING' : 'NEED_HUMAN_ACTION',
-      autopilot_phase: resumesVerification ? 'VERIFYING' : (resumesGitStage ? 'GIT_STAGE' : 'NEED_HUMAN_ACTION'),
+      state: resumesVerification || resumesGitStage ? 'RUNNING' : 'PLANNING',
+      autopilot_phase: resumesVerification ? 'VERIFYING' : (resumesGitStage ? 'GIT_STAGE' : 'PROGRAM'),
       human_action_required: false,
       human_action_checkpoint: updatedCheckpoint,
       updated_at: timestamp()

@@ -338,6 +338,85 @@ test('HOST_LOCAL PASS result resolves checkpoint and resumes same Mission once',
   assert.deepEqual(workCounts(db), { ...before, tasks: before.tasks + 1 });
 });
 
+test('resolved PROGRAM checkpoint without continuation task recovers same Mission and is replay-idempotent', async () => {
+  const db = new DB();
+  seedProgram(db, {
+    project: { local_path: 'C:/trusted/repo', repository_full_name: 'org/repo' },
+    milestone: { id: 'm2' },
+    mission: { milestone_id: 'm2' }
+  });
+  db.set('runs', 'brain_a', { milestone_id: 'm2' }, { merge: true });
+  const cp = await pauseWith(db, {
+    prerequisites: [{
+      type: 'MANUAL_HUMAN',
+      name: 'repository_dirty',
+      human_action_request: 'Clean the repository worktree before continuing.',
+      user_action: 'Commit, stash, or remove local changes, then press LISTO.',
+      action_location: 'project repository',
+      validation_method: 'git_worktree_clean',
+      validation_metadata: { repository_path: 'C:/trusted/repo', repository_identity: 'org/repo' }
+    }]
+  });
+  const resolvedCheckpoint = {
+    ...cp,
+    status: 'RESOLVED',
+    waiting_status: 'RESOLVED',
+    human_action_required: false,
+    continuation_task_id: null,
+    validation_result: {
+      ok: true,
+      validation_id: 'host_validation_v6',
+      run_id: 'host_validation_run_v6',
+      result_id: 'host_validation_pass_v6',
+      message: 'Repository worktree is clean.'
+    }
+  };
+  db.set('roadmaps', 'roadmap_a', {
+    milestones: [
+      db.get('roadmaps', 'roadmap_a').milestones[0],
+      {
+        ...db.get('roadmaps', 'roadmap_a').milestones[1],
+        state: 'NEED_HUMAN_ACTION',
+        human_action_required: false,
+        human_action_checkpoint: resolvedCheckpoint,
+        waiting_status: 'RESOLVED'
+      }
+    ]
+  }, { merge: true });
+  db.set('missions', 'mission_a', {
+    state: 'NEED_HUMAN_ACTION',
+    autopilot_phase: 'NEED_HUMAN_ACTION',
+    human_action_required: false,
+    current_task_id: null,
+    human_action_checkpoint: resolvedCheckpoint
+  }, { merge: true });
+  assert.equal(values(db, 'tasks').length, 0);
+
+  const recovered = await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp.checkpoint_id, { ready: true });
+  assert.equal(recovered.resumed, true);
+  assert.equal(recovered.roadmap_id, 'roadmap_a');
+  assert.equal(recovered.milestone_id, 'm2');
+  assert.equal(recovered.mission_id, 'mission_a');
+  assert.equal(values(db, 'missions').length, 1);
+  assert.equal(values(db, 'tasks').length, 1);
+  assert.equal(values(db, 'tasks')[0].mission_id, 'mission_a');
+  assert.equal(values(db, 'tasks')[0].brain_run_id, 'brain_a');
+  assert.equal(values(db, 'tasks')[0].human_action_checkpoint_id, cp.checkpoint_id);
+  assert.equal(db.get('missions', 'mission_a').state, 'PLANNING');
+  assert.equal(db.get('missions', 'mission_a').autopilot_phase, 'PROGRAM');
+  assert.equal(db.get('missions', 'mission_a').human_action_required, false);
+  assert.equal(db.get('roadmaps', 'roadmap_a').milestones[1].state, 'RUNNING');
+  assert.equal(checkpoint(db).status, 'RESOLVED');
+  assert.equal(checkpoint(db).continuation_task_id, recovered.task_id);
+
+  const afterRecovery = workCounts(db);
+  const replay = await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp.checkpoint_id, { ready: true });
+  assert.equal(replay.reused, true);
+  assert.equal(replay.task_id, recovered.task_id);
+  assert.deepEqual(workCounts(db), afterRecovery);
+  assert.equal(values(db, 'tasks').length, 1);
+});
+
 async function dirtyResumeScenario({ failCheckpoint2 = false } = {}) {
   const db = new DB();
   seedProgram(db, { project: { local_path: 'C:/trusted/repo', repository_full_name: 'org/repo' } });

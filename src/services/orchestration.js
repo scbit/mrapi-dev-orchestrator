@@ -2497,6 +2497,33 @@ async function resumeAutopilotProgramAfterHumanAction(db, tenantId, scope = {}) 
         ['QUEUED', 'ASSIGNED', 'WAITING', 'RUNNING', 'TESTING', 'DONE', 'COMPLETED'].includes(String(task.state || '').toUpperCase())
       ));
     if (existingTask) {
+      if (!isRetryResume) {
+        const resolvedCheckpoint = {
+          ...checkpoint,
+          continuation_task_id: checkpoint.continuation_task_id || existingTask.id,
+          updated_at: new Date()
+        };
+        tx.set(missionRef, {
+          state: 'PLANNING',
+          autopilot_phase: 'PROGRAM',
+          current_task_id: mission.current_task_id || existingTask.id,
+          human_action_required: false,
+          human_action_checkpoint: resolvedCheckpoint,
+          updated_at: timestamp()
+        }, { merge: true });
+        tx.set(roadmapRef, {
+          milestones: roadmapMilestonesWithState(roadmap, milestoneId, 'RUNNING', {
+            mission_id: missionId,
+            brain_run_id: brainRunId,
+            human_action_required: false,
+            human_action_checkpoint: resolvedCheckpoint,
+            waiting_status: 'RESOLVED',
+            blocked_reason: null,
+            retry_status: milestone.retry_status || null
+          }),
+          updated_at: timestamp()
+        }, { merge: true });
+      }
       result = {
         resumed: true,
         reused: true,
