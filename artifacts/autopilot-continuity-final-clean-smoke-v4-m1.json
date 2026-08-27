@@ -1,0 +1,16 @@
+{
+  "roadmap_goal": "Autopilot Continuity Final Clean Smoke V4",
+  "milestone_id": "m1",
+  "milestone_title": "Auto-advance baseline",
+  "validation": "PASS",
+  "auto_advance_expected": true,
+  "required_tests": [
+    "node --test test/autopilot-auto-advance.test.js test/autopilot-complete-validation.test.js",
+    "node --test test/autopilot-loop-service-v0440.test.js test/planner-friendly-lifecycle.test.js"
+  ],
+  "required_tests_passed": true,
+  "application_code_modified": false,
+  "test_code_modified": false,
+  "git_writes_performed": false,
+  "deploy_performed": false
+}
