@@ -110,7 +110,7 @@ test('git flow normalizes trusted permissions only', () => {
 
 test('runner registers git capabilities after v0.3.8', () => {
   const source = fs.readFileSync(path.join(root, 'runner', 'shadow-runner.js'), 'utf8');
-  assert.match(source, /runner_version:\s*'v(?:0\.3\.(?:8(?:\.1)?|9)-alpha\.0|0\.4\.0-alpha\.0|0\.4\.0\.[1234567]|0\.4\.1\.[012]|0\.4\.2\.[03]|0\.4\.4\.3)'/);
+  assert.match(source, /runner_version:\s*'v(?:0\.3\.(?:8(?:\.1)?|9)-alpha\.0|0\.4\.0-alpha\.0|0\.4\.0\.[1234567]|0\.4\.1\.[012]|0\.4\.2\.[03]|0\.4\.4\.(?:3|17))'/);
   assert.match(source, /GIT_STAGE:SEPARATE/);
   assert.match(source, /FILE_SCOPE:ENFORCED/);
 });

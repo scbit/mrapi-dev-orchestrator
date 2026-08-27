@@ -14,6 +14,7 @@ const {
   completeManualCodexHandoff,
   recoverAbandonedBrainRuns
 } = require('../services/orchestration');
+const { completeGitStageExecutionRun } = require('../services/autopilot');
 
 function createRunnerRouter({ db }) {
   const router = express.Router();
@@ -153,6 +154,21 @@ function createRunnerRouter({ db }) {
 
   router.post('/runs/:runId/complete', async (req, res, next) => {
     try {
+      const runSnap = await db.collection('runs').doc(req.params.runId).get();
+      const run = runSnap.exists && runSnap.data().tenant_id === req.tenantId ? runSnap.data() : null;
+      if (run?.mission_id && run?.task_id) {
+        const missionSnap = await db.collection('missions').doc(run.mission_id).get();
+        const taskSnap = await db.collection('tasks').doc(run.task_id).get();
+        if (
+          missionSnap.exists &&
+          taskSnap.exists &&
+          missionSnap.data().tenant_id === req.tenantId &&
+          taskSnap.data().tenant_id === req.tenantId &&
+          (missionSnap.data().autopilot_phase === 'GIT_STAGE' || taskSnap.data().autopilot_phase === 'GIT_STAGE')
+        ) {
+          return res.json(await completeGitStageExecutionRun(db, req.tenantId, req.params.runId, req.body || {}));
+        }
+      }
       res.json(await completeRun(db, req.tenantId, req.params.runId, req.body || {}));
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });

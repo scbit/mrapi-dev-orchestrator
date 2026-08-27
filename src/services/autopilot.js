@@ -107,6 +107,17 @@ function sanitizeAuditValue(value, depth = 0) {
   return out;
 }
 
+function sanitizeGitStageResult(value) {
+  const git = sanitizeAuditValue(value || {});
+  if (git && typeof git === 'object') {
+    delete git.error;
+    if (git.checkpoint && typeof git.checkpoint === 'object') {
+      delete git.checkpoint.error;
+    }
+  }
+  return git;
+}
+
 function boundedRetryHistory(mission, entry) {
   const existing = Array.isArray(mission.autopilot_retry_history)
     ? mission.autopilot_retry_history
@@ -153,6 +164,54 @@ function retryTaskSpec(milestone, executionSpec) {
     prerequisites: executionSpec.prerequisites,
     execution_prerequisites: executionSpec.execution_prerequisites,
     preflight: executionSpec.preflight
+  };
+}
+
+function gitAutomationEnabled({ mission = {}, project = {}, milestone = {} } = {}) {
+  const runtime = project.runtime_context && typeof project.runtime_context === 'object' ? project.runtime_context : {};
+  return mission.git_automation_enabled === true ||
+    mission.autopilot_git_enabled === true ||
+    project.git_automation_enabled === true ||
+    runtime.git_automation_enabled === true ||
+    milestone.git_automation_enabled === true ||
+    milestone.autopilot_git_enabled === true;
+}
+
+function gitStageTaskSpec(milestone, priorTask) {
+  const source = priorTask?.task_spec && typeof priorTask.task_spec === 'object' ? priorTask.task_spec : {};
+  return {
+    title: `Autopilot Git stage: ${milestone.title}`,
+    objective: source.objective || `Persist verified changes for ${milestone.title}`,
+    instructions: 'Run the explicit Autopilot Git stage only. Do not modify source files.',
+    allowed_files: Array.isArray(source.allowed_files) ? source.allowed_files : [],
+    required_tests: [],
+    diagnostic_tests: [],
+    success_criteria: ['Git stage completed successfully or reported NO_CHANGES.'],
+    stop_conditions: ['Do not run programming work.', 'Do not deploy.']
+  };
+}
+
+function gitStageBrainOutput({ tenantId, mission, run, milestone, taskSpec }) {
+  return {
+    objective: `Git stage for verified milestone ${milestone.title}`,
+    worker_id: mission.preferred_worker_id || 'W01',
+    requires_execution: true,
+    execution_type: 'GIT_STAGE',
+    task_spec: taskSpec,
+    execution_constraints: {
+      no_gcp: true,
+      no_cloud_run: true,
+      no_deploy: true,
+      deployment: 'HUMAN_MANUAL_DEPLOY',
+      autopilot_phase: 'GIT_STAGE'
+    },
+    tenant_id: tenantId,
+    workspace_id: mission.workspace_id || null,
+    project_id: mission.project_id || null,
+    mission_id: mission.id,
+    roadmap_id: mission.roadmap_id || null,
+    milestone_id: mission.milestone_id || null,
+    verification_brain_run_id: run.id
   };
 }
 
@@ -320,6 +379,12 @@ function validateHumanActionCheckpoint(checkpoint, { project = {}, mission = {} 
     return manualConfirmationAllowed(checkpoint)
       ? { ok: true, message: 'Manual confirmation accepted for this checkpoint.' }
       : { ok: false, message: 'Manual confirmation is not the persisted validator for this checkpoint.' };
+  }
+
+  if (['GIT_AUTH', 'GIT_REMOTE_PERMISSION'].includes(requirement)) {
+    return manualConfirmationAllowed(checkpoint)
+      ? { ok: true, message: `${requirement} confirmation accepted for Git-stage resume.` }
+      : { ok: false, message: `${requirement} requires the persisted manual confirmation validator.` };
   }
 
   return {
@@ -1116,6 +1181,10 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
     const project = projectSnap?.exists && projectSnap.data().tenant_id === tenantId
       ? { id: projectSnap.id, ...projectSnap.data() }
       : {};
+    const tasksSnap = await tx.get(db.collection('tasks').where('tenant_id', '==', tenantId).limit(200));
+    const missionTasks = tasksSnap.docs
+      .map((doc) => ({ id: doc.id, ...doc.data() }))
+      .filter((task) => task.mission_id === mission.id);
 
     const outputText = clean(input.output_text || input.summary || '', 100000);
     const decision = parseAutopilotDecision(outputText);
@@ -1140,6 +1209,95 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
       completed_at: timestamp(),
       updated_at: timestamp()
     }, { merge: true });
+
+    if (decision.action === 'COMPLETE') {
+      if (gitAutomationEnabled({ mission, project, milestone })) {
+        const existingGitStage = missionTasks
+          .find((task) => task.mission_id === mission.id && task.autopilot_phase === 'GIT_STAGE' && !['DONE', 'FAILED', 'SKIPPED'].includes(String(task.state || '').toUpperCase()));
+        const taskSpec = gitStageTaskSpec(milestone, priorTask);
+        if (!Array.isArray(taskSpec.allowed_files) || taskSpec.allowed_files.length === 0) {
+          decision.action = 'BLOCKED';
+          decision.reason = `${decision.reason} GIT_STAGE requires trusted allowed_files from the verified execution task.`.trim();
+        } else if (existingGitStage) {
+          result = {
+            success: true,
+            action: 'GIT_STAGE',
+            roadmap_id: roadmap.id,
+            milestone_id: milestone.id,
+            mission_id: mission.id,
+            task_id: existingGitStage.id,
+            continuation_state: 'GIT_STAGE_PENDING',
+            reason: decision.reason
+          };
+          return;
+        } else {
+          const taskRef = db.collection('tasks').doc();
+          const brainOutput = gitStageBrainOutput({ tenantId, mission, run, milestone, taskSpec });
+          tx.set(taskRef, {
+            id: taskRef.id,
+            tenant_id: tenantId,
+            mission_id: mission.id,
+            workspace_id: mission.workspace_id || null,
+            project_id: mission.project_id || null,
+            worker_id: mission.preferred_worker_id || 'W01',
+            title: taskSpec.title,
+            objective: taskSpec.objective,
+            task_spec: taskSpec,
+            brain_output: brainOutput,
+            execution_constraints: {
+              no_gcp: true,
+              no_cloud_run: true,
+              no_deploy: true,
+              deployment: 'HUMAN_MANUAL_DEPLOY',
+              autopilot_phase: 'GIT_STAGE'
+            },
+            priority: mission.priority || 'NORMAL',
+            state: 'QUEUED',
+            phase: 'EXECUTION_PENDING',
+            autopilot_phase: 'GIT_STAGE',
+            attempt_count: attempt,
+            verification_brain_run_id: run.id,
+            current_run_id: null,
+            claimed_by_executor_id: null,
+            created_at: timestamp(),
+            updated_at: timestamp()
+          });
+          tx.set(missionRef, {
+            state: 'RUNNING',
+            autopilot_phase: 'GIT_STAGE',
+            current_git_stage_task_id: taskRef.id,
+            pending_git_stage: {
+              task_id: taskRef.id,
+              verification_brain_run_id: run.id,
+              attempt,
+              allowed_files: taskSpec.allowed_files,
+              created_at: milestoneTimestamp()
+            },
+            updated_at: timestamp()
+          }, { merge: true });
+          tx.set(roadmapRef, {
+            milestones: milestoneWithState(roadmap, milestone.id, 'RUNNING', {
+              mission_id: mission.id,
+              verification_brain_run_id: run.id,
+              git_stage_status: 'QUEUED',
+              git_stage_task_id: taskRef.id
+            }),
+            updated_at: timestamp()
+          }, { merge: true });
+          result = {
+            success: true,
+            action: 'GIT_STAGE',
+            roadmap_id: roadmap.id,
+            milestone_id: milestone.id,
+            mission_id: mission.id,
+            task_id: taskRef.id,
+            continuation_state: 'GIT_STAGE_PENDING',
+            reason: decision.reason
+          };
+          return;
+        }
+      }
+    }
 
     if (decision.action === 'COMPLETE') {
       const allMilestones = milestoneWithState(roadmap, milestone.id, 'COMPLETED', {
@@ -1449,6 +1607,226 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
   return result;
 }
 
+async function completeGitStageExecutionRun(db, tenantId, runId, input = {}) {
+  const runRef = db.collection('runs').doc(runId);
+  let result = null;
+  await db.runTransaction(async (tx) => {
+    const runSnap = await tx.get(runRef);
+    if (!runSnap.exists || runSnap.data().tenant_id !== tenantId) {
+      const error = new Error('RUN_NOT_FOUND'); error.status = 404; throw error;
+    }
+    const run = { id: runSnap.id, ...runSnap.data() };
+    if (run.run_type !== 'EXECUTION_RUN') {
+      const error = new Error('RUN_NOT_EXECUTION'); error.status = 409; throw error;
+    }
+    const taskRef = db.collection('tasks').doc(run.task_id);
+    const missionRef = db.collection('missions').doc(run.mission_id);
+    const taskSnap = await tx.get(taskRef);
+    const missionSnap = await tx.get(missionRef);
+    if (!taskSnap.exists || taskSnap.data().tenant_id !== tenantId) {
+      const error = new Error('TASK_NOT_FOUND'); error.status = 404; throw error;
+    }
+    if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+      const error = new Error('MISSION_NOT_FOUND'); error.status = 404; throw error;
+    }
+    const task = { id: taskSnap.id, ...taskSnap.data() };
+    const mission = { id: missionSnap.id, ...missionSnap.data() };
+    if (task.autopilot_phase !== 'GIT_STAGE' && mission.autopilot_phase !== 'GIT_STAGE') {
+      const error = new Error('RUN_NOT_GIT_STAGE'); error.status = 409; throw error;
+    }
+    const roadmapRef = db.collection('roadmaps').doc(mission.roadmap_id);
+    const roadmapSnap = await tx.get(roadmapRef);
+    if (!roadmapSnap.exists || roadmapSnap.data().tenant_id !== tenantId) {
+      const error = new Error('ROADMAP_NOT_FOUND'); error.status = 404; throw error;
+    }
+    const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
+    const milestone = (roadmap.milestones || []).find((item) => item.id === mission.milestone_id);
+    if (!milestone) {
+      const error = new Error('MILESTONE_NOT_FOUND'); error.status = 404; throw error;
+    }
+
+    const git = input.output?.git && typeof input.output.git === 'object' ? sanitizeGitStageResult(input.output.git) : {};
+    const classification = clean(git.classification || git.status || '', 120).toUpperCase();
+    const success = input.success === true && (classification === 'SUCCESS' || git.reason === 'NO_CHANGES' || git.committed === true);
+    const resultRef = db.collection('results').doc();
+
+    tx.set(resultRef, {
+      id: resultRef.id,
+      tenant_id: tenantId,
+      mission_id: mission.id,
+      task_id: task.id,
+      run_id: run.id,
+      workspace_id: run.workspace_id || mission.workspace_id || null,
+      project_id: run.project_id || mission.project_id || null,
+      brain_run_id: task.verification_brain_run_id || run.brain_run_id || null,
+      worker_id: run.worker_id,
+      executor_id: run.executor_id,
+      status: success ? 'SUCCESS' : 'FAILED',
+      result_type: 'GIT_STAGE_OUTPUT',
+      summary: clean(input.summary || git.reason || 'Git stage completed.', 10000),
+      output: { ...(input.output || {}), git },
+      created_at: timestamp()
+    });
+    tx.set(runRef, {
+      state: success ? 'COMPLETED' : 'FAILED',
+      progress_percent: success ? 100 : 0,
+      progress_message: clean(input.summary || git.reason || '', 2000),
+      error: success ? null : clean(input.error || git.error || git.reason || 'GIT_STAGE_FAILED', 5000),
+      result_id: resultRef.id,
+      completed_at: timestamp(),
+      updated_at: timestamp()
+    }, { merge: true });
+    tx.set(taskRef, {
+      state: success ? 'DONE' : 'FAILED',
+      phase: success ? 'COMPLETED' : 'FAILED',
+      result_id: resultRef.id,
+      git_stage_result: git,
+      completed_at: timestamp(),
+      updated_at: timestamp()
+    }, { merge: true });
+
+    if (success) {
+      const allMilestones = milestoneWithState(roadmap, milestone.id, 'COMPLETED', {
+        completed_at: milestoneTimestamp(),
+        verification_brain_run_id: task.verification_brain_run_id || milestone.verification_brain_run_id || null,
+        git_stage_result: git,
+        git_stage_status: 'SUCCESS',
+        git_stage_result_id: resultRef.id
+      });
+      const roadmapCompleted = allMilestones.every((item) => ['COMPLETED', 'SKIPPED'].includes(item.state));
+      tx.set(roadmapRef, {
+        milestones: allMilestones,
+        state: roadmapCompleted ? 'COMPLETED' : roadmap.state,
+        updated_at: timestamp()
+      }, { merge: true });
+      tx.set(missionRef, {
+        state: 'COMPLETED',
+        autopilot_phase: 'COMPLETED',
+        pending_git_stage: null,
+        git_stage_result: git,
+        completed_at: timestamp(),
+        updated_at: timestamp()
+      }, { merge: true });
+      result = {
+        success: true,
+        action: 'COMPLETE',
+        roadmap_id: roadmap.id,
+        milestone_id: milestone.id,
+        completed_milestone_id: milestone.id,
+        mission_id: mission.id,
+        result_id: resultRef.id,
+        git_stage_result: git,
+        auto_advance: roadmap.auto_advance === true && !roadmapCompleted,
+        continuation_state: roadmapCompleted ? 'ROADMAP_COMPLETED' : (roadmap.auto_advance === true ? 'PENDING' : 'DISABLED')
+      };
+      return;
+    }
+
+    if (classification === 'NEED_HUMAN_ACTION') {
+      const checkpoint = normalizeHumanActionCheckpoint({
+        ...(git.checkpoint || {}),
+        checkpoint_type: git.checkpoint?.checkpoint_type || git.reason || 'GIT_AUTH',
+        requirement_type: git.checkpoint?.requirement_type || git.reason || 'GIT_AUTH',
+        tenant_id: tenantId,
+        roadmap_id: roadmap.id,
+        milestone_id: milestone.id,
+        mission_id: mission.id,
+        brain_run_id: task.verification_brain_run_id || null,
+        paused_from_phase: 'GIT_STAGE',
+        resume_phase: 'GIT_STAGE',
+        reason: git.reason || 'GIT_STAGE_NEEDS_HUMAN_ACTION',
+        validation_metadata: {
+          branch: git.branch || null,
+          target_branch: git.target_branch || null,
+          commit_sha: git.commit_sha || git.sha || null,
+          changed_files: Array.isArray(git.changed_files) ? git.changed_files : [],
+          staged_files: Array.isArray(git.staged_files) ? git.staged_files : []
+        }
+      }, unresolvedHumanActionCheckpoint(milestone));
+      tx.set(roadmapRef, {
+        milestones: milestoneWithState(roadmap, milestone.id, 'NEED_HUMAN_ACTION', {
+          human_action_required: true,
+          human_action_checkpoint: checkpoint,
+          waiting_status: checkpoint.waiting_status,
+          blocked_reason: checkpoint.blocker_code,
+          git_stage_status: 'NEED_HUMAN_ACTION',
+          git_stage_result: git
+        }),
+        updated_at: timestamp()
+      }, { merge: true });
+      tx.set(missionRef, {
+        state: 'NEED_HUMAN_ACTION',
+        autopilot_phase: 'NEED_HUMAN_ACTION',
+        human_action_required: true,
+        human_action_checkpoint: checkpoint,
+        blocker_code: checkpoint.blocker_code,
+        blocker_message: checkpoint.human_action_request,
+        git_stage_result: git,
+        updated_at: timestamp()
+      }, { merge: true });
+      result = {
+        success: false,
+        action: 'NEED_HUMAN_ACTION',
+        roadmap_id: roadmap.id,
+        milestone_id: milestone.id,
+        mission_id: mission.id,
+        checkpoint_id: checkpoint.checkpoint_id,
+        human_action_checkpoint: checkpoint,
+        git_stage_result: git,
+        reason: git.reason || 'GIT_STAGE_NEEDS_HUMAN_ACTION'
+      };
+      return;
+    }
+
+    tx.set(roadmapRef, {
+      milestones: milestoneWithState(roadmap, milestone.id, 'BLOCKED', {
+        blocked_reason: git.reason || input.error || 'GIT_STAGE_BLOCKED',
+        git_stage_status: 'BLOCKED',
+        git_stage_result: git
+      }),
+      state: 'BLOCKED',
+      updated_at: timestamp()
+    }, { merge: true });
+    tx.set(missionRef, {
+      state: 'BLOCKED',
+      autopilot_phase: 'BLOCKED',
+      blocker_code: git.reason || 'GIT_STAGE_BLOCKED',
+      blocker_message: git.error || git.reason || input.error || 'Git stage blocked.',
+      git_stage_result: git,
+      updated_at: timestamp()
+    }, { merge: true });
+    result = {
+      success: false,
+      action: 'BLOCKED',
+      roadmap_id: roadmap.id,
+      milestone_id: milestone.id,
+      mission_id: mission.id,
+      git_stage_result: git,
+      reason: git.reason || input.error || 'GIT_STAGE_BLOCKED'
+    };
+  });
+
+  if (result?.action === 'COMPLETE' && result.roadmap_id && result.milestone_id) {
+    const continuation = await continueRoadmapAfterComplete(
+      db,
+      tenantId,
+      result.roadmap_id,
+      result.milestone_id,
+      input.continuation_options || {}
+    );
+    result = {
+      ...result,
+      auto_advance: continuation.auto_advance === true,
+      next_milestone_id: continuation.next_milestone_id || null,
+      next_mission_id: continuation.next_mission_id || null,
+      next_brain_run_id: continuation.next_brain_run_id || null,
+      continuation_state: continuation.continuation_state,
+      checkpoint_id: continuation.checkpoint_id || null
+    };
+  }
+  return result;
+}
+
 async function confirmHumanActionReady(db, tenantId, roadmapId, checkpointId, input = {}) {
   const confirmed = input.ready === true || input.confirm === true || input.confirmed === true || input.listo === true;
   if (!confirmed) {
@@ -1577,8 +1955,10 @@ async function confirmHumanActionReady(db, tenantId, roadmapId, checkpointId, in
       : '';
     const pausePhase = clean(checkpoint.paused_from_phase || checkpoint.resume_phase || mission.paused_from_phase || inferredPausePhase, 120).toUpperCase();
     const brainRunId = checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null;
+    const resumesVerification = pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING';
+    const resumesGitStage = pausePhase === 'GIT_STAGE';
     tx.set(roadmapRef, {
-      milestones: milestoneWithState(roadmap, milestone.id, pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING' ? 'VERIFYING' : 'NEED_HUMAN_ACTION', {
+      milestones: milestoneWithState(roadmap, milestone.id, resumesVerification ? 'VERIFYING' : (resumesGitStage ? 'RUNNING' : 'NEED_HUMAN_ACTION'), {
         mission_id: mission.id,
         brain_run_id: milestone.brain_run_id || mission.brain_run_id || null,
         verification_brain_run_id: milestone.verification_brain_run_id || mission.verification_brain_run_id || null,
@@ -1590,15 +1970,15 @@ async function confirmHumanActionReady(db, tenantId, roadmapId, checkpointId, in
       updated_at: timestamp()
     }, { merge: true });
     tx.set(missionRef, {
-      state: pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING' ? 'RUNNING' : 'NEED_HUMAN_ACTION',
-      autopilot_phase: pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING' ? 'VERIFYING' : 'NEED_HUMAN_ACTION',
+      state: resumesVerification || resumesGitStage ? 'RUNNING' : 'NEED_HUMAN_ACTION',
+      autopilot_phase: resumesVerification ? 'VERIFYING' : (resumesGitStage ? 'GIT_STAGE' : 'NEED_HUMAN_ACTION'),
       human_action_required: false,
       human_action_checkpoint: updatedCheckpoint,
       updated_at: timestamp()
     }, { merge: true });
     outcome = {
-      resumed: pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING',
-      state: pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING' ? 'VERIFYING' : 'RESOLVED',
+      resumed: resumesVerification || resumesGitStage,
+      state: resumesVerification ? 'VERIFYING' : (resumesGitStage ? 'GIT_STAGE' : 'RESOLVED'),
       roadmap_id: roadmap.id,
       milestone_id: milestone.id,
       mission_id: mission.id,
@@ -1609,7 +1989,7 @@ async function confirmHumanActionReady(db, tenantId, roadmapId, checkpointId, in
     };
   });
 
-  if (outcome?.no_new_work === true || outcome?.state === 'NEED_HUMAN_ACTION' || outcome?.resume_phase === 'VERIFY_EXECUTION' || outcome?.resume_phase === 'VERIFYING') {
+  if (outcome?.no_new_work === true || outcome?.state === 'NEED_HUMAN_ACTION' || outcome?.resume_phase === 'VERIFY_EXECUTION' || outcome?.resume_phase === 'VERIFYING' || outcome?.resume_phase === 'GIT_STAGE') {
     return outcome;
   }
   if (outcome?.state === 'RESOLVED' && outcome?.brain_run_id) {
@@ -1640,5 +2020,6 @@ module.exports = {
   startNextRoadmapMilestone,
   plannerAutopilotBrainContext,
   queueVerificationBrainRun,
+  completeGitStageExecutionRun,
   completeVerificationBrainRun
 };

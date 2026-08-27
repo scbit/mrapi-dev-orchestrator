@@ -194,7 +194,10 @@ async function addGitEvidence(runId, taskId, git) {
     `GIT_COMMITTED ${git.committed === true}`,
     `GIT_PUSHED ${git.pushed === true}`,
     `GIT_BRANCH ${git.branch || ''}`,
+    `GIT_TARGET_BRANCH ${git.target_branch || ''}`,
     `GIT_COMMIT_SHA ${git.commit_sha || ''}`,
+    `GIT_STAGED_FILES ${(git.staged_files || []).join(',')}`,
+    `GIT_CLASSIFICATION ${git.classification || git.status || ''}`,
     `GIT_REASON ${git.reason || ''}`,
     `GIT_ERROR ${git.error || ''}`
   ];
@@ -500,18 +503,6 @@ async function runTrustedGitFlow({ claim, result }) {
   const permissions = handoff.git_permissions || {};
   const phase = String(handoff.execution_constraints?.autopilot_phase || claim.task?.autopilot_phase || '').trim();
   const repositoryScope = String(handoff.execution_constraints?.repository_scope || '').trim();
-
-  if (permissions.allow_commit !== true && permissions.allow_push !== true) {
-    return {
-      changed: true,
-      committed: false,
-      pushed: false,
-      commit_sha: null,
-      branch: null,
-      reason: phase === 'GIT_STAGE' ? 'GIT_PERMISSION_NOT_GRANTED' : 'GIT_STAGE_REQUIRED',
-      error: null
-    };
-  }
   const repositoryPath = String(handoff.repository_path || '').trim();
 
   // Artifact-only work has no project repository. W01 may still have trusted
@@ -531,25 +522,110 @@ async function runTrustedGitFlow({ claim, result }) {
     };
   }
 
+  if (phase !== 'GIT_STAGE') {
+    return {
+      changed: result.scope_check?.changed_files?.length > 0,
+      committed: false,
+      pushed: false,
+      commit_sha: null,
+      branch: null,
+      reason: phase ? 'GIT_STAGE_REQUIRED' : 'GIT_NOT_REQUESTED',
+      error: null
+    };
+  }
+
+  if (permissions.allow_commit !== true && permissions.allow_push !== true) {
+    return {
+      changed: true,
+      committed: false,
+      pushed: false,
+      commit_sha: null,
+      branch: null,
+      target_branch: permissions.allowed_branch || permissions.allowedBranch || null,
+      status: 'NEED_HUMAN_ACTION',
+      classification: 'NEED_HUMAN_ACTION',
+      reason: phase === 'GIT_STAGE' ? 'GIT_PERMISSION_NOT_GRANTED' : 'GIT_STAGE_REQUIRED',
+      checkpoint: phase === 'GIT_STAGE'
+        ? {
+            checkpoint_type: 'GIT_REMOTE_PERMISSION',
+            requirement_type: 'GIT_REMOTE_PERMISSION',
+            human_action_request: 'Git commit permission is required before Autopilot can persist this verified milestone.',
+            user_action: 'Grant the configured runner Git commit permission, then resume the Git stage.',
+            action_location: 'mrapi_runner_permissions',
+            validation_method: 'manual_confirmation',
+            paused_from_phase: 'GIT_STAGE',
+            resume_phase: 'GIT_STAGE'
+          }
+        : null,
+      error: null
+    };
+  }
+
   try {
     const outcome = runGitFlow({
       repoPath: repositoryPath,
       gitPermissions: permissions,
       missionId: handoff.mission_id || claim.task?.mission_id,
-      objective: handoff.objective || handoff.task_spec?.objective || claim.task?.objective
+      roadmapId: handoff.roadmap_id || claim.task?.roadmap_id || claim.run?.roadmap_id,
+      milestoneId: handoff.milestone_id || claim.task?.milestone_id || claim.run?.milestone_id,
+      attempt: claim.run?.attempt || claim.task?.attempt_count || handoff.autopilot_attempt_count || 1,
+      objective: handoff.objective || handoff.task_spec?.objective || claim.task?.objective,
+      allowedFiles: allowedFilesFromClaim(claim),
+      priorResult: claim.task?.git_stage_result || claim.run?.git_stage_result || null,
+      safeStage: true
     });
     return {
       changed: outcome.changed === true,
       committed: outcome.committed === true,
       pushed: outcome.pushed === true,
       commit_sha: outcome.commit_sha || outcome.sha || null,
+      sha: outcome.sha || outcome.commit_sha || null,
+      pushed_sha: outcome.pushed_sha || null,
       branch: outcome.branch || permissions.allowed_branch || null,
+      target_branch: outcome.target_branch || permissions.allowed_branch || null,
+      changed_files: outcome.changed_files || [],
+      staged_files: outcome.staged_files || [],
+      status: outcome.status || outcome.classification || null,
+      classification: outcome.classification || outcome.status || null,
+      checkpoint: outcome.checkpoint || null,
+      attempt: outcome.attempt || claim.run?.attempt || claim.task?.attempt_count || 1,
+      mission_id: outcome.mission_id || handoff.mission_id || claim.task?.mission_id || null,
+      roadmap_id: outcome.roadmap_id || handoff.roadmap_id || claim.task?.roadmap_id || claim.run?.roadmap_id || null,
+      milestone_id: outcome.milestone_id || handoff.milestone_id || claim.task?.milestone_id || claim.run?.milestone_id || null,
       reason: outcome.reason || null,
-      error: null
+      error: outcome.classification === 'BLOCKED' || outcome.status === 'BLOCKED' ? (outcome.reason || 'GIT_STAGE_BLOCKED') : null
     };
   } catch (error) {
     return gitMetadataFromError(error);
   }
+}
+
+async function executeGitStageClaim(claim, executionRun) {
+  const git = await runTrustedGitFlow({
+    claim,
+    result: { success: true, exitCode: 0, stdout: '', stderr: '' }
+  });
+  try {
+    await addGitEvidence(executionRun.id, claim.task.id, git);
+  } catch (gitEvidenceError) {
+    console.error('[SHADOW GIT EVIDENCE ERROR]', gitEvidenceError.message);
+  }
+  const success = git.classification === 'SUCCESS' || git.status === 'SUCCESS' || git.reason === 'NO_CHANGES' || git.committed === true;
+  await completeExecution(
+    executionRun.id,
+    {
+      success,
+      exitCode: success ? 0 : 1,
+      stdout: '',
+      stderr: success ? '' : (git.reason || git.error || 'GIT_STAGE_FAILED'),
+      executor_report: {
+        verdict_source: 'GIT_STAGE',
+        required_tests: [],
+        diagnostic_tests: []
+      }
+    },
+    git
+  );
 }
 
 async function executeClaim(claim) {
@@ -574,6 +650,13 @@ async function executeClaim(claim) {
     });
     if (preExecutionWorktree.resumed_retry) {
       console.log('[SHADOW] RETRY continuing with prior allowlisted worktree changes', preExecutionWorktree.changed_files);
+    }
+
+    if (autopilotPhase === 'GIT_STAGE') {
+      await progress(executionRun.id, 25, 'Running explicit Autopilot Git stage');
+      await executeGitStageClaim(claim, executionRun);
+      console.log('[SHADOW] GIT_STAGE COMPLETE', task.id, executionRun.id);
+      return;
     }
 
     const prompt = buildCodexPrompt({
