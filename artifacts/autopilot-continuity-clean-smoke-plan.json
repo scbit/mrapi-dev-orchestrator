@@ -1,0 +1,156 @@
+{
+  "contract_version": "CODEX_HANDOFF_V0_4_4_3",
+  "task_id": "FF2JDJ0AmrKFC4XLwiMb",
+  "execution_run_id": "NLRyGac3tAfZbviJHKrJ",
+  "brain_run_id": "T2RrFnnNsgWXoQ9aQWi6",
+  "mission_id": "nb9w0jBU1QbcB7zztzeO",
+  "smoke_label": "autopilot-continuity-clean-smoke-2026-08-27-NLRyGac3tAfZbviJHKrJ",
+  "tenant_id": "tenant_facundo_group",
+  "workspace_id": "workspace_scb",
+  "project_id": "project_scb_development",
+  "auto_advance": true,
+  "no_gcp": true,
+  "no_cloud_run": true,
+  "no_deploy": true,
+  "milestones": [
+    {
+      "id": "m1",
+      "title": "m1 COMPLETE and m2 auto-start",
+      "depends_on": [],
+      "execution_spec": {
+        "allowed_files": [
+          "artifacts/autopilot-continuity-clean-smoke-plan.json"
+        ],
+        "required_tests": [
+          "node --test test/planner-human-action-presentation.test.js"
+        ]
+      }
+    },
+    {
+      "id": "m2",
+      "title": "m2 Human Action continuity",
+      "depends_on": [
+        "m1"
+      ],
+      "human_action": {
+        "requirement_type": "MANUAL_HUMAN",
+        "validation_method": "manual_confirmation",
+        "human_action_request": "confirm the clean continuity smoke checkpoint",
+        "user_action": "press LISTO in Planner when ready",
+        "action_location": "Planner"
+      },
+      "execution_spec": {
+        "allowed_files": [
+          "artifacts/autopilot-continuity-clean-smoke-plan.json"
+        ],
+        "required_tests": [
+          "node --test test/autopilot-human-action-resume.test.js"
+        ]
+      }
+    },
+    {
+      "id": "m3",
+      "title": "m3 isolated Safe Git validation",
+      "depends_on": [
+        "m2"
+      ],
+      "isolated_git_required": true,
+      "execution_spec": {
+        "allowed_files": [
+          "smoke/authorized-m3.txt"
+        ],
+        "required_tests": [
+          "node --test test/autopilot-git-stage.test.js"
+        ]
+      }
+    }
+  ],
+  "runtime": {
+    "roadmap_id": "roadmap_clean_smoke_NLRyGac3tAfZbviJHKrJ",
+    "m1_mission_id": "missions_1",
+    "m1_brain_run_id": "runs_2",
+    "m2_mission_id": "missions_2",
+    "m2_brain_run_id": "runs_6",
+    "m2_checkpoint_id": "human_action_9626f05f4ba08f5123388ab0",
+    "m3_mission_id": null,
+    "m3_brain_run_id": null
+  },
+  "evidence": {
+    "pre_smoke_required_gates": [
+      {
+        "command": "node --test test/autopilot-loop-service-v0440.test.js test/autopilot-human-action-resume.test.js test/autopilot-auto-advance.test.js test/autopilot-git-stage.test.js",
+        "passed": true
+      },
+      {
+        "command": "node --test test/planner-human-action-presentation.test.js test/planner-friendly-lifecycle.test.js",
+        "passed": true
+      }
+    ],
+    "local_persistence_mode": "in-process Firestore-shaped store; no Firestore/GCP/Cloud Run access",
+    "planner_local_url": "http://127.0.0.1:63643/planner",
+    "browser_connector_available": false,
+    "states_at_pause": {
+      "roadmap": "ACTIVE",
+      "m1": "COMPLETED",
+      "m2": "NEED_HUMAN_ACTION",
+      "m3": "PENDING"
+    },
+    "counts_at_pause": {
+      "missions": 2,
+      "tasks": 1,
+      "brainRuns": 3,
+      "executionRuns": 1
+    },
+    "ids_at_pause": {
+      "missions": [
+        "missions_1",
+        "missions_2"
+      ],
+      "tasks": [
+        "tasks_1"
+      ],
+      "brainRuns": [
+        "runs_2",
+        "runs_4",
+        "runs_6"
+      ],
+      "executionRuns": [
+        "runs_3"
+      ]
+    },
+    "auto_advance_transitions": {
+      "m1_complete_continuation": "STARTED",
+      "m1_replay_after_m2_start": "ALREADY_RUNNING"
+    },
+    "m2_preflight": {
+      "action": "NEED_HUMAN_ACTION",
+      "checkpoint_id": "human_action_9626f05f4ba08f5123388ab0",
+      "checkpoint_type": "PROGRAM_PREFLIGHT",
+      "requirement_type": "MANUAL_HUMAN",
+      "status": "WAITING_FOR_HUMAN",
+      "waiting_status": "WAITING_FOR_HUMAN",
+      "human_action_request": "confirm the clean continuity smoke checkpoint",
+      "user_action": "press LISTO in Planner when ready",
+      "action_location": "Planner",
+      "validation_method": "manual_confirmation",
+      "roadmap_id": "roadmap_clean_smoke_NLRyGac3tAfZbviJHKrJ",
+      "milestone_id": "m2",
+      "mission_id": "missions_2",
+      "brain_run_id": "runs_6",
+      "zero_premature_m2_execution": true
+    },
+    "planner_checkpoint_projection": {
+      "proposal_has_checkpoint": true,
+      "checkpoint_source": "milestones[1].human_action_checkpoint"
+    },
+    "tenant_isolation": {
+      "cross_tenant_ready_denied": true,
+      "error": "PLANNER_PROPOSAL_NOT_FOUND",
+      "mutated": false
+    },
+    "git_status_short_before_m3": {
+      "available": false,
+      "reason": "git executable is not available on PATH in this shell"
+    }
+  }
+}
