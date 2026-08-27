@@ -433,6 +433,32 @@ function proposal(overrides = {}) {
   };
 }
 
+// Models the diagnosed historical compatibility shape associated with regression roadmap
+// 4HTrXmLZQG7A37KZHxdG. This is conservative test data, not the unseen Firestore record.
+function historicalPlannerRoadmapFixture(overrides = {}) {
+  return {
+    id: 'historical_compatible',
+    roadmap_id: 'historical_compatible',
+    tenant_id: 'tenant_a',
+    workspace_id: 'workspace_scb',
+    project_id: 'project_scb_development',
+    proposal_type: 'PLANNER_ROADMAP',
+    non_executable: true,
+    title: 'Historical Compatible Roadmap',
+    objective: 'Reopen a legacy roadmap with enough readable content.',
+    state: 'ACTIVE',
+    approval_status: 'APPROVED',
+    milestones: [{
+      id: 'legacy_m1',
+      title: 'Legacy Recorded Outcome',
+      expected_outcome: 'Display the historical milestone outcome without inferring execution metadata.'
+    }],
+    created_at: '2026-01-04T00:00:00.000Z',
+    updated_at: '2026-01-04T00:00:00.000Z',
+    ...overrides
+  };
+}
+
 function visibleActions(planner) {
   return {
     approve: !planner.els.approve.classList.contains('hidden'),
@@ -475,6 +501,7 @@ test('daily-use Planner UX integrates context, intake, review, approval, history
   assert.equal(Object.hasOwn(JSON.parse(requestCall.options.body), 'tenant_id'), false);
   assert.match(planner.els.status.textContent, /W01.*preparando el roadmap/);
   assert.doesNotMatch(planner.els.status.textContent, /missions_|runs_|planner/i);
+  assert.equal(db.get('runs', planner.state.brainRunId).brain_context.planner_contract, 'ROADMAP_PROPOSAL_V1');
   assert.deepEqual(counts(db), { missions: 1, brainRuns: 1, tasks: 0, executionRuns: 0 });
 
   const requestId = planner.state.requestId;
@@ -536,6 +563,7 @@ test('daily-use Planner UX integrates context, intake, review, approval, history
   assert.equal(calls.some((call) => call.url.endsWith('/start')), false);
   assert.deepEqual(visibleActions(planner), { approve: false, requestChanges: false, start: true });
   assert.deepEqual(counts(db), { missions: 1, brainRuns: 2, tasks: 0, executionRuns: 0 });
+  assert.match(planner.els.status.textContent, /Roadmap aprobado/);
 
   calls.length = 0;
   await planner.els.start.listeners.click();
@@ -616,38 +644,34 @@ test('daily-use Planner UX integrates context, intake, review, approval, history
   assert.match(planner.els.proposalView.innerHTML, /Persisted final narrative/);
   assert.deepEqual(visibleActions(planner), { approve: false, requestChanges: false, start: false });
 
-  db.set('roadmaps', 'historical_compatible', {
-    id: 'historical_compatible',
-    roadmap_id: 'historical_compatible',
-    tenant_id: 'tenant_a',
-    workspace_id: 'workspace_scb',
-    project_id: 'project_scb_development',
-    proposal_type: 'PLANNER_ROADMAP',
-    non_executable: true,
-    title: 'Historical Compatible Roadmap',
-    objective: 'Reopen a legacy roadmap with enough readable content.',
-    state: 'ACTIVE',
-    approval_status: 'APPROVED',
-    milestones: [{
-      id: 'legacy_m1',
-      title: 'Legacy Recorded Outcome',
-      expected_outcome: 'Display the historical milestone outcome without inferring execution metadata.'
-    }],
-    created_at: '2026-01-04T00:00:00.000Z',
-    updated_at: '2026-01-04T00:00:00.000Z'
-  });
+  db.set('roadmaps', 'historical_compatible', historicalPlannerRoadmapFixture());
   calls.length = 0;
   await planner.openRecentPlannerRequest('historical_compatible');
   assert.deepEqual(calls.map((call) => call.url), ['/api/planner/proposals/historical_compatible']);
   assert.match(planner.els.proposalView.innerHTML, /Historical read-only roadmap/);
+  assert.doesNotMatch(planner.els.proposalView.innerHTML, /Proposal unavailable/);
   assert.match(planner.els.proposalView.innerHTML, /Historical Compatible Roadmap/);
+  assert.match(planner.els.proposalView.innerHTML, /Reopen a legacy roadmap with enough readable content/);
+  assert.match(planner.els.proposalView.innerHTML, /Legacy Recorded Outcome/);
   assert.match(planner.els.proposalView.innerHTML, /Display the historical milestone outcome/);
   assert.match(planner.els.proposalView.innerHTML, /Summary not recorded in this historical roadmap/);
+  assert.match(planner.els.proposalView.innerHTML, /Not recorded/);
+  assert.match(planner.els.proposalView.innerHTML, /Description not recorded/);
   assert.match(planner.els.proposalView.innerHTML, /Executor requirement not recorded/);
   assert.doesNotMatch(planner.els.proposalView.innerHTML, /Brain only/);
   assert.deepEqual(visibleActions(planner), { approve: false, requestChanges: false, start: false });
   assert.equal(mutationCalls(calls).length, 0);
   assertNoCodexWork(db);
+
+  for (const malformed of [
+    { roadmap_id: 'missing_lifecycle', title: 'Missing lifecycle', objective: 'Cannot be safely reviewed.', milestones: [{ id: 'm1', title: 'Milestone', objective: 'Has content' }] },
+    { roadmap_id: 'missing_milestone_id', title: 'Missing milestone id', objective: 'Cannot be safely reviewed.', state: 'PROPOSED', approval_status: 'PENDING', milestones: [{ title: 'Milestone', objective: 'Has content' }] }
+  ]) {
+    planner.renderProposal(malformed);
+    assert.match(planner.els.proposalView.innerHTML, /Proposal unavailable/);
+    assert.match(planner.els.proposalView.innerHTML, /incomplete or malformed/i);
+    assert.deepEqual(visibleActions(planner), { approve: false, requestChanges: false, start: false });
+  }
 
   planner.renderProposal({
     ...completedProposal,

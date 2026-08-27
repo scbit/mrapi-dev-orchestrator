@@ -310,6 +310,27 @@ test('remembered context is applied after async options load and stale values fa
   await flush();
   assert.equal(staleProject.planner.els.workspace.value, 'workspace_scb');
   assert.equal(staleProject.planner.els.project.value, '');
+
+  const crossWorkspaceProject = createHarness(html, {
+    localStorage: createMemoryStorage({
+      'mrapi.planner.context.v1': JSON.stringify({ workspaceId: 'workspace_scb', projectId: 'project_other' })
+    }),
+    fetchImpl: async (url) => {
+      if (url === '/api/workspaces') return response(true, { items: [
+        { id: 'workspace_scb', name: 'SCB Workspace' },
+        { id: 'workspace_fallback', name: 'Fallback Workspace' }
+      ] });
+      if (url === '/api/projects') return response(true, { items: [
+        { id: 'project_scb_development', workspace_id: 'workspace_scb' },
+        { id: 'project_other', workspace_id: 'workspace_fallback' }
+      ] });
+      return response(true, { items: [] });
+    }
+  });
+  await flush();
+  assert.equal(crossWorkspaceProject.planner.els.workspace.value, 'workspace_scb');
+  assert.equal(crossWorkspaceProject.planner.els.project.value, '');
+  assert.doesNotMatch(crossWorkspaceProject.planner.els.project.innerHTML, /project_other/);
 });
 
 test('remembered context waits for both workspace and project datasets before restoring selectors', async () => {
@@ -503,6 +524,30 @@ test('explicit invalid project keeps valid workspace and does not auto-select th
 
   assert.equal(planner.els.workspace.value, 'workspace_scb');
   assert.equal(planner.els.project.value, '');
+});
+
+test('cross-workspace project is rejected without switching workspace to match it', async () => {
+  const html = await renderPlannerPage();
+  const { planner } = createHarness(html, {
+    fetchImpl: async (url) => {
+      if (url === '/api/workspaces') return response(true, { items: [
+        { id: 'workspace_scb', name: 'SCB Workspace' },
+        { id: 'workspace_fallback', name: 'Fallback Workspace' }
+      ] });
+      if (url === '/api/projects') return response(true, { items: [
+        { id: 'project_scb_development', workspace_id: 'workspace_scb' },
+        { id: 'project_other', workspace_id: 'workspace_fallback' }
+      ] });
+      return response(true, { items: [] });
+    }
+  });
+  await flush();
+
+  planner.applyContextSelection({ workspaceId: 'workspace_scb', projectId: 'project_other' });
+
+  assert.equal(planner.els.workspace.value, 'workspace_scb');
+  assert.equal(planner.els.project.value, '');
+  assert.doesNotMatch(planner.els.project.innerHTML, /project_other/);
 });
 
 test('workspace-only context may retain existing single-project auto-selection', async () => {

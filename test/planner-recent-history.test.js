@@ -447,6 +447,33 @@ test('recent endpoint preserves supported lifecycle records', async () => {
   assert.deepEqual(response.body.items.map((item) => item.roadmap_id), ['cancelled', 'blocked', 'completed', 'active', 'proposed']);
 });
 
+test('history proposal reads and cross-tenant lifecycle denials are side-effect free', async () => {
+  const db = new Db();
+  seedHistory(db);
+  db.collection('missions');
+  db.collection('runs');
+  const app = plannerApp(db);
+  const before = JSON.stringify(db.collections);
+  const beforeCounts = collectionCounts(db);
+
+  const proposal = await requestJson(app, 'GET', '/api/planner/proposals/proposed', null, { 'x-tenant-id': 'tenant_a' });
+  const repeatProposal = await requestJson(app, 'GET', '/api/planner/proposals/proposed', null, { 'x-tenant-id': 'tenant_a' });
+  assert.equal(proposal.statusCode, 200);
+  assert.deepEqual(repeatProposal.body, proposal.body);
+  assert.deepEqual(collectionCounts(db), beforeCounts);
+  assert.equal(JSON.stringify(db.collections), before);
+
+  const tenantBRead = await requestJson(app, 'GET', '/api/planner/proposals/proposed', null, { 'x-tenant-id': 'tenant_b' });
+  const tenantBApprove = await requestJson(app, 'POST', '/api/planner/roadmaps/proposed/approve', { approve: true }, { 'x-tenant-id': 'tenant_b' });
+  const tenantBStart = await requestJson(app, 'POST', '/api/planner/roadmaps/proposed/start', {}, { 'x-tenant-id': 'tenant_b' });
+
+  assert.equal(tenantBRead.statusCode, 404);
+  assert.equal(tenantBApprove.statusCode, 404);
+  assert.equal(tenantBStart.statusCode, 404);
+  assert.deepEqual(collectionCounts(db), beforeCounts);
+  assert.equal(JSON.stringify(db.collections), before);
+});
+
 test('planner page renders recent history, tolerates history failure, escapes HTML, and reopens canonically', async () => {
   const html = renderPlannerPage();
   assert.match(html, /Recent Planner Requests/);

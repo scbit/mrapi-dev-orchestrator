@@ -237,6 +237,7 @@ test('v0.4.1.0 planning Brain Run creates revision 1 and no Task before approval
   assert.equal(plan.revision, 1);
   assert.equal(plan.status, 'READY');
   assert.equal(values(db, 'tasks').length, 0);
+  assert.equal(values(db, 'runs').filter((item) => item.run_type === 'EXECUTION_RUN').length, 0);
 });
 
 test('v0.4.1.0 approval moves Mission running and creates one execution Task idempotently', async () => {
@@ -624,6 +625,7 @@ test('v0.4.1.0 missing high-risk permission blocks approval', async () => {
 test('v0.4.1.0 tenant isolation protects plan APIs', async () => {
   const db = new FakeDb();
   await readyPlan(db, 'W01', 'mission_tenant');
+  const before = JSON.stringify(db.collections);
 
   await assert.rejects(() => getMissionPlan(db, 'tenant_b', 'mission_tenant'), /MISSION_NOT_FOUND/);
   await assert.rejects(() => approveMissionPlan(db, 'tenant_b', 'mission_tenant', {}), /MISSION_NOT_FOUND/);
@@ -631,6 +633,9 @@ test('v0.4.1.0 tenant isolation protects plan APIs', async () => {
     () => requestMissionPlanChanges(db, 'tenant_b', 'mission_tenant', { message: 'Change' }),
     /MISSION_NOT_FOUND/
   );
+  assert.equal(JSON.stringify(db.collections), before);
+  assert.equal(values(db, 'tasks').length, 0);
+  assert.equal(values(db, 'runs').filter((item) => item.run_type === 'EXECUTION_RUN').length, 0);
 });
 
 test('v0.4.1.2 UI renders blocked diagnostics and legacy fallback reason', () => {
