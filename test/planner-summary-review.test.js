@@ -198,6 +198,35 @@ test('proposal review is summary-first and keeps technical roadmap details advan
   assert.doesNotMatch(rendered.slice(0, rendered.indexOf('Advanced roadmap details')), /Troubleshooting data could disappear/);
 });
 
+test('historical summary display uses not-recorded wording without enabling actions', async () => {
+  const html = await renderPlannerPage();
+  const planner = createHarness(html);
+  planner.renderProposal({
+    roadmap_id: 'historical_summary_1',
+    title: 'Historical Summary Roadmap',
+    objective: 'Review available legacy roadmap content.',
+    state: 'ACTIVE',
+    approval_status: 'APPROVED',
+    milestones: [{
+      id: 'legacy_summary_m1',
+      title: 'Legacy Summary Milestone',
+      expected_outcome: 'Keep the available legacy outcome visible.'
+    }]
+  });
+  const rendered = planner.els.proposalView.innerHTML;
+
+  assert.match(rendered, /Historical read-only roadmap/);
+  assert.match(rendered, /Summary not recorded in this historical roadmap/);
+  assert.match(rendered, /Major risks[\s\S]*Not recorded/);
+  assert.match(rendered, /Major dependencies[\s\S]*Not recorded/);
+  assert.match(rendered, /Assumptions[\s\S]*Not recorded/);
+  assert.match(rendered, /Keep the available legacy outcome visible/);
+  assert.doesNotMatch(rendered, /Brain only/);
+  assert.equal(planner.els.approve.classList.contains('hidden'), true);
+  assert.equal(planner.els.requestChanges.classList.contains('hidden'), true);
+  assert.equal(planner.els.start.classList.contains('hidden'), true);
+});
+
 test('Human Action count only uses explicit persisted metadata', async () => {
   const html = await renderPlannerPage();
   const planner = createHarness(html);

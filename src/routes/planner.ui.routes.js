@@ -678,6 +678,21 @@ function plannerPageHtml() {
       ));
     }
 
+    function isProposalRenderable(proposal) {
+      if (!proposal || typeof proposal !== 'object') return false;
+      if (!text(proposal.title).trim()) return false;
+      if (!text(proposal.objective).trim()) return false;
+      if (!lifecycleState(proposal)) return false;
+      if (!Array.isArray(proposal.milestones)) return false;
+      return proposal.milestones.every((milestone) => (
+        milestone &&
+        typeof milestone === 'object' &&
+        text(milestone.id).trim() &&
+        text(milestone.title).trim() &&
+        text(milestone.objective || milestone.expected_outcome).trim()
+      ));
+    }
+
     function stateClass(proposal) {
       const label = friendlyLifecycle(proposal);
       if (label === 'Approved' || label === 'Running' || label === 'Completed') return label === 'Completed' ? 'complete' : 'active';
@@ -764,22 +779,25 @@ function plannerPageHtml() {
       await loadProposal();
     }
 
-    function renderSummaryCard(proposal, milestones) {
+    function renderSummaryCard(proposal, milestones, options = {}) {
+      const historical = options.historical === true;
       const total = milestones.length;
       const executorCount = milestones.filter((item) => item.milestone.executor_required === true).length;
       const humanActionCount = milestones.filter((item) => requiresHumanAction(item.milestone)).length;
       const humanActionText = humanActionCount > 0 ? escapeHtml(humanActionCount) : 'none identified';
+      const summary = text(proposal.summary).trim() || (historical ? 'Summary not recorded in this historical roadmap.' : '');
+      const dependenciesEmptyText = historical && !Array.isArray(proposal.dependencies) ? 'Not recorded' : 'No dependencies';
       return '<section class="summary-card" aria-label="Roadmap summary">' +
         '<span class="label">ROADMAP SUMMARY</span><h3>' + escapeHtml(proposal.title) + '</h3>' +
         '<p class="objective"><strong>Objective:</strong> ' + escapeHtml(proposal.objective) + '</p>' +
-        '<p>' + escapeHtml(proposal.summary) + '</p>' +
+        '<p>' + escapeHtml(summary) + '</p>' +
         '<div class="summary-metrics">' +
         '<div class="metric"><span class="label">Milestones</span><strong>' + escapeHtml(total) + '</strong></div>' +
         '<div class="metric"><span class="label">Executor required</span><strong>' + escapeHtml(executorCount) + '</strong></div>' +
         '<div class="metric"><span class="label">Human actions</span><strong>' + humanActionText + '</strong></div>' +
         '</div>' +
         '<div class="bounded-summary"><div><span class="label">Major risks</span>' + boundedList(proposal.risks, 3, 'None recorded') + '</div>' +
-        '<div><span class="label">Major dependencies</span>' + boundedList(proposal.dependencies, 3, 'No dependencies') + '</div></div>' +
+        '<div><span class="label">Major dependencies</span>' + boundedList(proposal.dependencies, 3, dependenciesEmptyText) + '</div></div>' +
         '</section>';
     }
 
@@ -857,14 +875,16 @@ function plannerPageHtml() {
       return views.map(renderHumanActionPanel).join('');
     }
 
-    function renderRoadmapAdvancedDetails(proposal) {
+    function renderRoadmapAdvancedDetails(proposal, options = {}) {
+      const historical = options.historical === true;
+      const dependenciesEmptyText = historical && !Array.isArray(proposal.dependencies) ? 'Not recorded' : 'No dependencies';
       return '<details class="advanced-details"><summary><strong>Advanced roadmap details</strong></summary>' +
         '<div class="info-grid"><div><span class="label">Lifecycle state</span><p>' + escapeHtml(rawLifecycleState(proposal) || 'Not recorded') + '</p></div>' +
         '<div><span class="label">Approval status</span><p>' + escapeHtml(approvalLabel(proposal)) + '</p></div>' +
         '<div><span class="label">Roadmap ID</span><p>' + escapeHtml(state.proposalId || 'Not recorded') + '</p></div></div>' +
         renderRevisionContext(proposal) +
         '<div class="info-grid"><div><span class="label">Risks</span>' + list(proposal.risks, 'None recorded') + '</div>' +
-        '<div><span class="label">Dependencies</span>' + list(proposal.dependencies, 'No dependencies') + '</div>' +
+        '<div><span class="label">Dependencies</span>' + list(proposal.dependencies, dependenciesEmptyText) + '</div>' +
         '<div><span class="label">Assumptions</span>' + list(proposal.assumptions, 'None recorded') + '</div></div>' +
         renderOriginalRequest(proposal) +
         '<div class="info-grid"><div><span class="label">Planner Mission ID</span><p>' + escapeHtml(text(proposal.planner_mission_id || proposal.mission_id || state.missionId || 'Not recorded')) + '</p></div>' +
@@ -895,6 +915,10 @@ function plannerPageHtml() {
         return '<div class="notice terminal"><strong>This roadmap is ' + escapeHtml(stateLabel(proposal)) + '.</strong> It is not presented as ordinary executable approved work.</div>';
       }
       return '<div class="notice"><strong>Roadmap status: ' + escapeHtml(stateLabel(proposal)) + '.</strong> It is not ready to start yet.</div>';
+    }
+
+    function renderHistoricalNotice() {
+      return '<div class="notice"><strong>Historical read-only roadmap.</strong> This roadmap is readable, but some metadata was not recorded by the older schema. Lifecycle actions are unavailable under the current review contract.</div>';
     }
 
     function renderOriginalRequest(proposal) {
@@ -934,7 +958,8 @@ function plannerPageHtml() {
       persistPlannerState();
       els.proposalView.classList.remove('hidden');
       els.startView.classList.add('hidden');
-      if (!isReviewComplete(proposal)) {
+      const reviewComplete = isReviewComplete(proposal);
+      if (!isProposalRenderable(proposal)) {
         els.approve.classList.add('hidden');
         els.requestChanges.classList.add('hidden');
         els.start.classList.add('hidden');
@@ -942,6 +967,23 @@ function plannerPageHtml() {
         els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>Proposal unavailable</h2></div><span class="badge blocked">INCOMPLETE</span></div>' +
           '<div class="notice terminal"><strong>Proposal review data is incomplete or malformed.</strong> Refresh the persisted proposal after Brain planning completes. Approval is unavailable until required review fields are returned by the server.</div>';
         setStatus('Proposal review data is incomplete or malformed. Approval is unavailable.', 'error');
+        return;
+      }
+      const milestones = sortedMilestoneItems(proposal);
+      const humanActionViews = humanActionViewModels(proposal, milestones);
+      if (!reviewComplete) {
+        els.approve.classList.add('hidden');
+        els.requestChanges.classList.add('hidden');
+        els.start.classList.add('hidden');
+        hideRevisionForm();
+        els.proposalView.classList.remove('hidden');
+        els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>' + escapeHtml(proposal.title) + '</h2></div><span class="badge ' + stateClass(proposal) + '">' + escapeHtml(stateLabel(proposal)) + '</span></div>' +
+          renderHistoricalNotice() +
+          (isCompleted(proposal) ? renderCompletedSummary(proposal, milestones) : renderSummaryCard(proposal, milestones, { historical: true })) +
+          renderHumanActionPanels(humanActionViews) +
+          renderRoadmapAdvancedDetails(proposal, { historical: true }) +
+          '<h2>Milestones</h2><div class="milestones">' + milestones.map((item) => renderMilestone(item.milestone, item.index, { historical: true })).join('') + '</div>';
+        setStatus('Historical roadmap is available read-only. Lifecycle actions are unavailable.', '');
         return;
       }
       const approved = isApproved(proposal);
@@ -953,8 +995,6 @@ function plannerPageHtml() {
       els.requestChanges.classList.toggle('hidden', !canRequestChanges);
       els.start.classList.toggle('hidden', !canStart);
       if (!canRequestChanges || isRevisionPending(proposal)) hideRevisionForm();
-      const milestones = sortedMilestoneItems(proposal);
-      const humanActionViews = humanActionViewModels(proposal, milestones);
       els.proposalView.classList.remove('hidden');
       els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>' + escapeHtml(proposal.title) + '</h2></div><span class="badge ' + stateClass(proposal) + '">' + escapeHtml(stateLabel(proposal)) + '</span></div>' +
         renderNotice(proposal) +
@@ -969,20 +1009,29 @@ function plannerPageHtml() {
       else setStatus('Roadmap is ' + stateLabel(proposal) + '.', '');
     }
 
-    function renderMilestone(milestone, index) {
-      const executorLabel = milestone.executor_required ? 'Executor required' : 'Brain only';
-      const executorClass = milestone.executor_required ? 'executor' : 'brain';
+    function renderMilestone(milestone, index, options = {}) {
+      const historical = options.historical === true;
+      let executorLabel = milestone.executor_required ? 'Executor required' : 'Brain only';
+      let executorClass = milestone.executor_required ? 'executor' : 'brain';
+      if (historical && typeof milestone.executor_required !== 'boolean') {
+        executorLabel = 'Executor requirement not recorded';
+        executorClass = 'awaiting';
+      }
       const dependencyItems = Array.isArray(milestone.dependencies) ? milestone.dependencies : milestone.depends_on;
+      const dependencyEmptyText = historical && !Array.isArray(dependencyItems) ? 'Not recorded' : 'No dependencies';
+      const risksEmptyText = historical && !Array.isArray(milestone.risks) ? 'Not recorded' : 'None recorded';
+      const successCriteriaEmptyText = historical && !Array.isArray(milestone.success_criteria) ? 'Not recorded' : 'None recorded';
+      const description = text(milestone.description).trim() || (historical ? 'Description not recorded.' : '');
       const blocked = ['BLOCKED', 'WAITING', 'PENDING'].includes(text(milestone.state).toUpperCase()) && Array.isArray(dependencyItems) && dependencyItems.length > 0;
       return '<details class="milestone"><summary class="milestone-summary"><div><h3>' + escapeHtml(milestone.order || index + 1) + '. ' + escapeHtml(milestone.title) + '</h3><div class="meta">' + escapeHtml(milestone.objective || milestone.expected_outcome) + (blocked ? ' - waiting on dependencies' : '') + '</div></div><span class="badge">' + escapeHtml(friendlyMilestoneState(milestone)) + '</span></summary>' +
-        '<div class="kv"><div><span class="label">Description</span><p>' + escapeHtml(milestone.description) + '</p></div></div>' +
+        '<div class="kv"><div><span class="label">Description</span><p>' + escapeHtml(description) + '</p></div></div>' +
         '<details class="advanced-details"><summary><strong>Advanced milestone details</strong></summary><div class="kv">' +
         '<div><span class="label">Milestone ID</span><p>' + escapeHtml(milestone.id) + '</p></div>' +
         '<div><span class="label">Raw lifecycle state</span><p>' + escapeHtml(rawLifecycleState(milestone) || 'Not recorded') + '</p></div>' +
         '<div><span class="label">Executor requirement</span><p><span class="badge ' + executorClass + '">' + escapeHtml(executorLabel) + '</span></p></div>' +
-        '<div><span class="label">Dependencies</span>' + list(dependencyItems, 'No dependencies') + '</div>' +
-        '<div><span class="label">Risks</span>' + list(milestone.risks, 'None recorded') + '</div>' +
-        '<div><span class="label">Success criteria</span>' + list(milestone.success_criteria, 'None recorded') + '</div>' +
+        '<div><span class="label">Dependencies</span>' + list(dependencyItems, dependencyEmptyText) + '</div>' +
+        '<div><span class="label">Risks</span>' + list(milestone.risks, risksEmptyText) + '</div>' +
+        '<div><span class="label">Success criteria</span>' + list(milestone.success_criteria, successCriteriaEmptyText) + '</div>' +
         '<div><span class="label">Order</span><p>' + escapeHtml(milestone.order || index + 1) + '</p></div></div></details></details>';
     }
 

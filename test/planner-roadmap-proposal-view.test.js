@@ -160,6 +160,23 @@ function proposal(overrides = {}) {
   };
 }
 
+function historicalProposal(overrides = {}) {
+  return {
+    roadmap_id: 'historical_1',
+    title: 'Historical Planner Roadmap',
+    state: 'PROPOSED',
+    objective: 'Show a legacy roadmap without allowing lifecycle actions.',
+    milestones: [
+      {
+        id: 'legacy_m1',
+        title: 'Legacy Outcome Milestone',
+        expected_outcome: 'Render the persisted outcome from the older schema.'
+      }
+    ],
+    ...overrides
+  };
+}
+
 test('/planner contains a clearly labeled Roadmap Proposal review section', async () => {
   const html = await renderPlannerPage();
   assert.match(html, /id="proposalView"/);
@@ -275,6 +292,96 @@ test('terminal and malformed proposals are not shown as ordinary startable work'
   planner.renderProposal({ roadmap_id: 'bad', title: 'Incomplete', state: 'PROPOSED', approval_status: 'PENDING' });
   assert.match(planner.els.proposalView.innerHTML, /incomplete or malformed/i);
   assert.equal(planner.els.approve.classList.contains('hidden'), true);
+});
+
+test('historical proposals missing presentation metadata render read-only', async () => {
+  const html = await renderPlannerPage();
+  const { planner } = createHarness(html);
+  planner.renderProposal(historicalProposal());
+  const rendered = planner.els.proposalView.innerHTML;
+
+  assert.doesNotMatch(rendered, /Proposal unavailable/);
+  assert.match(rendered, /Historical Planner Roadmap/);
+  assert.match(rendered, /Historical read-only roadmap/);
+  assert.match(rendered, /metadata was not recorded by the older schema/);
+  assert.match(rendered, /Summary not recorded in this historical roadmap/);
+  assert.match(rendered, /Major risks[\s\S]*Not recorded/);
+  assert.match(rendered, /Major dependencies[\s\S]*Not recorded/);
+  assert.match(rendered, /Assumptions[\s\S]*Not recorded/);
+  assert.equal(planner.els.approve.classList.contains('hidden'), true);
+  assert.equal(planner.els.requestChanges.classList.contains('hidden'), true);
+  assert.equal(planner.els.start.classList.contains('hidden'), true);
+});
+
+test('historical milestones render expected outcome and unknown metadata explicitly', async () => {
+  const html = await renderPlannerPage();
+  const { planner } = createHarness(html);
+  planner.renderProposal(historicalProposal());
+  const rendered = planner.els.proposalView.innerHTML;
+
+  assert.match(rendered, /Legacy Outcome Milestone/);
+  assert.match(rendered, /Render the persisted outcome from the older schema/);
+  assert.match(rendered, /Description not recorded/);
+  assert.match(rendered, /Executor requirement[\s\S]*Executor requirement not recorded/);
+  assert.match(rendered, /Dependencies[\s\S]*Not recorded/);
+  assert.match(rendered, /Risks[\s\S]*Not recorded/);
+  assert.match(rendered, /Success criteria[\s\S]*Not recorded/);
+  assert.doesNotMatch(rendered, /Brain only/);
+});
+
+test('historical read-only branch hides lifecycle controls for proposed and active-looking roadmaps', async () => {
+  const html = await renderPlannerPage();
+  const { planner } = createHarness(html);
+
+  planner.renderProposal(historicalProposal({ state: 'PROPOSED', approval_status: 'PENDING' }));
+  assert.equal(planner.els.approve.classList.contains('hidden'), true);
+  assert.equal(planner.els.requestChanges.classList.contains('hidden'), true);
+  assert.equal(planner.els.start.classList.contains('hidden'), true);
+
+  planner.renderProposal(historicalProposal({ state: 'ACTIVE', approval_status: 'APPROVED' }));
+  assert.match(planner.els.proposalView.innerHTML, /Historical read-only roadmap/);
+  assert.equal(planner.els.approve.classList.contains('hidden'), true);
+  assert.equal(planner.els.requestChanges.classList.contains('hidden'), true);
+  assert.equal(planner.els.start.classList.contains('hidden'), true);
+});
+
+test('proposals missing historical renderability facts still fail closed', async () => {
+  const html = await renderPlannerPage();
+  const { planner } = createHarness(html);
+  const cases = [
+    historicalProposal({ title: '' }),
+    historicalProposal({ objective: '' }),
+    historicalProposal({ state: '' }),
+    { ...historicalProposal(), milestones: null },
+    historicalProposal({ milestones: [{ title: 'Missing ID', expected_outcome: 'Has an outcome.' }] }),
+    historicalProposal({ milestones: [{ id: 'missing_title', expected_outcome: 'Has an outcome.' }] }),
+    historicalProposal({ milestones: [{ id: 'missing_objective', title: 'Missing Objective' }] })
+  ];
+
+  for (const item of cases) {
+    planner.renderProposal(item);
+    assert.match(planner.els.proposalView.innerHTML, /Proposal unavailable/);
+    assert.match(planner.els.proposalView.innerHTML, /incomplete or malformed/i);
+    assert.equal(planner.els.approve.classList.contains('hidden'), true);
+    assert.equal(planner.els.requestChanges.classList.contains('hidden'), true);
+    assert.equal(planner.els.start.classList.contains('hidden'), true);
+  }
+});
+
+test('full current proposals keep existing proposal actions and presentation', async () => {
+  const html = await renderPlannerPage();
+  const { planner } = createHarness(html);
+  planner.renderProposal(proposal());
+  const rendered = planner.els.proposalView.innerHTML;
+
+  assert.doesNotMatch(rendered, /Historical read-only roadmap/);
+  assert.match(rendered, /Waiting for approval/);
+  assert.match(rendered, /The roadmap is generated by Brain/);
+  assert.match(rendered, /Dependencies[\s\S]*No dependencies/);
+  assert.match(rendered, /Executor requirement[\s\S]*Brain only/);
+  assert.equal(planner.els.approve.classList.contains('hidden'), false);
+  assert.equal(planner.els.requestChanges.classList.contains('hidden'), false);
+  assert.equal(planner.els.start.classList.contains('hidden'), true);
 });
 
 test('proposal review remains read-only and exposes no unauthorized controls', async () => {

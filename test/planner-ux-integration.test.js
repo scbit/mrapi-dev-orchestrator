@@ -616,6 +616,39 @@ test('daily-use Planner UX integrates context, intake, review, approval, history
   assert.match(planner.els.proposalView.innerHTML, /Persisted final narrative/);
   assert.deepEqual(visibleActions(planner), { approve: false, requestChanges: false, start: false });
 
+  db.set('roadmaps', 'historical_compatible', {
+    id: 'historical_compatible',
+    roadmap_id: 'historical_compatible',
+    tenant_id: 'tenant_a',
+    workspace_id: 'workspace_scb',
+    project_id: 'project_scb_development',
+    proposal_type: 'PLANNER_ROADMAP',
+    non_executable: true,
+    title: 'Historical Compatible Roadmap',
+    objective: 'Reopen a legacy roadmap with enough readable content.',
+    state: 'ACTIVE',
+    approval_status: 'APPROVED',
+    milestones: [{
+      id: 'legacy_m1',
+      title: 'Legacy Recorded Outcome',
+      expected_outcome: 'Display the historical milestone outcome without inferring execution metadata.'
+    }],
+    created_at: '2026-01-04T00:00:00.000Z',
+    updated_at: '2026-01-04T00:00:00.000Z'
+  });
+  calls.length = 0;
+  await planner.openRecentPlannerRequest('historical_compatible');
+  assert.deepEqual(calls.map((call) => call.url), ['/api/planner/proposals/historical_compatible']);
+  assert.match(planner.els.proposalView.innerHTML, /Historical read-only roadmap/);
+  assert.match(planner.els.proposalView.innerHTML, /Historical Compatible Roadmap/);
+  assert.match(planner.els.proposalView.innerHTML, /Display the historical milestone outcome/);
+  assert.match(planner.els.proposalView.innerHTML, /Summary not recorded in this historical roadmap/);
+  assert.match(planner.els.proposalView.innerHTML, /Executor requirement not recorded/);
+  assert.doesNotMatch(planner.els.proposalView.innerHTML, /Brain only/);
+  assert.deepEqual(visibleActions(planner), { approve: false, requestChanges: false, start: false });
+  assert.equal(mutationCalls(calls).length, 0);
+  assertNoCodexWork(db);
+
   planner.renderProposal({
     ...completedProposal,
     roadmap_id: 'completed_fallback',
