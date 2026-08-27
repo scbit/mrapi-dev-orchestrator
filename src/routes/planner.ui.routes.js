@@ -65,6 +65,9 @@ function plannerPageHtml() {
     .proposal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:10px; }
     .proposal-head h2 { margin:3px 0 0; }
     .summary-card { margin:14px 0; background:rgba(255,255,255,.035); }
+    .completion-summary { margin:14px 0; border-color:rgba(72,213,151,.32); background:rgba(72,213,151,.075); }
+    .completion-summary h3 { margin:6px 0 8px; font-size:26px; }
+    .completion-summary .final-narrative { color:#f7fbff; font-size:16px; }
     .summary-card h3 { margin:6px 0 8px; font-size:24px; }
     .summary-card .objective { color:#f7fbff; font-size:17px; margin:0 0 8px; }
     .summary-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:16px 0; }
@@ -507,6 +510,14 @@ function plannerPageHtml() {
       return ['BLOCKED', 'CANCELLED', 'CANCELED', 'COMPLETED', 'COMPLETE', 'DONE'].includes(lifecycleState(proposal));
     }
 
+    function isCompleted(proposal) {
+      return ['COMPLETED', 'COMPLETE', 'DONE'].includes(lifecycleState(proposal));
+    }
+
+    function isCompletedMilestone(milestone) {
+      return ['COMPLETED', 'COMPLETE', 'DONE'].includes(lifecycleState(milestone));
+    }
+
     function isRunning(proposal) {
       return friendlyLifecycle(proposal) === 'Running';
     }
@@ -517,7 +528,8 @@ function plannerPageHtml() {
       if (requiredTextFields.some((field) => !text(proposal[field]).trim())) return false;
       if (!Array.isArray(proposal.risks) || !Array.isArray(proposal.dependencies) || !Array.isArray(proposal.assumptions)) return false;
       if (!lifecycleState(proposal)) return false;
-      if (!Array.isArray(proposal.milestones) || !proposal.milestones.length) return false;
+      if (!Array.isArray(proposal.milestones)) return false;
+      if (!proposal.milestones.length) return isCompleted(proposal);
       return proposal.milestones.every((milestone) => (
         milestone &&
         text(milestone.id).trim() &&
@@ -636,6 +648,47 @@ function plannerPageHtml() {
         '</section>';
     }
 
+    function narrativeText(value) {
+      if (typeof value !== 'string' && typeof value !== 'number') return '';
+      return text(value).trim();
+    }
+
+    function finalNarrative(proposal) {
+      const candidates = [
+        proposal.final_summary,
+        proposal.result_summary,
+        proposal.outcome_summary,
+        proposal.completion_summary,
+        proposal.final_result_summary,
+        proposal.outcome
+      ];
+      for (const candidate of candidates) {
+        const value = narrativeText(candidate);
+        if (value) return value;
+      }
+      return '';
+    }
+
+    function renderCompletedSummary(proposal, milestones) {
+      const total = milestones.length;
+      const completed = milestones.filter((item) => isCompletedMilestone(item.milestone)).length;
+      const progress = total === 0
+        ? '0 milestones recorded; 0 completed.'
+        : completed + ' of ' + total + ' milestones completed.';
+      const narrative = finalNarrative(proposal);
+      return '<section class="summary-card completion-summary" aria-label="Completed roadmap summary">' +
+        '<span class="label">COMPLETED ROADMAP</span><h3>' + escapeHtml(proposal.title) + '</h3>' +
+        '<p class="objective"><strong>Original objective:</strong> ' + escapeHtml(proposal.objective) + '</p>' +
+        '<div class="summary-metrics">' +
+        '<div class="metric"><span class="label">State</span><strong>Completed</strong></div>' +
+        '<div class="metric"><span class="label">Milestones</span><strong>' + escapeHtml(total) + '</strong></div>' +
+        '<div class="metric"><span class="label">Completed</span><strong>' + escapeHtml(completed) + '</strong></div>' +
+        '</div>' +
+        '<p><strong>Progress:</strong> ' + escapeHtml(progress) + '</p>' +
+        '<p class="final-narrative">' + escapeHtml(narrative || 'Completed based on persisted roadmap state; no final result summary is available.') + '</p>' +
+        '</section>';
+    }
+
     function renderRoadmapAdvancedDetails(proposal) {
       return '<details class="advanced-details"><summary><strong>Advanced roadmap details</strong></summary>' +
         '<div class="info-grid"><div><span class="label">Lifecycle state</span><p>' + escapeHtml(rawLifecycleState(proposal) || 'Not recorded') + '</p></div>' +
@@ -744,7 +797,7 @@ function plannerPageHtml() {
       els.proposalView.classList.remove('hidden');
       els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>' + escapeHtml(proposal.title) + '</h2></div><span class="badge ' + stateClass(proposal) + '">' + escapeHtml(stateLabel(proposal)) + '</span></div>' +
         renderNotice(proposal) +
-        renderSummaryCard(proposal, milestones) +
+        (isCompleted(proposal) ? renderCompletedSummary(proposal, milestones) : renderSummaryCard(proposal, milestones)) +
         renderRoadmapAdvancedDetails(proposal) +
         '<h2>Milestones</h2><div class="milestones">' + milestones.map((item) => renderMilestone(item.milestone, item.index)).join('') + '</div>';
       if (isRunning(proposal)) setStatus('Running - current milestone is in progress.', 'success');
