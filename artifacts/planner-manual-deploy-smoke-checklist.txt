@@ -1,0 +1,34 @@
+HUMAN ACTION REQUIRED
+HUMAN MANUAL DEPLOY - DO NOT DEPLOY FROM CODEX
+
+Scope
+- Codex verified local pre-deploy readiness only.
+- Deployment and deployed browser smoke validation remain HUMAN ACTION REQUIRED.
+- Do not treat this checklist as evidence that deployed smoke validation has passed.
+
+Pre-Deploy Verification
+- Required Planner verification command passed locally:
+  node --test test/planner-ux-integration.test.js test/planner-ux-validation.test.js test/planner-ux-continuity.test.js
+- Diagnostic Git status before artifact creation was clean.
+- Current HEAD summary at verification time:
+  3514fca okk
+
+Bounded Human Smoke Flow
+1) Human deploys the approved main revision to Cloud Run using the existing normal deployment procedure.
+2) Open the deployed /planner page.
+3) Verify Workspace selector displays friendly names rather than raw IDs.
+4) Select a Workspace and verify Project selector displays only friendly projects belonging to that Workspace.
+5) Select Workspace and Project, reload the page, wait for asynchronous selector loading to finish, and verify the remembered Workspace/Project selection is restored.
+6) Submit this planning-only request exactly: Proponeme un roadmap de prueba para validar Planner. Solo planificación; no ejecutar nada.
+7) Verify the request is presented as Planning/preparing a roadmap and does not indicate Codex, Tasks, EXECUTION_RUNs, or Autopilot execution has started.
+8) When the proposal is available, verify the readable roadmap summary appears before technical information.
+9) Verify milestone title, objective and friendly lifecycle state are visible while milestone contents remain collapsed initially.
+10) Verify Advanced roadmap details and Advanced milestone details are secondary/collapsed and can be opened manually.
+11) Verify proposal review actions are correctly gated: Request changes/Approve may be available when appropriate, while Start Autopilot is unavailable before explicit approval.
+12) Open Recent Planner Requests and verify the new request appears with friendly Workspace, Project and lifecycle labels.
+13) Reopen the recent request and verify the persisted proposal loads without automatically approving, starting, or otherwise mutating lifecycle state.
+14) Reload while that Planner request is active and verify active request/context and the latest persisted proposal are restored.
+15) STOP the default smoke validation here. Do not click Approve or Start Autopilot unless the human explicitly chooses to validate those actions.
+
+Rollback
+If any UX or lifecycle regression is observed, do not continue with approval/start; human rolls Cloud Run back to the prior known-good deployment/revision/commit using the established manual rollback procedure, then reports the exact failing smoke step and observed behavior to W01.
