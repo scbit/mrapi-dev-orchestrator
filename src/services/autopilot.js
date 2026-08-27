@@ -315,6 +315,7 @@ function parseAutopilotDecision(text) {
 
 const TERMINAL_MISSION_STATES = new Set(['BLOCKED', 'COMPLETED', 'FAILED', 'CANCELLED']);
 const ACTIVE_MILESTONE_STATES = new Set(['PLANNING', 'RUNNING', 'VERIFYING', 'NEED_HUMAN_ACTION']);
+const NON_RUNNABLE_ROADMAP_STATES = new Set(['BLOCKED', 'ERROR', 'FAILED', 'CANCELLED', 'NEED_HUMAN_ACTION', 'PAUSED', 'COMPLETED']);
 const PLANNER_START_ALLOWED_STATES = new Set(['ACTIVE']);
 
 function linkedMissionBlocksFreshStart(mission, tenantId) {
@@ -332,7 +333,7 @@ function completedPredecessorContext(roadmap, milestone) {
   const byId = new Map((roadmap.milestones || []).map((item) => [item.id, item]));
   return dependencyIds.map((id) => {
     const dependency = byId.get(id);
-    if (!dependency || dependency.state !== 'COMPLETED') return null;
+    if (!dependency || !['COMPLETED', 'SKIPPED'].includes(dependency.state)) return null;
     return {
       id: dependency.id,
       title: dependency.title || '',
@@ -470,6 +471,7 @@ async function startNextRoadmapMilestone(db, tenantId, roadmapId, options = {}) 
         milestone: existingActiveMilestone,
         roadmap,
         brain_run: brainRun,
+        checkpoint: unresolvedHumanActionCheckpoint(existingActiveMilestone),
         reused: true,
         no_new_work: true
       };
@@ -542,7 +544,7 @@ async function startNextRoadmapMilestone(db, tenantId, roadmapId, options = {}) 
       preferred_worker_id: workerId,
       objective,
       priority: milestone.priority || roadmap.priority || 'NORMAL',
-      state: 'READY',
+      state: options.dispatch_brain_run === true ? 'PLANNING' : 'READY',
       planning_mode: 'AUTOPILOT',
       approval_status: 'APPROVED',
       autopilot_mode: true,
@@ -584,6 +586,12 @@ async function startNextRoadmapMilestone(db, tenantId, roadmapId, options = {}) 
         updated_at: timestamp()
       };
       tx.set(runRef, brainRun);
+      tx.set(missionRef, {
+        state: 'PLANNING',
+        brain_run_id: runRef.id,
+        dispatched_at: timestamp(),
+        updated_at: timestamp()
+      }, { merge: true });
     }
     tx.set(roadmapRef, {
       milestones: milestoneWithState(roadmap, milestone.id, 'PLANNING', {
@@ -597,6 +605,194 @@ async function startNextRoadmapMilestone(db, tenantId, roadmapId, options = {}) 
   });
 
   return created;
+}
+
+function runnableRoadmapState(state) {
+  return !NON_RUNNABLE_ROADMAP_STATES.has(String(state || '').toUpperCase());
+}
+
+function milestonesCompleteOrSkipped(roadmap) {
+  return (roadmap.milestones || []).every((item) => ['COMPLETED', 'SKIPPED'].includes(item.state));
+}
+
+function pendingMilestones(roadmap) {
+  return (roadmap.milestones || []).filter((item) => item.state === 'PENDING');
+}
+
+async function findProgramBrainRun(db, tenantId, missionId) {
+  if (!missionId) return null;
+  const runsSnap = await db.collection('runs').where('tenant_id', '==', tenantId).limit(200).get();
+  return runsSnap.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .find((run) => run.mission_id === missionId && run.run_type === 'BRAIN_RUN' && run.autopilot_phase === 'PROGRAM') || null;
+}
+
+async function markNextMilestoneNeedsHumanAction(db, tenantId, roadmapId, milestoneId, missionId, checkpoint) {
+  await db.runTransaction(async (tx) => {
+    const roadmapRef = db.collection('roadmaps').doc(roadmapId);
+    const missionRef = db.collection('missions').doc(missionId);
+    const roadmapSnap = await tx.get(roadmapRef);
+    const missionSnap = await tx.get(missionRef);
+    if (!roadmapSnap.exists || roadmapSnap.data().tenant_id !== tenantId) {
+      const error = new Error('ROADMAP_NOT_FOUND'); error.status = 404; throw error;
+    }
+    if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+      const error = new Error('MISSION_NOT_FOUND'); error.status = 404; throw error;
+    }
+    const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
+    const milestone = (roadmap.milestones || []).find((item) => item.id === milestoneId);
+    if (!milestone) {
+      const error = new Error('MILESTONE_NOT_FOUND'); error.status = 404; throw error;
+    }
+    const existing = unresolvedHumanActionCheckpoint(milestone);
+    const finalCheckpoint = existing || checkpoint;
+    tx.set(roadmapRef, {
+      milestones: milestoneWithHumanAction(roadmap, milestoneId, finalCheckpoint),
+      updated_at: timestamp()
+    }, { merge: true });
+    tx.set(missionRef, {
+      state: 'NEED_HUMAN_ACTION',
+      autopilot_phase: 'NEED_HUMAN_ACTION',
+      human_action_required: true,
+      human_action_checkpoint: finalCheckpoint,
+      blocker_code: finalCheckpoint.blocker_code,
+      blocker_message: finalCheckpoint.human_action_request,
+      updated_at: timestamp()
+    }, { merge: true });
+  });
+}
+
+async function continueRoadmapAfterComplete(db, tenantId, roadmapId, completedMilestoneId, options = {}) {
+  let checked = null;
+  await db.runTransaction(async (tx) => {
+    const roadmapRef = db.collection('roadmaps').doc(roadmapId);
+    const roadmapSnap = await tx.get(roadmapRef);
+    if (!roadmapSnap.exists || roadmapSnap.data().tenant_id !== tenantId) {
+      checked = { continuation_state: 'DENIED', auto_advance: false };
+      return;
+    }
+    const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
+    const completedMilestone = (roadmap.milestones || []).find((item) => item.id === completedMilestoneId);
+    if (!completedMilestone || completedMilestone.state !== 'COMPLETED') {
+      checked = { continuation_state: 'CURRENT_NOT_COMPLETED', auto_advance: false, roadmap };
+      return;
+    }
+    if (roadmap.auto_advance !== true) {
+      checked = { continuation_state: 'DISABLED', auto_advance: false, roadmap };
+      return;
+    }
+    if (milestonesCompleteOrSkipped(roadmap)) {
+      if (roadmap.state !== 'COMPLETED') {
+        tx.set(roadmapRef, { state: 'COMPLETED', updated_at: timestamp() }, { merge: true });
+      }
+      checked = { continuation_state: 'ROADMAP_COMPLETED', auto_advance: true, roadmap };
+      return;
+    }
+    if (!runnableRoadmapState(roadmap.state)) {
+      checked = { continuation_state: 'STOPPED', auto_advance: true, roadmap };
+      return;
+    }
+    const existingActiveMilestone = activeMilestone(roadmap);
+    if (existingActiveMilestone) {
+      checked = {
+        continuation_state: existingActiveMilestone.state === 'NEED_HUMAN_ACTION' ? 'NEED_HUMAN_ACTION' : 'ALREADY_RUNNING',
+        auto_advance: true,
+        roadmap,
+        milestone: existingActiveMilestone,
+        checkpoint: unresolvedHumanActionCheckpoint(existingActiveMilestone)
+      };
+      return;
+    }
+    const milestone = nextMilestone(roadmap);
+    if (!milestone) {
+      checked = {
+        continuation_state: pendingMilestones(roadmap).length > 0 ? 'NO_ELIGIBLE_MILESTONE' : 'ROADMAP_COMPLETED',
+        auto_advance: true,
+        roadmap
+      };
+      return;
+    }
+    checked = { continuation_state: 'SELECTED', auto_advance: true, roadmap, milestone };
+  });
+
+  if (!checked || checked.continuation_state !== 'SELECTED') {
+    const missionId = checked?.milestone?.mission_id || null;
+    const brainRun = missionId ? await findProgramBrainRun(db, tenantId, missionId) : null;
+    return {
+      auto_advance: checked?.auto_advance === true,
+      continuation_state: checked?.continuation_state || 'STOPPED',
+      next_milestone_id: checked?.milestone?.id || null,
+      next_mission_id: missionId,
+      next_brain_run_id: brainRun?.id || null,
+      checkpoint_id: checked?.checkpoint?.checkpoint_id || null
+    };
+  }
+
+  const projectSnap = await db.collection('projects').doc(checked.roadmap.project_id).get();
+  if (!projectSnap.exists || projectSnap.data().tenant_id !== tenantId) {
+    return { auto_advance: true, continuation_state: 'STOPPED', next_milestone_id: checked.milestone.id };
+  }
+  const project = { id: projectSnap.id, ...projectSnap.data() };
+  const provisionalMission = {
+    id: `provisional:${checked.roadmap.id}:${checked.milestone.id}`,
+    tenant_id: tenantId,
+    workspace_id: checked.roadmap.workspace_id || project.workspace_id || null,
+    project_id: checked.roadmap.project_id,
+    roadmap_id: checked.roadmap.id,
+    milestone_id: checked.milestone.id
+  };
+  const { deterministicProgramPreflight } = require('./orchestration');
+  const provisionalCheckpoint = deterministicProgramPreflight({
+    tenantId,
+    brainOutput: { task_spec: {} },
+    mission: provisionalMission,
+    run: { id: null, mission_id: provisionalMission.id, roadmap_id: checked.roadmap.id, milestone_id: checked.milestone.id },
+    roadmap: checked.roadmap,
+    milestone: checked.milestone,
+    project
+  });
+
+  if (provisionalCheckpoint) {
+    const started = await startNextRoadmapMilestone(db, tenantId, roadmapId, {
+      milestone_id: checked.milestone.id,
+      planner_handoff: options.planner_handoff === true,
+      dispatch_brain_run: false,
+      max_attempts: options.max_attempts
+    });
+    const checkpoint = normalizeHumanActionCheckpoint({
+      ...provisionalCheckpoint,
+      checkpoint_id: null,
+      tenant_id: tenantId,
+      roadmap_id: checked.roadmap.id,
+      milestone_id: checked.milestone.id,
+      mission_id: started.mission.id,
+      checkpoint_seed: null
+    });
+    await markNextMilestoneNeedsHumanAction(db, tenantId, roadmapId, checked.milestone.id, started.mission.id, checkpoint);
+    return {
+      auto_advance: true,
+      continuation_state: 'NEED_HUMAN_ACTION',
+      next_milestone_id: checked.milestone.id,
+      next_mission_id: started.mission.id,
+      next_brain_run_id: null,
+      checkpoint_id: checkpoint.checkpoint_id
+    };
+  }
+
+  const started = await startNextRoadmapMilestone(db, tenantId, roadmapId, {
+    milestone_id: checked.milestone.id,
+    planner_handoff: options.planner_handoff === true,
+    dispatch_brain_run: true,
+    max_attempts: options.max_attempts
+  });
+  return {
+    auto_advance: true,
+    continuation_state: started.reused ? 'ALREADY_RUNNING' : 'STARTED',
+    next_milestone_id: started.milestone?.id || checked.milestone.id,
+    next_mission_id: started.mission?.id || null,
+    next_brain_run_id: started.brain_run?.id || null,
+    checkpoint_id: started.checkpoint?.checkpoint_id || null
+  };
 }
 
 function milestoneWithHumanAction(roadmap, milestoneId, checkpoint) {
@@ -752,6 +948,38 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
       const error = new Error('RUN_NOT_FOUND'); error.status = 404; throw error;
     }
     const run = { id: runSnap.id, ...runSnap.data() };
+    if (
+      run.run_type === 'BRAIN_RUN' &&
+      run.state === 'COMPLETED' &&
+      run.autopilot_phase === 'VERIFY_EXECUTION' &&
+      run.autopilot_decision?.action === 'COMPLETE'
+    ) {
+      const missionSnap = run.mission_id ? await tx.get(db.collection('missions').doc(run.mission_id)) : null;
+      const roadmapSnap = run.roadmap_id ? await tx.get(db.collection('roadmaps').doc(run.roadmap_id)) : null;
+      if (!missionSnap?.exists || missionSnap.data().tenant_id !== tenantId) {
+        const error = new Error('MISSION_NOT_FOUND'); error.status = 404; throw error;
+      }
+      if (!roadmapSnap?.exists || roadmapSnap.data().tenant_id !== tenantId) {
+        const error = new Error('ROADMAP_NOT_FOUND'); error.status = 404; throw error;
+      }
+      const mission = { id: missionSnap.id, ...missionSnap.data() };
+      const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
+      if (roadmap.auto_advance !== true) {
+        const error = new Error('AUTOPILOT_VERIFICATION_RUN_NOT_ACTIVE'); error.status = 409; throw error;
+      }
+      result = {
+        success: true,
+        action: 'COMPLETE',
+        roadmap_id: roadmap.id,
+        milestone_id: run.milestone_id,
+        completed_milestone_id: run.milestone_id,
+        mission_id: mission.id,
+        auto_advance: roadmap.auto_advance === true,
+        replayed: true,
+        reason: run.autopilot_decision.reason || ''
+      };
+      return;
+    }
     if (run.run_type !== 'BRAIN_RUN' || run.state !== 'RUNNING' || run.autopilot_phase !== 'VERIFY_EXECUTION') {
       const error = new Error('AUTOPILOT_VERIFICATION_RUN_NOT_ACTIVE'); error.status = 409; throw error;
     }
@@ -832,8 +1060,10 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
         action: 'COMPLETE',
         roadmap_id: roadmap.id,
         milestone_id: milestone.id,
+        completed_milestone_id: milestone.id,
         mission_id: mission.id,
         auto_advance: roadmap.auto_advance === true && !roadmapCompleted,
+        continuation_state: roadmapCompleted ? 'ROADMAP_COMPLETED' : (roadmap.auto_advance === true ? 'PENDING' : 'DISABLED'),
         reason: decision.reason
       };
       return;
@@ -1007,6 +1237,24 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
       reason: decision.reason
     };
   });
+  if (result?.action === 'COMPLETE' && result.roadmap_id && result.milestone_id) {
+    const continuation = await continueRoadmapAfterComplete(
+      db,
+      tenantId,
+      result.roadmap_id,
+      result.milestone_id,
+      input.continuation_options || {}
+    );
+    result = {
+      ...result,
+      auto_advance: continuation.auto_advance === true,
+      next_milestone_id: continuation.next_milestone_id || null,
+      next_mission_id: continuation.next_mission_id || null,
+      next_brain_run_id: continuation.next_brain_run_id || null,
+      continuation_state: continuation.continuation_state,
+      checkpoint_id: continuation.checkpoint_id || null
+    };
+  }
   return result;
 }
 
@@ -1197,6 +1445,7 @@ module.exports = {
   confirmHumanActionReady,
   milestoneWithHumanAction,
   failClosedHumanActionReason,
+  continueRoadmapAfterComplete,
   startNextRoadmapMilestone,
   plannerAutopilotBrainContext,
   queueVerificationBrainRun,

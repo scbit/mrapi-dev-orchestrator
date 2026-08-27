@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 
 const GOAL_STATES = new Set(['DRAFT', 'ACTIVE', 'PAUSED', 'COMPLETED', 'BLOCKED', 'CANCELLED']);
-const MILESTONE_STATES = new Set(['PENDING', 'PLANNING', 'RUNNING', 'VERIFYING', 'COMPLETED', 'BLOCKED', 'SKIPPED']);
+const MILESTONE_STATES = new Set(['PENDING', 'PLANNING', 'RUNNING', 'VERIFYING', 'COMPLETED', 'BLOCKED', 'SKIPPED', 'NEED_HUMAN_ACTION']);
 
 function cleanText(value, max = 4000) {
   const text = String(value ?? '').trim();
@@ -83,7 +83,12 @@ function normalizeRoadmapInput(input = {}, existing = {}) {
 function milestoneCanStart(milestone, milestones) {
   if (!milestone || milestone.state !== 'PENDING') return false;
   const byId = new Map((milestones || []).map((item) => [item.id, item]));
-  return (milestone.depends_on || []).every((id) => byId.get(id)?.state === 'COMPLETED');
+  const dependencies = Array.isArray(milestone.depends_on)
+    ? milestone.depends_on
+    : Array.isArray(milestone.dependencies)
+      ? milestone.dependencies
+      : [];
+  return dependencies.every((id) => ['COMPLETED', 'SKIPPED'].includes(byId.get(id)?.state));
 }
 
 function nextMilestone(roadmap) {

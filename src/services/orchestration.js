@@ -3538,5 +3538,6 @@ module.exports = {
   completeManualCodexHandoff,
   recoverAbandonedBrainRuns,
   resumeAutopilotProgramAfterHumanAction,
+  deterministicProgramPreflight,
   parseBrainResponse
 };
