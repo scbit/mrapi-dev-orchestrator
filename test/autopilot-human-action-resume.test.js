@@ -204,8 +204,20 @@ test('replayed LISTO after success reuses the same continuation task and preserv
   const cp = await pauseWith(db, { requires_repository: true });
   db.set('projects', 'project_a', { local_path: 'C:/repo' }, { merge: true });
   const first = await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp.checkpoint_id, { ready: true });
+  const afterFirst = {
+    missions: values(db, 'missions').length,
+    tasks: values(db, 'tasks').length,
+    brainRuns: values(db, 'runs').filter((run) => run.run_type === 'BRAIN_RUN').length,
+    executionRuns: values(db, 'runs').filter((run) => run.run_type === 'EXECUTION_RUN').length
+  };
   const second = await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp.checkpoint_id, { ready: true });
   assert.equal(first.task_id, second.task_id);
+  assert.deepEqual({
+    missions: values(db, 'missions').length,
+    tasks: values(db, 'tasks').length,
+    brainRuns: values(db, 'runs').filter((run) => run.run_type === 'BRAIN_RUN').length,
+    executionRuns: values(db, 'runs').filter((run) => run.run_type === 'EXECUTION_RUN').length
+  }, afterFirst);
   assert.equal(values(db, 'tasks').length, 1);
   assert.equal(checkpoint(db).status, 'RESOLVED');
   assert.equal(db.get('roadmaps', 'roadmap_a').milestones[0].state, 'COMPLETED');

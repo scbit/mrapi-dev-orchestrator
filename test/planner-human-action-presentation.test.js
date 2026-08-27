@@ -124,6 +124,7 @@ async function flush() {
 function proposal(overrides = {}) {
   return {
     roadmap_id: 'roadmap_human_action',
+    tenant_id: 'tenant_a',
     title: 'Human Action Presentation Roadmap',
     state: 'ACTIVE',
     approval_status: 'APPROVED',
@@ -151,7 +152,7 @@ function proposal(overrides = {}) {
 }
 
 function humanMilestone(overrides = {}) {
-  return {
+  const base = {
     id: 'human_m1',
     order: 1,
     title: 'Human checkpoint milestone',
@@ -165,13 +166,62 @@ function humanMilestone(overrides = {}) {
     validation_method: 'manual_confirmation',
     checkpoint_id: 'checkpoint_1',
     checkpoint_type: 'MANUAL_ACTION',
+    tenant_id: 'tenant_a',
+    roadmap_id: 'roadmap_human_action',
+    milestone_id: 'human_m1',
+    mission_id: 'mission_human_m1',
     status: 'WAITING_FOR_HUMAN',
     dependencies: [],
     risks: [],
     success_criteria: ['Confirmation recorded'],
-    state: 'PENDING',
-    ...overrides
+    state: 'PENDING'
   };
+  const merged = { ...base, ...overrides };
+  const checkpoint = {
+    checkpoint_id: merged.checkpoint_id,
+    checkpoint_type: merged.checkpoint_type,
+    human_action_required: merged.human_action_required,
+    human_action_request: merged.human_action_request,
+    user_action: merged.user_action,
+    action_location: merged.action_location,
+    validation_method: merged.validation_method,
+    tenant_id: merged.tenant_id,
+    roadmap_id: merged.roadmap_id,
+    milestone_id: merged.milestone_id || merged.id,
+    mission_id: merged.mission_id,
+    status: merged.status,
+    waiting_status: merged.status
+  };
+  return {
+    ...merged,
+    human_action_checkpoint: overrides.human_action_checkpoint === null
+      ? undefined
+      : { ...checkpoint, ...(overrides.human_action_checkpoint || {}) }
+  };
+}
+
+function activeHumanProposal(overrides = {}) {
+  const roadmapId = overrides.roadmap_id || 'roadmap_human_action';
+  const milestoneId = overrides.current_human_action_milestone_id || overrides.current_milestone_id || 'human_m1';
+  const missionId = overrides.current_human_action_mission_id || 'mission_human_m1';
+  const checkpointId = overrides.current_human_action_checkpoint_id || overrides.active_human_action_checkpoint_id || 'checkpoint_1';
+  return proposal({
+    current_milestone_id: milestoneId,
+    current_human_action_checkpoint_id: checkpointId,
+    active_human_action_checkpoint_id: checkpointId,
+    current_human_action_milestone_id: milestoneId,
+    current_human_action_mission_id: missionId,
+    active_human_action: {
+      checkpoint_id: checkpointId,
+      tenant_id: overrides.tenant_id || 'tenant_a',
+      roadmap_id: roadmapId,
+      milestone_id: milestoneId,
+      mission_id: missionId,
+      status: overrides.active_human_action?.status || 'WAITING_FOR_HUMAN',
+      ...(overrides.active_human_action || {})
+    },
+    ...overrides
+  });
 }
 
 function visibleActions(planner) {
@@ -202,7 +252,7 @@ test('Human Action panel is absent without explicit persisted checkpoint evidenc
 
 test('explicit Human Action renders requirement, instruction, friendly status, fallbacks, and escaping', async () => {
   const planner = createHarness();
-  planner.renderProposal(proposal({
+  planner.renderProposal(activeHumanProposal({
     current_milestone_id: 'human_m1',
     milestones: [humanMilestone({
       human_action_request: 'MRAPI needs <b>credential approval</b>.',
@@ -234,7 +284,7 @@ test('explicit Human Action renders requirement, instruction, friendly status, f
 
 test('Proposal unavailable still renders explicit active Human Action continuity panel', async () => {
   const planner = createHarness();
-  planner.renderProposal(proposal({
+  planner.renderProposal(activeHumanProposal({
     summary: '',
     current_milestone_id: 'human_m1',
     current_milestone: humanMilestone({
@@ -289,10 +339,20 @@ test('Proposal unavailable enables LISTO for explicit active m6 checkpoint witho
       human_action_required: true
     }
   });
-  const malformed = proposal({
+  const malformed = activeHumanProposal({
     summary: '',
     active_human_action_checkpoint_id: 'checkpoint_m6',
+    current_human_action_checkpoint_id: 'checkpoint_m6',
     current_human_action_milestone_id: 'm6',
+    current_human_action_mission_id: 'mission_m6',
+    active_human_action: {
+      checkpoint_id: 'checkpoint_m6',
+      tenant_id: 'tenant_a',
+      roadmap_id: 'roadmap_human_action',
+      milestone_id: 'm6',
+      mission_id: 'mission_m6',
+      status: 'WAITING_FOR_HUMAN'
+    },
     milestones: [
       { id: 'm5', order: 5, title: 'Malformed prior milestone', state: 'COMPLETED' },
       checkpoint
@@ -363,6 +423,148 @@ test('Proposal unavailable enables LISTO for explicit active m6 checkpoint witho
   assert.match(rendered, /<button class="primary" type="button" disabled>LISTO<\/button>/);
 });
 
+test('Proposal unavailable enables LISTO for canonical active m2 checkpoint even when milestone wrapper status is pending', async () => {
+  const calls = [];
+  const checkpoint = humanMilestone({
+    id: 'm2',
+    order: 2,
+    title: 'Clean smoke m2',
+    checkpoint_id: 'checkpoint_m2',
+    milestone_id: 'm2',
+    mission_id: 'mission_m2',
+    roadmap_id: 'roadmap_human_action',
+    status: 'PENDING',
+    state: 'NEED_HUMAN_ACTION',
+    human_action_request: 'MRAPI needs clean-smoke confirmation.',
+    user_action: 'Confirm the clean-smoke gate is satisfied.',
+    human_action_checkpoint: {
+      checkpoint_id: 'checkpoint_m2',
+      checkpoint_type: 'MANUAL_ACTION',
+      human_action_required: true,
+      tenant_id: 'tenant_a',
+      roadmap_id: 'roadmap_human_action',
+      milestone_id: 'm2',
+      mission_id: 'mission_m2',
+      status: 'WAITING_FOR_HUMAN',
+      waiting_status: 'WAITING_FOR_HUMAN',
+      repository_clean: true
+    }
+  });
+  const malformed = activeHumanProposal({
+    summary: '',
+    current_milestone_id: 'm2',
+    current_human_action_checkpoint_id: 'checkpoint_m2',
+    active_human_action_checkpoint_id: 'checkpoint_m2',
+    current_human_action_milestone_id: 'm2',
+    current_human_action_mission_id: 'mission_m2',
+    active_human_action: {
+      checkpoint_id: 'checkpoint_m2',
+      tenant_id: 'tenant_a',
+      roadmap_id: 'roadmap_human_action',
+      milestone_id: 'm2',
+      mission_id: 'mission_m2',
+      status: 'WAITING_FOR_HUMAN'
+    },
+    milestones: [
+      { id: 'm1', order: 1, title: 'Completed smoke setup', state: 'COMPLETED' },
+      checkpoint
+    ]
+  });
+  const planner = createHarness(async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (url === '/api/workspaces' || url === '/api/projects') return response({ items: [] });
+    if (url === '/api/planner/recent?limit=10') return response({ items: [] });
+    if (url === '/api/planner/proposals/roadmap_human_action/human-action/checkpoint_m2/ready') {
+      return response({ resumed: false, state: 'NEED_HUMAN_ACTION', checkpoint_id: 'checkpoint_m2', message: 'Clean smoke still requires confirmation.' });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  });
+  await flush();
+  calls.length = 0;
+
+  planner.renderProposal(malformed);
+  const rendered = planner.els.proposalView.innerHTML;
+  assert.match(rendered, /Proposal unavailable/);
+  assert.match(rendered, /human-action-panel is-current/);
+  assert.match(rendered, /MRAPI needs:<\/strong> MRAPI needs clean-smoke confirmation/);
+  assert.match(rendered, /Current checkpoint status:<\/strong> Need human action/);
+  assert.match(rendered, /data-human-action-ready="1" data-checkpoint-id="checkpoint_m2">LISTO<\/button>/);
+  assert.doesNotMatch(rendered, /LISTO is available only for the current unresolved checkpoint/);
+
+  planner.els.proposalView.listeners.click({
+    target: { dataset: { humanActionReady: '1', checkpointId: 'checkpoint_m2' }, disabled: false }
+  });
+  await flush();
+  assert.deepEqual(calls.map((call) => [call.url, call.options.method]), [
+    ['/api/planner/proposals/roadmap_human_action/human-action/checkpoint_m2/ready', 'POST']
+  ]);
+});
+
+test('LISTO stays disabled for non-current or invalid Human Action checkpoint identities', async () => {
+  const cases = [
+    {
+      name: 'resolved checkpoint',
+      milestone: { status: 'RESOLVED', human_action_checkpoint: { status: 'RESOLVED', waiting_status: 'RESOLVED' } },
+      active: { status: 'RESOLVED' }
+    },
+    {
+      name: 'stale checkpoint',
+      milestone: { human_action_checkpoint: { stale: true } }
+    },
+    {
+      name: 'superseded checkpoint',
+      milestone: { human_action_checkpoint: { superseded: true } }
+    },
+    {
+      name: 'wrong milestone',
+      milestone: { milestone_id: 'wrong_m1', human_action_checkpoint: { milestone_id: 'wrong_m1' } }
+    },
+    {
+      name: 'wrong Mission',
+      milestone: { mission_id: 'wrong_mission', human_action_checkpoint: { mission_id: 'wrong_mission' } }
+    },
+    {
+      name: 'wrong roadmap',
+      milestone: { roadmap_id: 'wrong_roadmap', human_action_checkpoint: { roadmap_id: 'wrong_roadmap' } }
+    },
+    {
+      name: 'wrong tenant',
+      milestone: { tenant_id: 'tenant_b', human_action_checkpoint: { tenant_id: 'tenant_b' } }
+    },
+    {
+      name: 'historical unresolved checkpoint that is not canonical current',
+      proposal: {
+        current_human_action_checkpoint_id: 'checkpoint_current',
+        active_human_action_checkpoint_id: 'checkpoint_current',
+        active_human_action: { checkpoint_id: 'checkpoint_current' }
+      }
+    }
+  ];
+
+  for (const item of cases) {
+    const planner = createHarness();
+    const baseActive = {
+      checkpoint_id: 'checkpoint_1',
+      tenant_id: 'tenant_a',
+      roadmap_id: 'roadmap_human_action',
+      milestone_id: 'human_m1',
+      mission_id: 'mission_human_m1',
+      status: 'WAITING_FOR_HUMAN',
+      ...(item.active || {})
+    };
+    planner.renderProposal(activeHumanProposal({
+      current_milestone_id: 'human_m1',
+      active_human_action: baseActive,
+      milestones: [humanMilestone(item.milestone || {})],
+      ...(item.proposal || {})
+    }));
+    const rendered = planner.els.proposalView.innerHTML;
+    assert.match(rendered, /human-action-panel/, item.name);
+    assert.match(rendered, /<button class="primary" type="button" disabled>LISTO<\/button>/, item.name);
+    assert.doesNotMatch(rendered, /data-human-action-ready="1"/, item.name);
+  }
+});
+
 test('checkpoint IDs, types, source milestone, and raw status stay in Advanced details', async () => {
   const planner = createHarness();
   planner.renderProposal(proposal({ milestones: [humanMilestone()] }));
@@ -388,7 +590,7 @@ test('LISTO is visible only for explicit Human Action and has no continuation si
   await flush();
   calls.length = 0;
 
-  planner.renderProposal(proposal({ current_milestone_id: 'human_m1', milestones: [humanMilestone()] }));
+  planner.renderProposal(activeHumanProposal({ current_milestone_id: 'human_m1', milestones: [humanMilestone()] }));
   assert.match(planner.els.proposalView.innerHTML, /data-human-action-ready="1" data-checkpoint-id="checkpoint_1">LISTO<\/button>/);
   assert.match(planner.els.proposalView.innerHTML, /MRAPI will re-check the persisted condition before resuming/);
   assert.doesNotMatch(planner.els.proposalView.innerHTML, /continued|successfully resumed|execution continued/i);
@@ -415,7 +617,7 @@ test('LISTO posts once to Human Action endpoint and unresolved response keeps pa
   });
   await flush();
   calls.length = 0;
-  planner.renderProposal(proposal({ current_milestone_id: 'human_m1', milestones: [humanMilestone()] }));
+  planner.renderProposal(activeHumanProposal({ current_milestone_id: 'human_m1', milestones: [humanMilestone()] }));
 
   await planner.els.proposalView.listeners.click({
     target: { dataset: { humanActionReady: '1', checkpointId: 'checkpoint_1' }, disabled: false }
@@ -445,7 +647,7 @@ test('successful LISTO refreshes canonical proposal and avoids lifecycle mutatio
   });
   await flush();
   calls.length = 0;
-  planner.renderProposal(proposal({ current_milestone_id: 'human_m1', milestones: [humanMilestone()] }));
+  planner.renderProposal(activeHumanProposal({ current_milestone_id: 'human_m1', milestones: [humanMilestone()] }));
 
   await planner.els.proposalView.listeners.click({
     target: { dataset: { humanActionReady: '1', checkpointId: 'checkpoint_1' }, disabled: false }
@@ -461,8 +663,20 @@ test('successful LISTO refreshes canonical proposal and avoids lifecycle mutatio
 
 test('multiple Human Action checkpoints render deterministically, deduplicate by checkpoint ID, and emphasize current first', async () => {
   const planner = createHarness();
-  planner.renderProposal(proposal({
+  planner.renderProposal(activeHumanProposal({
     current_milestone_id: 'm2',
+    current_human_action_checkpoint_id: 'checkpoint_2',
+    active_human_action_checkpoint_id: 'checkpoint_2',
+    current_human_action_milestone_id: 'm2',
+    current_human_action_mission_id: 'mission_human_m1',
+    active_human_action: {
+      checkpoint_id: 'checkpoint_2',
+      tenant_id: 'tenant_a',
+      roadmap_id: 'roadmap_human_action',
+      milestone_id: 'm2',
+      mission_id: 'mission_human_m1',
+      status: 'WAITING_FOR_HUMAN'
+    },
     current_milestone: humanMilestone({
       id: 'm2',
       order: 2,
@@ -504,7 +718,7 @@ test('multiple Human Action checkpoints render deterministically, deduplicate by
 
 test('normal renderable proposal renders a single Human Action panel for one checkpoint', async () => {
   const planner = createHarness();
-  planner.renderProposal(proposal({
+  planner.renderProposal(activeHumanProposal({
     current_milestone_id: 'human_m1',
     milestones: [humanMilestone()]
   }));

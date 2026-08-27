@@ -528,6 +528,14 @@ function plannerPageHtml() {
       return objects;
     }
 
+    function persistedHumanActionCheckpoint(item) {
+      if (!item || typeof item !== 'object') return null;
+      if (item.human_action_checkpoint && typeof item.human_action_checkpoint === 'object') return item.human_action_checkpoint;
+      if (item.checkpoint && typeof item.checkpoint === 'object') return item.checkpoint;
+      if (item.human_action && typeof item.human_action === 'object') return item.human_action;
+      return null;
+    }
+
     function explicitHumanActionValue(item, fields) {
       for (const candidate of explicitHumanActionObjects(item)) {
         const value = explicitTextField(candidate, fields);
@@ -570,6 +578,11 @@ function plannerPageHtml() {
       return ['WAITING_FOR_HUMAN', 'NEED_HUMAN_ACTION', 'NEEDS_HUMAN_ACTION', 'HUMAN_ACTION_REQUIRED'].includes(status);
     }
 
+    function isResolvedHumanActionStatus(rawValue) {
+      const status = text(rawValue).trim().toUpperCase();
+      return ['RESOLVED', 'STALE', 'SUPERSEDED', 'COMPLETED', 'COMPLETE', 'DONE', 'HISTORICAL'].includes(status);
+    }
+
     function explicitCurrentHumanActionSignal(source) {
       return explicitHumanActionBoolean(source, [
         'is_current',
@@ -598,13 +611,62 @@ function plannerPageHtml() {
       return Boolean(checkpointId);
     }
 
+    function activeHumanActionContext(proposal) {
+      const explicit = proposal?.active_human_action && typeof proposal.active_human_action === 'object'
+        ? proposal.active_human_action
+        : null;
+      return {
+        tenantId: text(explicit?.tenant_id || proposal?.tenant_id || '').trim(),
+        roadmapId: text(explicit?.roadmap_id || proposal?.roadmap_id || proposal?.proposal_id || proposal?.id || state.proposalId).trim(),
+        milestoneId: text(explicit?.milestone_id || proposal?.current_human_action_milestone_id || proposal?.active_human_action_milestone_id || proposal?.current_milestone_id || proposal?.milestone_id || '').trim(),
+        missionId: text(explicit?.mission_id || proposal?.current_human_action_mission_id || proposal?.active_human_action_mission_id || '').trim(),
+        checkpointId: text(explicit?.checkpoint_id || proposal?.current_human_action_checkpoint_id || proposal?.active_human_action_checkpoint_id || '').trim(),
+        status: text(explicit?.status || '').trim()
+      };
+    }
+
+    function isCurrentHumanActionReadyEligible({ source, proposal, sourceMilestoneId, checkpointId, rawStatus, isCurrent }) {
+      const checkpoint = persistedHumanActionCheckpoint(source);
+      if (!checkpoint || typeof checkpoint !== 'object') return false;
+      if (!checkpointId) return false;
+      if (checkpoint.human_action_required !== true && !explicitHumanActionMarker(checkpoint.checkpoint_type || checkpoint.status || checkpoint.waiting_status || checkpoint.checkpoint_status)) return false;
+      const context = activeHumanActionContext(proposal);
+      if (!context.checkpointId || context.checkpointId !== checkpointId) return false;
+      if (!isCurrent) return false;
+
+      const proposalTenantId = text(proposal?.tenant_id || '').trim();
+      const checkpointTenantId = text(checkpoint.tenant_id || source?.tenant_id || '').trim();
+      if (proposalTenantId && checkpointTenantId && proposalTenantId !== checkpointTenantId) return false;
+      if (context.tenantId && checkpointTenantId && context.tenantId !== checkpointTenantId) return false;
+
+      const checkpointRoadmapId = text(checkpoint.roadmap_id || source?.roadmap_id || source?.proposal_id || '').trim();
+      if (!context.roadmapId || !checkpointRoadmapId || checkpointRoadmapId !== context.roadmapId) return false;
+
+      const checkpointMilestoneId = text(checkpoint.milestone_id || source?.milestone_id || sourceMilestoneId || '').trim();
+      if (!context.milestoneId || !checkpointMilestoneId || checkpointMilestoneId !== context.milestoneId) return false;
+      if (sourceMilestoneId && checkpointMilestoneId !== sourceMilestoneId) return false;
+
+      const checkpointMissionId = text(checkpoint.mission_id || source?.mission_id || source?.planner_mission_id || '').trim();
+      if (context.missionId && (!checkpointMissionId || checkpointMissionId !== context.missionId)) return false;
+
+      const status = text(checkpoint.status || checkpoint.waiting_status || checkpoint.checkpoint_status || rawStatus).trim().toUpperCase();
+      if (!isUnresolvedHumanActionStatus(status)) return false;
+      if (isResolvedHumanActionStatus(status)) return false;
+      if (checkpoint.resolved === true || checkpoint.is_resolved === true || checkpoint.stale === true || checkpoint.is_stale === true || checkpoint.superseded === true || checkpoint.is_superseded === true || checkpoint.historical === true || checkpoint.is_historical === true) return false;
+      if (isResolvedHumanActionStatus(source?.state) || isResolvedHumanActionStatus(source?.status) || isResolvedHumanActionStatus(source?.lifecycle_state)) return false;
+      return true;
+    }
+
     function humanActionViewModel(source, options = {}) {
       if (!requiresHumanAction(source)) return null;
       const sourceMilestoneId = text(options.sourceMilestoneId || source?.id || '').trim();
       const sourceMilestoneTitle = text(options.sourceMilestoneTitle || source?.title || '').trim();
+      const checkpoint = persistedHumanActionCheckpoint(source);
       const id = explicitHumanActionValue(source, ['checkpoint_id', 'human_action_id', 'action_id']);
       const type = explicitHumanActionValue(source, ['checkpoint_type', 'human_action_type', 'action_type', 'type']);
-      const rawStatus = explicitHumanActionValue(source, ['checkpoint_state', 'checkpoint_status', 'human_action_state', 'human_action_status', 'status', 'waiting_status', 'revision_status', 'state', 'lifecycle_state']);
+      const rawStatus = checkpoint
+        ? explicitHumanActionValue(checkpoint, ['checkpoint_state', 'checkpoint_status', 'human_action_state', 'human_action_status', 'status', 'waiting_status', 'revision_status', 'state', 'lifecycle_state'])
+        : explicitHumanActionValue(source, ['checkpoint_state', 'checkpoint_status', 'human_action_state', 'human_action_status', 'status', 'waiting_status', 'revision_status', 'state', 'lifecycle_state']);
       const requirement = explicitHumanActionValue(source, ['human_action', 'human_action_request', 'checkpoint_message', 'requirement', 'reason']);
       const userAction = explicitHumanActionValue(source, ['user_action', 'required_action', 'action_instruction', 'instructions']);
       const actionLocation = explicitHumanActionValue(source, ['action_location', 'location', 'where']);
@@ -612,6 +674,14 @@ function plannerPageHtml() {
       const validationMessage = explicitHumanActionValue(source, ['last_validation_message', 'validation_message', 'safe_validation_message']);
       const isCurrent = Boolean(options.isCurrent || explicitCurrentHumanActionSignal(source));
       const hasValidCheckpointContext = consistentHumanActionProvenance(source, options.proposal, sourceMilestoneId, id);
+      const eligibleForListo = Boolean(hasValidCheckpointContext && isCurrentHumanActionReadyEligible({
+        source,
+        proposal: options.proposal,
+        sourceMilestoneId,
+        checkpointId: id,
+        rawStatus,
+        isCurrent
+      }));
       return {
         id,
         type,
@@ -630,7 +700,7 @@ function plannerPageHtml() {
         sourceMilestoneId,
         sourceMilestoneTitle,
         isCurrent,
-        canConfirmReady: Boolean(isCurrent && hasValidCheckpointContext && isUnresolvedHumanActionStatus(rawStatus)),
+        canConfirmReady: eligibleForListo,
         identity: id
           ? 'id:' + id
           : [

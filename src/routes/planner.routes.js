@@ -11,6 +11,40 @@ const {
 } = require('../services/planner');
 const { confirmHumanActionReady } = require('../services/autopilot');
 
+function normalizeHumanActionStatus(checkpoint = {}) {
+  return String(checkpoint.status || checkpoint.waiting_status || checkpoint.checkpoint_status || '').trim().toUpperCase();
+}
+
+function unresolvedHumanActionCheckpoint(milestone = {}) {
+  const checkpoint = milestone?.human_action_checkpoint || milestone?.human_action || null;
+  if (!checkpoint || checkpoint.human_action_required !== true) return null;
+  const status = normalizeHumanActionStatus(checkpoint);
+  return status === 'WAITING_FOR_HUMAN' || status === 'NEED_HUMAN_ACTION' ? checkpoint : null;
+}
+
+function withActiveHumanActionContext(proposal, tenantId) {
+  const milestones = Array.isArray(proposal?.milestones) ? proposal.milestones : [];
+  const milestone = milestones.find((item) => unresolvedHumanActionCheckpoint(item)) || null;
+  const checkpoint = milestone ? unresolvedHumanActionCheckpoint(milestone) : null;
+  if (!milestone || !checkpoint?.checkpoint_id) return proposal;
+  return {
+    ...proposal,
+    tenant_id: tenantId,
+    current_human_action_checkpoint_id: checkpoint.checkpoint_id,
+    active_human_action_checkpoint_id: checkpoint.checkpoint_id,
+    current_human_action_milestone_id: checkpoint.milestone_id || milestone.id || null,
+    current_human_action_mission_id: checkpoint.mission_id || milestone.mission_id || null,
+    active_human_action: {
+      checkpoint_id: checkpoint.checkpoint_id,
+      tenant_id: checkpoint.tenant_id || tenantId,
+      roadmap_id: checkpoint.roadmap_id || proposal.roadmap_id || proposal.proposal_id || proposal.id || null,
+      milestone_id: checkpoint.milestone_id || milestone.id || null,
+      mission_id: checkpoint.mission_id || milestone.mission_id || null,
+      status: normalizeHumanActionStatus(checkpoint)
+    }
+  };
+}
+
 function validateHumanActionReadyBody(body = {}) {
   const allowed = new Set(['ready', 'confirm', 'confirmed', 'listo']);
   for (const key of Object.keys(body || {})) {
@@ -46,7 +80,8 @@ function createPlannerRouter({ db }) {
 
   router.get('/proposals/:proposalId', async (req, res, next) => {
     try {
-      res.json(serializeFirestore(await getPlannerProposal(db, req.tenantId, req.params.proposalId)));
+      const proposal = await getPlannerProposal(db, req.tenantId, req.params.proposalId);
+      res.json(serializeFirestore(withActiveHumanActionContext(proposal, req.tenantId)));
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });
       next(error);
