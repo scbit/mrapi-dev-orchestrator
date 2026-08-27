@@ -301,6 +301,30 @@ function serviceProposal(overrides = {}) {
   };
 }
 
+function seedScb(db) {
+  db.set('workspaces', 'workspace_scb', { id: 'workspace_scb', tenant_id: 'tenant_facundo_group', name: 'SCB' });
+  db.set('projects', 'project_scb_development', {
+    id: 'project_scb_development',
+    tenant_id: 'tenant_facundo_group',
+    workspace_id: 'workspace_scb',
+    name: 'SCB Development'
+  });
+}
+
+async function readBackServiceProposal(db, proposalBody) {
+  seedScb(db);
+  const request = await createPlannerRequest(db, 'tenant_facundo_group', {
+    workspace_id: 'workspace_scb',
+    project_id: 'project_scb_development',
+    request: 'Create SCB proposal.',
+    auto_advance: true
+  });
+  const created = await completePlannerBrainRun(db, 'tenant_facundo_group', request.brain_run_id, {
+    proposal: proposalBody
+  });
+  return getPlannerProposal(db, 'tenant_facundo_group', created.roadmap_id);
+}
+
 function visibleActions(planner) {
   return {
     approve: !planner.els.approve.classList.contains('hidden'),
@@ -347,13 +371,7 @@ test('primary roadmap lifecycle labels are deterministic and preserve action gat
 
 test('canonical Planner read-back resolves SCB scope while remaining proposed and non-executing', async () => {
   const db = new DB();
-  db.set('workspaces', 'workspace_scb', { id: 'workspace_scb', tenant_id: 'tenant_facundo_group', name: 'SCB' });
-  db.set('projects', 'project_scb_development', {
-    id: 'project_scb_development',
-    tenant_id: 'tenant_facundo_group',
-    workspace_id: 'workspace_scb',
-    name: 'SCB Development'
-  });
+  seedScb(db);
 
   const request = await createPlannerRequest(db, 'tenant_facundo_group', {
     workspace_id: 'workspace_scb',
@@ -377,6 +395,53 @@ test('canonical Planner read-back resolves SCB scope while remaining proposed an
   assert.equal(readBack.approval_status, 'PENDING');
   assert.equal(values(db, 'tasks').length, 0);
   assert.equal(values(db, 'runs').filter((run) => run.run_type === 'EXECUTION_RUN').length, 0);
+});
+
+test('Planner summary counts only canonical expected Human Actions', async () => {
+  const planner = createHarness();
+  const positiveDb = new DB();
+  const positiveReadBack = await readBackServiceProposal(positiveDb, serviceProposal());
+
+  planner.renderProposal(positiveReadBack);
+  assert.match(planner.els.proposalView.innerHTML, /Human actions<\/span><strong>1<\/strong>/);
+  assert.equal(positiveReadBack.state, 'PROPOSED');
+  assert.equal(positiveReadBack.approval_status, 'PENDING');
+  assert.equal(values(positiveDb, 'tasks').length, 0);
+  assert.equal(values(positiveDb, 'runs').filter((run) => run.run_type === 'EXECUTION_RUN').length, 0);
+  assert.deepEqual(visibleActions(planner), { approve: true, requestChanges: true, start: false });
+
+  const negativeDb = new DB();
+  const negativeBody = serviceProposal({
+    summary: 'Ordinary proposal text exists for display.',
+    milestones: serviceProposal().milestones.map((milestone) => ({
+      ...milestone,
+      description: milestone.id === 'm2' ? 'A reviewer reads normal planning details.' : milestone.description
+    }))
+  });
+  delete negativeBody.expected_human_actions;
+  const negativeReadBack = await readBackServiceProposal(negativeDb, negativeBody);
+  negativeReadBack.active_human_action_checkpoint_id = 'runtime_checkpoint';
+  negativeReadBack.milestones = [{
+    ...negativeReadBack.milestones[0],
+    id: 'm-runtime',
+    human_action_required: true,
+    checkpoint_id: 'runtime_checkpoint',
+    checkpoint_type: 'MANUAL_ACTION',
+    status: 'NEED_HUMAN_ACTION'
+  }, ...negativeReadBack.milestones.slice(1)];
+
+  planner.renderProposal({
+    ...negativeReadBack,
+    active_human_action_checkpoint_id: 'runtime_checkpoint',
+    milestones: negativeReadBack.milestones
+  });
+  assert.match(planner.els.proposalView.innerHTML, /Human actions<\/span><strong>none identified<\/strong>/);
+  assert.equal(negativeReadBack.expected_human_actions.length, 0);
+  assert.equal(negativeReadBack.state, 'PROPOSED');
+  assert.equal(negativeReadBack.approval_status, 'PENDING');
+  assert.equal(values(negativeDb, 'tasks').length, 0);
+  assert.equal(values(negativeDb, 'runs').filter((run) => run.run_type === 'EXECUTION_RUN').length, 0);
+  assert.deepEqual(visibleActions(planner), { approve: true, requestChanges: true, start: false });
 });
 
 test('milestone labels use explicit evidence without inferring human action from executor_required false', async () => {

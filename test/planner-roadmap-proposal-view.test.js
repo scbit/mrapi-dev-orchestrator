@@ -376,6 +376,27 @@ test('Planner service persists trusted scope, boolean auto advance, and expected
   assert.equal(readBack.expected_human_actions[0].validator_result, undefined);
 });
 
+test('Planner service does not manufacture expected Human Actions from ordinary prose', async () => {
+  const db = new DB();
+  const body = structuredPlannerProposal({
+    title: 'Ordinary Proposal',
+    objective: 'Persist regular roadmap text only.',
+    summary: 'Review text is present as ordinary proposal content.'
+  });
+  delete body.expected_human_actions;
+  body.milestones = body.milestones.map((milestone) => ({
+    ...milestone,
+    description: milestone.id === 'm2'
+      ? 'A reviewer checks normal proposal details after preparation.'
+      : milestone.description
+  }));
+
+  const { readBack } = await persistedStructuredProposal(db, body);
+
+  assert.ok(Array.isArray(readBack.expected_human_actions));
+  assert.equal(readBack.expected_human_actions.length, 0);
+});
+
 test('conflicting Brain proposal scope cannot override trusted Planner scope', async () => {
   const db = new DB();
   const { readBack } = await persistedStructuredProposal(db, structuredPlannerProposal({
@@ -411,6 +432,7 @@ test('Planner roadmap revision preserves structured metadata when replacing prop
   assert.equal(revised.workspace_id, 'workspace_scb');
   assert.equal(revised.project_id, 'project_scb_development');
   assert.equal(revised.auto_advance, true);
+  assert.ok(Array.isArray(revised.expected_human_actions));
   assert.equal(revised.expected_human_actions.length, 1);
   assert.equal(revised.expected_human_actions[0].milestone_id, 'm2');
 });

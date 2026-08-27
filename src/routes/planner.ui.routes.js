@@ -999,7 +999,7 @@ function plannerPageHtml() {
       const historical = options.historical === true;
       const total = milestones.length;
       const executorCount = milestones.filter((item) => item.milestone.executor_required === true).length;
-      const humanActionCount = milestones.filter((item) => requiresHumanAction(item.milestone)).length;
+      const humanActionCount = Array.isArray(proposal.expected_human_actions) ? proposal.expected_human_actions.length : 0;
       const humanActionText = humanActionCount > 0 ? escapeHtml(humanActionCount) : 'none identified';
       const summary = text(proposal.summary).trim() || (historical ? 'Summary not recorded in this historical roadmap.' : '');
       const dependenciesEmptyText = historical && !Array.isArray(proposal.dependencies) ? 'Not recorded' : 'No dependencies';
