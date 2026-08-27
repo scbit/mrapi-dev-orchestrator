@@ -20,7 +20,7 @@ test('Planner restores active request after reload', () => {
   assert.match(plannerUi, /persistPlannerState\(\)/);
   assert.match(plannerUi, /restorePlannerState\(\)/);
   assert.match(plannerUi, /clearPersistedPlannerState\(\)/);
-  assert.match(plannerUi, /Restored active Planner request/);
+  assert.match(plannerUi, /Recuperé tu pedido activo/);
   assert.match(plannerUi, /loadProposal\(\)/);
 });
 

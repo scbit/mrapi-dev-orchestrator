@@ -458,6 +458,10 @@ test('daily-use Planner UX integrates context, intake, review, approval, history
   assert.equal(mutationCalls(calls).length, 0);
   assert.equal(planner.els.workspace.value, 'workspace_scb');
   assert.equal(planner.els.project.value, 'project_scb_development');
+  assert.match(planner.els.workspace.innerHTML, /SCB Workspace/);
+  assert.match(planner.els.workspace.innerHTML, /Other Workspace/);
+  assert.match(planner.els.project.innerHTML, /SCB Development/);
+  assert.doesNotMatch(planner.els.project.innerHTML, /Other Project/);
   assert.deepEqual(counts(db), { missions: 0, brainRuns: 0, tasks: 0, executionRuns: 0 });
 
   planner.els.request.value = '  Validate Planner daily use  ';
@@ -476,6 +480,7 @@ test('daily-use Planner UX integrates context, intake, review, approval, history
   const requestId = planner.state.requestId;
   const brainRunId = planner.state.brainRunId;
   const completed = await completePlannerBrainRun(db, 'tenant_a', brainRunId, { proposal: proposal() });
+  assert.equal(db.get('roadmaps', completed.roadmap_id).non_executable, true);
   assertNoCodexWork(db);
 
   calls.length = 0;

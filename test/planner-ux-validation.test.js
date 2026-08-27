@@ -413,7 +413,10 @@ test('Planner workflow API validates request, review, approval, and start UX gat
   const proposed = await completePlannerBrainRun(db, 'tenant_a', intake.body.brain_run_id, {
     proposal: proposal()
   });
+  assert.equal(db.get('roadmaps', proposed.roadmap_id).non_executable, true);
+  assert.deepEqual(counts(db), { missions: 1, brainRuns: 1, tasks: 0, executionRuns: 0 });
   const beforeReview = JSON.stringify(db.collections);
+  const countsBeforeReview = counts(db);
   const review = await requestJson(app, 'GET', `/api/planner/proposals/${proposed.roadmap_id}`, null, {
     'x-tenant-id': 'tenant_a'
   });
@@ -443,23 +446,34 @@ test('Planner workflow API validates request, review, approval, and start UX gat
   assert.equal(review.body.milestones[1].state, 'PROPOSED');
   assert.deepEqual(secondReview.body, review.body);
   assert.equal(JSON.stringify(db.collections), beforeReview);
+  assert.deepEqual(counts(db), countsBeforeReview);
   assertNoCodexWork(db);
 
+  const beforeStartDenied = JSON.stringify(db.collections);
+  const countsBeforeStartDenied = counts(db);
   const startBeforeApproval = await requestJson(app, 'POST', `/api/planner/roadmaps/${proposed.roadmap_id}/start`, {}, {
     'x-tenant-id': 'tenant_a'
   });
   assert.equal(startBeforeApproval.statusCode, 409);
   assert.equal(startBeforeApproval.body.error, 'PLANNER_ROADMAP_NOT_STARTABLE');
+  assert.equal(JSON.stringify(db.collections), beforeStartDenied);
+  assert.deepEqual(counts(db), countsBeforeStartDenied);
   assert.equal(db.get('roadmaps', proposed.roadmap_id).state, 'PROPOSED');
   assertNoCodexWork(db);
 
+  const beforeInvalidApproval = JSON.stringify(db.collections);
+  const countsBeforeInvalidApproval = counts(db);
   const invalidApproval = await requestJson(app, 'POST', `/api/planner/roadmaps/${proposed.roadmap_id}/approve`, {
     approve: false
   }, { 'x-tenant-id': 'tenant_a' });
   assert.equal(invalidApproval.statusCode, 400);
   assert.equal(invalidApproval.body.error, 'EXPLICIT_PLANNER_ROADMAP_APPROVAL_REQUIRED');
+  assert.equal(JSON.stringify(db.collections), beforeInvalidApproval);
+  assert.deepEqual(counts(db), countsBeforeInvalidApproval);
   assert.equal(db.get('roadmaps', proposed.roadmap_id).state, 'PROPOSED');
 
+  const beforeCrossTenant = JSON.stringify(db.collections);
+  const countsBeforeCrossTenant = counts(db);
   const tenantBReview = await requestJson(app, 'GET', `/api/planner/proposals/${proposed.roadmap_id}`, null, {
     'x-tenant-id': 'tenant_b'
   });
@@ -475,6 +489,8 @@ test('Planner workflow API validates request, review, approval, and start UX gat
   });
   assert.equal(tenantBStart.statusCode, 404);
   assert.equal(tenantBStart.body.error, 'ROADMAP_NOT_FOUND');
+  assert.equal(JSON.stringify(db.collections), beforeCrossTenant);
+  assert.deepEqual(counts(db), countsBeforeCrossTenant);
 
   const storedBeforeApproval = immutableProposal(db.get('roadmaps', proposed.roadmap_id));
   const approval = await requestJson(app, 'POST', `/api/planner/roadmaps/${proposed.roadmap_id}/approve`, {
