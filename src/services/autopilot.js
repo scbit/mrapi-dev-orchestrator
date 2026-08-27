@@ -502,6 +502,22 @@ function validateRepositoryCleanCheckpoint(checkpoint, { project = {} } = {}) {
   };
 }
 
+async function resolveTrustedProgramBrainRunId(tx, db, tenantId, { checkpoint = {}, milestone = {}, mission = {}, roadmap = {} } = {}) {
+  const direct = clean(checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || '', 300);
+  if (direct) return direct;
+  const runsSnap = await tx.get(db.collection('runs').where('tenant_id', '==', tenantId).limit(200));
+  const candidates = runsSnap.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((run) => (
+      run.run_type === 'BRAIN_RUN' &&
+      String(run.autopilot_phase || '').toUpperCase() === 'PROGRAM' &&
+      run.mission_id === mission.id &&
+      (run.roadmap_id || roadmap.id) === roadmap.id &&
+      (run.milestone_id || milestone.id) === milestone.id
+    ));
+  return (candidates.find((run) => run.state === 'COMPLETED') || candidates[0] || null)?.id || null;
+}
+
 async function applyHostValidationResult(db, tenantId, validationId, input = {}) {
   const validationRef = db.collection('host_validations').doc(validationId);
   let outcome = null;
@@ -641,6 +657,10 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
       (!validation.run_id || checkpointValidation.run_id === validation.run_id) &&
       (!validation.result_id || checkpointValidation.result_id === validation.result_id)
     );
+    const resumePhase = clean(checkpoint.paused_from_phase || checkpoint.resume_phase || mission.paused_from_phase || 'PROGRAM', 120).toUpperCase() || 'PROGRAM';
+    const trustedProgramBrainRunId = (status === 'PASS' || persistedStatus === 'PASS') && resumePhase === 'PROGRAM'
+      ? await resolveTrustedProgramBrainRunId(tx, db, tenantId, { checkpoint, milestone, mission, roadmap })
+      : null;
     if (['PASS', 'FAIL'].includes(persistedStatus)) {
       if (persistedStatus === 'PASS') {
         if (!resolvedBySameValidation) {
@@ -648,8 +668,9 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
           error.status = 409;
           throw error;
         }
-        const brainRunId = checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null;
-        const resumePhase = clean(checkpoint.paused_from_phase || checkpoint.resume_phase || mission.paused_from_phase || 'PROGRAM', 120).toUpperCase() || 'PROGRAM';
+        const brainRunId = resumePhase === 'PROGRAM'
+          ? trustedProgramBrainRunId
+          : checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null;
         outcome = {
           resumed: true,
           reused: true,
@@ -724,21 +745,26 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
     }
 
     if (status === 'PASS') {
-      const pausePhase = clean(checkpoint.paused_from_phase || checkpoint.resume_phase || mission.paused_from_phase || 'PROGRAM', 120).toUpperCase() || 'PROGRAM';
+      const pausePhase = resumePhase;
       const resumesVerification = pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING';
       const resumesGitStage = pausePhase === 'GIT_STAGE';
-      const updatedCheckpoint = resolvedCheckpoint(checkpoint, {
+      const checkpointResolution = resolvedCheckpoint(checkpoint, {
         ok: true,
         message: safeMessage,
         validation_id: validation.id,
         run_id: validation.run_id || run?.id || null,
         result_id: resultToken || validation.result_id || null
       }, now);
-      const brainRunId = checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null;
+      const brainRunId = resumesVerification || resumesGitStage
+        ? checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null
+        : trustedProgramBrainRunId;
+      const updatedCheckpoint = brainRunId && pausePhase === 'PROGRAM'
+        ? { ...checkpointResolution, brain_run_id: brainRunId }
+        : checkpointResolution;
       tx.set(roadmapRef, {
         milestones: milestoneWithState(roadmap, milestone.id, resumesVerification ? 'VERIFYING' : 'RUNNING', {
           mission_id: mission.id,
-          brain_run_id: milestone.brain_run_id || mission.brain_run_id || null,
+          brain_run_id: resumesVerification || resumesGitStage ? milestone.brain_run_id || mission.brain_run_id || null : brainRunId,
           verification_brain_run_id: milestone.verification_brain_run_id || mission.verification_brain_run_id || null,
           human_action_required: false,
           human_action_checkpoint: updatedCheckpoint,
@@ -2397,12 +2423,15 @@ async function confirmHumanActionReady(db, tenantId, roadmapId, checkpointId, in
         ? 'VERIFY_EXECUTION'
         : '';
       const resolvedPausePhase = clean(checkpoint.paused_from_phase || checkpoint.resume_phase || mission.paused_from_phase || inferredResolvedPausePhase, 120).toUpperCase();
+      const resolvedProgramBrainRunId = resolvedPausePhase !== 'VERIFY_EXECUTION' && resolvedPausePhase !== 'VERIFYING' && resolvedPausePhase !== 'GIT_STAGE'
+        ? await resolveTrustedProgramBrainRunId(tx, db, tenantId, { checkpoint, milestone, mission, roadmap })
+        : checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null;
       const shouldResumeResolvedProgram = (
         resolvedPausePhase !== 'VERIFY_EXECUTION' &&
         resolvedPausePhase !== 'VERIFYING' &&
         resolvedPausePhase !== 'GIT_STAGE' &&
         !checkpoint.continuation_task_id &&
-        (checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id)
+        resolvedProgramBrainRunId
       );
       outcome = {
         resumed: true,
@@ -2412,7 +2441,7 @@ async function confirmHumanActionReady(db, tenantId, roadmapId, checkpointId, in
         roadmap_id: roadmap.id,
         milestone_id: milestone.id,
         mission_id: mission.id,
-        brain_run_id: checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null,
+        brain_run_id: resolvedProgramBrainRunId,
         task_id: checkpoint.continuation_task_id || mission.current_task_id || null,
         checkpoint_id: checkpointId,
         resume_phase: resolvedPausePhase || null,

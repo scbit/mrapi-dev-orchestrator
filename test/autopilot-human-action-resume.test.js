@@ -417,6 +417,62 @@ test('resolved PROGRAM checkpoint without continuation task recovers same Missio
   assert.equal(values(db, 'tasks').length, 1);
 });
 
+test('HOST_LOCAL PASS resolves original PROGRAM Brain Run from trusted provenance when checkpoint lacks brain_run_id', async () => {
+  const db = new DB();
+  const { cp, claim } = await hostValidationScenario(db);
+  const checkpointWithoutBrainRun = { ...checkpoint(db), brain_run_id: null };
+  db.set('roadmaps', 'roadmap_a', {
+    milestones: [
+      db.get('roadmaps', 'roadmap_a').milestones[0],
+      {
+        ...db.get('roadmaps', 'roadmap_a').milestones[1],
+        brain_run_id: null,
+        human_action_checkpoint: checkpointWithoutBrainRun
+      }
+    ]
+  }, { merge: true });
+  db.set('missions', 'mission_a', {
+    brain_run_id: null,
+    human_action_checkpoint: checkpointWithoutBrainRun
+  }, { merge: true });
+  const before = workCounts(db);
+
+  const out = await completeRun(db, 'tenant_a', claim.run.id, {
+    success: true,
+    summary: 'Repository worktree is clean.',
+    output: {
+      validation_id: claim.host_validation.id,
+      checkpoint_id: cp.checkpoint_id,
+      validator: 'git_worktree_clean',
+      status: 'PASS',
+      safe_message: 'Repository worktree is clean.',
+      validation_result_id: 'result_pass_missing_brain'
+    }
+  });
+  assert.equal(out.resumed, true);
+  assert.equal(out.brain_run_id, 'brain_a');
+  assert.equal(out.roadmap_id, 'roadmap_a');
+  assert.equal(out.milestone_id, 'm1');
+  assert.equal(out.mission_id, 'mission_a');
+  assert.equal(values(db, 'missions').length, 1);
+  assert.equal(values(db, 'tasks').length, before.tasks + 1);
+  assert.equal(values(db, 'tasks')[0].mission_id, 'mission_a');
+  assert.equal(values(db, 'tasks')[0].brain_run_id, 'brain_a');
+  assert.equal(checkpoint(db).status, 'RESOLVED');
+  assert.equal(checkpoint(db).brain_run_id, 'brain_a');
+  assert.equal(checkpoint(db).continuation_task_id, out.task_id);
+
+  const afterPass = workCounts(db);
+  const replay = await completeRun(db, 'tenant_a', claim.run.id, {
+    success: true,
+    summary: 'Repository worktree is clean.',
+    output: { validation_result_id: 'result_pass_missing_brain' }
+  });
+  assert.equal(replay.reused, true);
+  assert.equal(replay.task_id, out.task_id);
+  assert.deepEqual(workCounts(db), afterPass);
+});
+
 async function dirtyResumeScenario({ failCheckpoint2 = false } = {}) {
   const db = new DB();
   seedProgram(db, { project: { local_path: 'C:/trusted/repo', repository_full_name: 'org/repo' } });
