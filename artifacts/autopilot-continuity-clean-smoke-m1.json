@@ -1,0 +1,91 @@
+{
+  "contract_version": "CODEX_HANDOFF_V0_4_4_3",
+  "task_id": "zp5fXY2dYPnCXabsdspo",
+  "execution_run_id": "Fi47toYXADG4CK87Hc0Y",
+  "brain_run_id": "HqLkxrrphjo4xRR6UA3s",
+  "m1_mission_id": "YLPm9fY0mrjL7TrNONwc",
+  "tenant_id": "tenant_facundo_group",
+  "workspace_id": "workspace_scb",
+  "project_id": "project_scb_development",
+  "milestone_id": "m1",
+  "roadmap_id": null,
+  "auto_advance": null,
+  "validation_status": "STOPPED_CURRENT_TRUSTED_ROADMAP_STATE_UNAVAILABLE_LOCALLY",
+  "current_state_lookup": {
+    "local_repository_search_for_current_handoff_ids": "not_found",
+    "local_mrapi_http_health_127_0_0_1_8080": "timeout",
+    "gcp_firestore_access": "not_attempted_forbidden_by_handoff",
+    "historical_artifact_reused": false,
+    "historical_artifact_note": "artifacts/autopilot-continuity-clean-smoke-plan.json contains a prior smoke run with different task/run/mission IDs and was not used as current trusted state."
+  },
+  "execution_package": {
+    "allowed_files": [
+      "artifacts/autopilot-continuity-clean-smoke-m1.json"
+    ],
+    "required_tests": [
+      "node --test test/autopilot-auto-advance.test.js test/autopilot-complete-validation.test.js",
+      "node --test test/autopilot-loop-service-v0440.test.js test/planner-friendly-lifecycle.test.js"
+    ],
+    "allowed_files_non_empty": true,
+    "required_tests_non_empty": true,
+    "application_code_change_required": false
+  },
+  "required_test_results": [
+    {
+      "command": "node --test test/autopilot-auto-advance.test.js test/autopilot-complete-validation.test.js",
+      "passed": true,
+      "tests": 23,
+      "failed": 0
+    },
+    {
+      "command": "node --test test/autopilot-loop-service-v0440.test.js test/planner-friendly-lifecycle.test.js",
+      "passed": true,
+      "tests": 9,
+      "failed": 0
+    }
+  ],
+  "before_completion_counts": {
+    "scope": "fresh_current_roadmap",
+    "available": false,
+    "reason": "No local trusted roadmap record or local MRAPI process exposed the current roadmap; Firestore/GCP access is forbidden.",
+    "m1_mission": null,
+    "brain_runs": null,
+    "tasks": null,
+    "execution_runs": null,
+    "existing_m2_missions": null,
+    "existing_m2_program_brain_runs": null
+  },
+  "post_completion_observation": {
+    "available": false,
+    "reason": "Cannot observe W01 COMPLETE continuation for the fresh current roadmap without the current persisted roadmap state; Codex did not manually complete m1.",
+    "m1_state": null,
+    "m2_started_automatically": null,
+    "m2_mission_count": null,
+    "m2_initial_program_brain_run_count": null,
+    "duplicate_m2_work_detected": null
+  },
+  "local_lifecycle_evidence_from_required_tests": {
+    "auto_advance_starts_m2_once": true,
+    "replayed_complete_creates_no_duplicate_m2_work": true,
+    "executor_completion_queues_w01_verification_instead_of_directly_ending_autopilot": true,
+    "cross_tenant_continuation_denied_without_mutation": true
+  },
+  "tenant_isolation": {
+    "expected_tenant_id": "tenant_facundo_group",
+    "expected_workspace_id": "workspace_scb",
+    "expected_project_id": "project_scb_development",
+    "observed_current_records_available": false,
+    "cross_scope_records_mutated": false
+  },
+  "actions_not_performed": {
+    "application_source_modified": false,
+    "test_files_modified": false,
+    "manual_lifecycle_state_mutation": false,
+    "manual_m1_complete": false,
+    "m2_executor_work": false,
+    "git_write": false,
+    "gcp_access": false,
+    "cloud_run_access": false,
+    "deploy": false
+  }
+}
