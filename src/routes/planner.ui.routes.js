@@ -173,7 +173,8 @@ function plannerPageHtml() {
       recentLoading: true,
       recentError: '',
       restoredPlanner: false,
-      activeContext: null
+      activeContext: null,
+      pendingAuthoritativeContext: null
     };
 
     const plannerStorageKey = 'mrapi.planner.active.v1';
@@ -337,13 +338,44 @@ function plannerPageHtml() {
       return state.projects.filter((project) => projectWorkspaceId(project) === workspaceId);
     }
 
+    function hasOwn(object, key) {
+      return Object.prototype.hasOwnProperty.call(object || {}, key);
+    }
+
+    function contextDatasetsReady() {
+      return Boolean(!state.contextLoading && !state.contextError);
+    }
+
+    function normalizeContextCandidate(context) {
+      const source = context && typeof context === 'object' ? context : {};
+      const workspaceValue = hasOwn(source, 'workspaceId') ? source.workspaceId : source.workspace_id;
+      const projectSupplied = hasOwn(source, 'projectId') || hasOwn(source, 'project_id');
+      const projectValue = hasOwn(source, 'projectId') ? source.projectId : source.project_id;
+      return {
+        workspaceId: text(workspaceValue).trim(),
+        projectId: text(projectValue).trim(),
+        projectSupplied
+      };
+    }
+
+    function evaluateContextSelection(context) {
+      const candidate = normalizeContextCandidate(context);
+      const workspace = state.workspaces.find((item) => item.id === candidate.workspaceId);
+      if (!workspace) return { ...candidate, valid: false, workspaceValid: false, projectValid: false };
+      if (!candidate.projectSupplied) return { ...candidate, valid: true, workspaceValid: true, projectValid: false };
+      const project = state.projects.find((item) => item.id === candidate.projectId);
+      const projectValid = Boolean(project && projectWorkspaceId(project) === candidate.workspaceId);
+      return { ...candidate, valid: projectValid, workspaceValid: true, projectValid };
+    }
+
     function renderWorkspaceOptions(selectedWorkspaceId = '') {
       els.workspace.innerHTML = '<option value="">Elegí un workspace</option>' +
         state.workspaces.map((workspace) => optionHtml(workspace.id, workspaceLabel(workspace))).join('');
       els.workspace.value = state.workspaces.some((workspace) => workspace.id === selectedWorkspaceId) ? selectedWorkspaceId : '';
     }
 
-    function renderProjectOptions(workspaceId, selectedProjectId = '') {
+    function renderProjectOptions(workspaceId, selectedProjectId = '', options = {}) {
+      const allowSingleProjectAutoSelect = options.allowSingleProjectAutoSelect !== false;
       if (!workspaceId) {
         els.project.innerHTML = '<option value="">Elegí un workspace primero</option>';
         els.project.value = '';
@@ -353,23 +385,58 @@ function plannerPageHtml() {
       els.project.innerHTML = '<option value="">Elegí un project</option>' +
         projects.map((project) => optionHtml(project.id, projectLabel(project))).join('');
       els.project.value = projects.some((project) => project.id === selectedProjectId) ? selectedProjectId : '';
-      if (!els.project.value && projects.length === 1 && !selectedProjectId) {
+      if (!els.project.value && projects.length === 1 && !selectedProjectId && allowSingleProjectAutoSelect) {
         els.project.value = projects[0].id;
       }
     }
 
     function applyContextSelection(context) {
-      if (!context || !state.workspaces.length) return false;
-      const workspaceId = text(context.workspaceId).trim();
-      const projectId = text(context.projectId).trim();
-      if (!state.workspaces.some((workspace) => workspace.id === workspaceId)) {
+      if (!context || !contextDatasetsReady()) return false;
+      const result = evaluateContextSelection(context);
+      if (!result.workspaceValid) {
         renderWorkspaceOptions('');
         renderProjectOptions('', '');
         return false;
       }
-      renderWorkspaceOptions(workspaceId);
-      renderProjectOptions(workspaceId, projectId);
-      return Boolean(els.workspace.value && (!projectId || els.project.value === projectId));
+      renderWorkspaceOptions(result.workspaceId);
+      renderProjectOptions(result.workspaceId, result.projectValid ? result.projectId : '', {
+        allowSingleProjectAutoSelect: !result.projectSupplied
+      });
+      return Boolean(els.workspace.value);
+    }
+
+    function applyAvailableContextSelection() {
+      if (!contextDatasetsReady()) return false;
+      if (state.pendingAuthoritativeContext && applyContextSelection(state.pendingAuthoritativeContext) && evaluateContextSelection(state.pendingAuthoritativeContext).valid) {
+        state.activeContext = state.pendingAuthoritativeContext;
+        state.pendingAuthoritativeContext = null;
+        persistPlannerState();
+        return true;
+      }
+      if (state.activeContext && applyContextSelection(state.activeContext)) return true;
+      if (restoreRememberedContext()) return true;
+      renderWorkspaceOptions('');
+      renderProjectOptions('', '');
+      return false;
+    }
+
+    function proposalContext(proposal) {
+      const context = normalizeContextCandidate(proposal);
+      if (!context.workspaceId || !context.projectId) return null;
+      return { workspaceId: context.workspaceId, projectId: context.projectId };
+    }
+
+    function applyAuthoritativeProposalContext(proposal) {
+      const context = proposalContext(proposal);
+      if (!context) return false;
+      state.pendingAuthoritativeContext = context;
+      if (!contextDatasetsReady()) return false;
+      const result = evaluateContextSelection(context);
+      if (!applyContextSelection(context) || !result.valid) return false;
+      state.activeContext = context;
+      state.pendingAuthoritativeContext = null;
+      persistPlannerState();
+      return true;
     }
 
     function syncContextControlState() {
@@ -955,6 +1022,7 @@ function plannerPageHtml() {
       state.proposal = proposal;
       state.proposalId = proposal?.roadmap_id || proposal?.proposal_id || proposal?.id || state.proposalId;
       if (state.proposalId) els.proposalId.value = state.proposalId;
+      applyAuthoritativeProposalContext(proposal);
       persistPlannerState();
       els.proposalView.classList.remove('hidden');
       els.startView.classList.add('hidden');
@@ -1078,11 +1146,7 @@ function plannerPageHtml() {
         state.contextLoading = false;
         renderWorkspaceOptions('');
         renderProjectOptions('', '');
-        if (state.restoredPlanner && state.activeContext) {
-          applyContextSelection(state.activeContext);
-        } else {
-          restoreRememberedContext();
-        }
+        applyAvailableContextSelection();
         if (state.restoredPlanner) {
           setStatus('Recuperé tu pedido activo. Buscando el plan más reciente...', 'success');
           await loadProposal();

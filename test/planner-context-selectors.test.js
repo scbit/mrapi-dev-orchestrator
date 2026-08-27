@@ -73,6 +73,12 @@ function response(ok, body) {
   return { ok, json: async () => body };
 }
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 function optionLabels(element) {
   return [...element.innerHTML.matchAll(/<option value="([^"]*)">([^<]*)<\/option>/g)]
     .map((match) => ({ value: match[1], label: match[2] }));
@@ -145,6 +151,8 @@ globalThis.__planner = {
   loadPlannerContextOptions,
   applyContextSelection,
   renderProjectOptions,
+  renderProposal,
+  loadProposal,
   readRememberedContext,
   persistRememberedContext
 };`, context);
@@ -304,6 +312,40 @@ test('remembered context is applied after async options load and stale values fa
   assert.equal(staleProject.planner.els.project.value, '');
 });
 
+test('remembered context waits for both workspace and project datasets before restoring selectors', async () => {
+  const html = await renderPlannerPage();
+  const workspaces = deferred();
+  const projects = deferred();
+  const { planner } = createHarness(html, {
+    localStorage: createMemoryStorage({
+      'mrapi.planner.context.v1': JSON.stringify({ workspaceId: 'workspace_scb', projectId: 'project_scb_development' })
+    }),
+    fetchImpl: async (url) => {
+      if (url === '/api/workspaces') return workspaces.promise;
+      if (url === '/api/projects') return projects.promise;
+      return response(true, { items: [] });
+    }
+  });
+  await flush();
+
+  assert.equal(planner.state.contextLoading, true);
+  assert.equal(planner.els.workspace.value, '');
+  assert.equal(planner.els.project.value, '');
+
+  workspaces.resolve(response(true, { items: [{ id: 'workspace_scb', name: 'SCB Workspace' }] }));
+  await flush();
+  assert.equal(planner.state.contextLoading, true);
+  assert.equal(planner.els.workspace.value, '');
+  assert.equal(planner.els.project.value, '');
+
+  projects.resolve(response(true, { items: [{ id: 'project_scb_development', name: 'SCB Development', workspace_id: 'workspace_scb' }] }));
+  await flush();
+
+  assert.equal(planner.state.contextLoading, false);
+  assert.equal(planner.els.workspace.value, 'workspace_scb');
+  assert.equal(planner.els.project.value, 'project_scb_development');
+});
+
 test('active Planner context takes precedence over durable context after option loading', async () => {
   const html = await renderPlannerPage();
   const storage = createMemoryStorage({
@@ -335,6 +377,149 @@ test('active Planner context takes precedence over durable context after option 
   assert.equal(planner.els.project.value, 'project_other');
   assert.equal(planner.els.request.value, 'Continue active');
   assert.equal(calls.at(-1).url, '/api/planner/proposals/proposal_active');
+});
+
+test('authoritative proposal context overrides active and remembered context without changing remembered memory', async () => {
+  const html = await renderPlannerPage();
+  const remembered = JSON.stringify({ workspaceId: 'workspace_scb', projectId: 'project_scb_development' });
+  const storage = createMemoryStorage({
+    'mrapi.planner.active.v1': JSON.stringify({
+      requestId: 'request_active',
+      proposalId: 'proposal_active',
+      workspaceId: 'workspace_scb',
+      projectId: 'project_scb_development',
+      request: 'Continue active'
+    }),
+    'mrapi.planner.context.v1': remembered
+  });
+  const { planner } = createHarness(html, {
+    localStorage: storage,
+    fetchImpl: async (url) => {
+      if (url === '/api/workspaces') return response(true, { items: [{ id: 'workspace_scb' }, { id: 'workspace_fallback' }] });
+      if (url === '/api/projects') return response(true, { items: [
+        { id: 'project_scb_development', workspace_id: 'workspace_scb' },
+        { id: 'project_other', workspace_id: 'workspace_fallback' }
+      ] });
+      return response(true, {});
+    }
+  });
+  await flush();
+
+  planner.renderProposal({
+    roadmap_id: 'historical_other',
+    workspace_id: 'workspace_fallback',
+    project_id: 'project_other',
+    title: 'Historical Other',
+    state: 'ACTIVE'
+  });
+
+  assert.equal(planner.els.workspace.value, 'workspace_fallback');
+  assert.equal(planner.els.project.value, 'project_other');
+  assert.equal(storage.snapshot()['mrapi.planner.context.v1'], remembered);
+  assert.deepEqual(JSON.parse(storage.snapshot()['mrapi.planner.active.v1']), {
+    requestId: 'request_active',
+    missionId: 'request_active',
+    brainRunId: null,
+    proposalId: 'historical_other',
+    workspaceId: 'workspace_fallback',
+    projectId: 'project_other',
+    request: 'Continue active'
+  });
+});
+
+test('proposal context loaded before selector datasets is queued and applied after both loads finish', async () => {
+  const html = await renderPlannerPage();
+  const workspaces = deferred();
+  const projects = deferred();
+  const storage = createMemoryStorage({
+    'mrapi.planner.active.v1': JSON.stringify({ workspaceId: 'workspace_scb', projectId: 'project_scb_development' }),
+    'mrapi.planner.context.v1': JSON.stringify({ workspaceId: 'workspace_scb', projectId: 'project_scb_development' })
+  });
+  const { planner } = createHarness(html, {
+    localStorage: storage,
+    fetchImpl: async (url) => {
+      if (url === '/api/workspaces') return workspaces.promise;
+      if (url === '/api/projects') return projects.promise;
+      return response(true, { items: [] });
+    }
+  });
+  await flush();
+
+  planner.renderProposal({
+    roadmap_id: 'queued_context',
+    workspace_id: 'workspace_fallback',
+    project_id: 'project_other',
+    title: 'Queued Context',
+    state: 'ACTIVE'
+  });
+
+  assert.equal(planner.els.workspace.value, '');
+  assert.equal(planner.els.project.value, '');
+  assert.equal(planner.state.pendingAuthoritativeContext.workspaceId, 'workspace_fallback');
+  assert.equal(planner.state.pendingAuthoritativeContext.projectId, 'project_other');
+
+  workspaces.resolve(response(true, { items: [{ id: 'workspace_scb' }, { id: 'workspace_fallback' }] }));
+  projects.resolve(response(true, { items: [
+    { id: 'project_scb_development', workspace_id: 'workspace_scb' },
+    { id: 'project_other', workspace_id: 'workspace_fallback' }
+  ] }));
+  await flush();
+
+  assert.equal(planner.els.workspace.value, 'workspace_fallback');
+  assert.equal(planner.els.project.value, 'project_other');
+  assert.equal(planner.state.pendingAuthoritativeContext, null);
+  assert.equal(JSON.parse(storage.snapshot()['mrapi.planner.active.v1']).workspaceId, 'workspace_fallback');
+});
+
+test('proposal context loaded after selector datasets applies immediately', async () => {
+  const html = await renderPlannerPage();
+  const { planner } = createHarness(html);
+  await flush();
+
+  planner.renderProposal({
+    roadmap_id: 'immediate_context',
+    workspace_id: 'workspace_fallback',
+    project_id: 'project_other',
+    title: 'Immediate Context',
+    state: 'ACTIVE'
+  });
+
+  assert.equal(planner.els.workspace.value, 'workspace_fallback');
+  assert.equal(planner.els.project.value, 'project_other');
+});
+
+test('explicit invalid project keeps valid workspace and does not auto-select the only project', async () => {
+  const html = await renderPlannerPage();
+  const { planner } = createHarness(html, {
+    fetchImpl: async (url) => {
+      if (url === '/api/workspaces') return response(true, { items: [{ id: 'workspace_scb' }] });
+      if (url === '/api/projects') return response(true, { items: [{ id: 'project_scb_development', workspace_id: 'workspace_scb' }] });
+      return response(true, { items: [] });
+    }
+  });
+  await flush();
+
+  planner.applyContextSelection({ workspaceId: 'workspace_scb', projectId: 'project_missing' });
+
+  assert.equal(planner.els.workspace.value, 'workspace_scb');
+  assert.equal(planner.els.project.value, '');
+});
+
+test('workspace-only context may retain existing single-project auto-selection', async () => {
+  const html = await renderPlannerPage();
+  const { planner } = createHarness(html, {
+    fetchImpl: async (url) => {
+      if (url === '/api/workspaces') return response(true, { items: [{ id: 'workspace_scb' }] });
+      if (url === '/api/projects') return response(true, { items: [{ id: 'project_scb_development', workspace_id: 'workspace_scb' }] });
+      return response(true, { items: [] });
+    }
+  });
+  await flush();
+
+  planner.applyContextSelection({ workspaceId: 'workspace_scb' });
+
+  assert.equal(planner.els.workspace.value, 'workspace_scb');
+  assert.equal(planner.els.project.value, 'project_scb_development');
 });
 
 test('Reset preserves and reapplies remembered selector context', async () => {
