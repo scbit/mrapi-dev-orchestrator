@@ -1017,6 +1017,26 @@ function plannerPageHtml() {
         '<div><span class="label">Revision status</span><p>' + escapeHtml(text(proposal.revision_status || (isRevisionPending(proposal) ? 'PENDING' : 'Ready for review'))) + '</p></div></div>';
     }
 
+    function retryAudit(milestone) {
+      const spec = milestone.active_retry_execution_spec || milestone.retry_execution_spec || null;
+      const history = Array.isArray(milestone.retry_history) ? milestone.retry_history : [];
+      const latest = history.length ? history[history.length - 1] : {};
+      const attempt = milestone.retry_attempt || latest.attempt || '';
+      const revision = milestone.retry_revision || latest.revision || '';
+      if (!attempt && !revision && !spec && !history.length && !milestone.last_retry_brain_run_id) return '';
+      const allowed = Array.isArray(spec?.allowed_files) ? spec.allowed_files : [];
+      const tests = Array.isArray(spec?.required_tests) ? spec.required_tests : [];
+      const reason = milestone.blocked_reason || milestone.last_retry_reason || latest.prior_reason || latest.reason || '';
+      const status = milestone.retry_status || (milestone.human_action_required ? 'NEED_HUMAN_ACTION' : 'Not recorded');
+      return '<div><span class="label">Retry attempt</span><p>' + escapeHtml(attempt || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Retry revision</span><p>' + escapeHtml(revision || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Retry status</span><p>' + escapeHtml(status) + '</p></div>' +
+        '<div><span class="label">Retry verification Brain Run</span><p>' + escapeHtml(milestone.last_retry_brain_run_id || latest.verification_brain_run_id || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Prior retry reason</span><p>' + escapeHtml(reason || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Retry allowed files (' + escapeHtml(allowed.length) + ')</span>' + boundedList(allowed, 8, 'No retry allowed files recorded') + '</div>' +
+        '<div><span class="label">Retry required tests (' + escapeHtml(tests.length) + ')</span>' + boundedList(tests, 6, 'No retry required tests recorded') + '</div>';
+    }
+
     function syncRevisionSubmitState() {
       const hasFeedback = Boolean(els.revisionFeedback.value.trim());
       els.submitRevision.disabled = state.revisionSubmitting || !hasFeedback;
@@ -1102,6 +1122,7 @@ function plannerPageHtml() {
       const successCriteriaEmptyText = historical && !Array.isArray(milestone.success_criteria) ? 'Not recorded' : 'None recorded';
       const description = text(milestone.description).trim() || (historical ? 'Description not recorded.' : '');
       const blocked = ['BLOCKED', 'WAITING', 'PENDING'].includes(text(milestone.state).toUpperCase()) && Array.isArray(dependencyItems) && dependencyItems.length > 0;
+      const retryDetails = retryAudit(milestone);
       return '<details class="milestone"><summary class="milestone-summary"><div><h3>' + escapeHtml(milestone.order || index + 1) + '. ' + escapeHtml(milestone.title) + '</h3><div class="meta">' + escapeHtml(milestone.objective || milestone.expected_outcome) + (blocked ? ' - waiting on dependencies' : '') + '</div></div><span class="badge">' + escapeHtml(friendlyMilestoneState(milestone)) + '</span></summary>' +
         '<div class="kv"><div><span class="label">Description</span><p>' + escapeHtml(description) + '</p></div></div>' +
         '<details class="advanced-details"><summary><strong>Advanced milestone details</strong></summary><div class="kv">' +
@@ -1111,7 +1132,8 @@ function plannerPageHtml() {
         '<div><span class="label">Dependencies</span>' + list(dependencyItems, dependencyEmptyText) + '</div>' +
         '<div><span class="label">Risks</span>' + list(milestone.risks, risksEmptyText) + '</div>' +
         '<div><span class="label">Success criteria</span>' + list(milestone.success_criteria, successCriteriaEmptyText) + '</div>' +
-        '<div><span class="label">Order</span><p>' + escapeHtml(milestone.order || index + 1) + '</p></div></div></details></details>';
+        '<div><span class="label">Order</span><p>' + escapeHtml(milestone.order || index + 1) + '</p></div>' +
+        retryDetails + '</div></details></details>';
     }
 
     async function discoverProposalFromMission() {

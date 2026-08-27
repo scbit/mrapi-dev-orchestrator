@@ -1132,11 +1132,13 @@ function capabilityIsUnavailable(name, project = {}, mission = {}) {
 
 function checkpointForMissingPreflight({ tenantId, mission, run, roadmap, milestone, project, blocker }) {
   const existing = unresolvedHumanActionCheckpoint(milestone);
+  const pausedFromPhase = cleanPreflightText(blocker.paused_from_phase || run?.autopilot_phase || mission?.autopilot_phase || 'PROGRAM', 120).toUpperCase();
   return normalizeHumanActionCheckpoint({
     tenant_id: tenantId,
     roadmap_id: roadmap?.id || mission.roadmap_id || run.roadmap_id || null,
     milestone_id: milestone?.id || mission.milestone_id || run.milestone_id || null,
     mission_id: mission.id || run.mission_id || null,
+    brain_run_id: run?.id || null,
     checkpoint_type: 'PROGRAM_PREFLIGHT',
     requirement_type: blocker.requirement_type,
     human_action_request: blocker.human_action_request,
@@ -1144,7 +1146,7 @@ function checkpointForMissingPreflight({ tenantId, mission, run, roadmap, milest
     action_location: blocker.action_location,
     validation_method: blocker.validation_method,
     validation_metadata: blocker.validation_metadata,
-    paused_from_phase: 'PROGRAM',
+    paused_from_phase: pausedFromPhase || 'PROGRAM',
     reason: blocker.reason,
     blocker_code: blocker.blocker_code,
     requirement_key: blocker.requirement_key
@@ -2315,10 +2317,19 @@ async function resumeAutopilotProgramAfterHumanAction(db, tenantId, scope = {}) 
       error.status = 409;
       throw error;
     }
+    const pendingRetry = mission.pending_retry_execution && typeof mission.pending_retry_execution === 'object'
+      ? mission.pending_retry_execution
+      : null;
+    const isRetryResume = (
+      pendingRetry &&
+      pendingRetry.verification_brain_run_id === brainRunId &&
+      String(run.autopilot_phase || '').toUpperCase() === 'VERIFY_EXECUTION'
+    );
     if (
       run.run_type !== 'BRAIN_RUN' ||
       run.state !== 'COMPLETED' ||
-      String(run.autopilot_phase || '').toUpperCase() !== 'PROGRAM' ||
+      (!isRetryResume && String(run.autopilot_phase || '').toUpperCase() !== 'PROGRAM') ||
+      (isRetryResume && String(run.autopilot_phase || '').toUpperCase() !== 'VERIFY_EXECUTION') ||
       run.mission_id !== missionId ||
       (run.roadmap_id || roadmapId) !== roadmapId ||
       (run.milestone_id || milestoneId) !== milestoneId
@@ -2352,27 +2363,35 @@ async function resumeAutopilotProgramAfterHumanAction(db, tenantId, scope = {}) 
       return;
     }
 
-    const brainOutput = run.brain_output && typeof run.brain_output === 'object'
+    const brainOutput = isRetryResume && pendingRetry.brain_output && typeof pendingRetry.brain_output === 'object'
+      ? pendingRetry.brain_output
+      : run.brain_output && typeof run.brain_output === 'object'
       ? run.brain_output
       : buildBrainOutput({ id: brainRunId, ...run }, { output_text: run.output_text || '' });
-    const taskSpec = brainOutput.task_spec || {};
+    const retryBrainOutput = isRetryResume ? pendingRetry.brain_output : null;
+    const finalBrainOutput = retryBrainOutput && typeof retryBrainOutput === 'object' ? retryBrainOutput : brainOutput;
+    const taskSpec = isRetryResume && pendingRetry.task_spec && typeof pendingRetry.task_spec === 'object'
+      ? pendingRetry.task_spec
+      : finalBrainOutput.task_spec || {};
     tx.set(taskRef, {
       id: taskRef.id,
       tenant_id: tenantId,
       mission_id: missionId,
       workspace_id: run.workspace_id || mission.workspace_id || null,
       project_id: run.project_id || mission.project_id || null,
-      worker_id: brainOutput.worker_id || run.worker_id || mission.preferred_worker_id || 'W01',
-      title: taskSpec.title || brainOutput.objective,
-      objective: taskSpec.objective || brainOutput.objective,
+      worker_id: finalBrainOutput.worker_id || run.worker_id || mission.preferred_worker_id || 'W01',
+      title: taskSpec.title || finalBrainOutput.objective,
+      objective: taskSpec.objective || finalBrainOutput.objective,
       task_spec: taskSpec,
       priority: mission.priority || 'NORMAL',
       state: 'QUEUED',
       phase: 'EXECUTION_PENDING',
-      autopilot_phase: 'PROGRAM',
-      attempt_count: 0,
+      autopilot_phase: isRetryResume ? 'RETRY' : 'PROGRAM',
+      attempt_count: isRetryResume ? Number(pendingRetry.attempt || mission.autopilot_attempt_count || 1) : 0,
+      autopilot_retry_revision: isRetryResume ? Number(pendingRetry.revision || mission.autopilot_retry_revision || 1) : null,
+      retry_of_task_id: isRetryResume ? (pendingRetry.prior_task_id || mission.current_task_id || null) : null,
       brain_run_id: brainRunId,
-      brain_output: brainOutput,
+      brain_output: finalBrainOutput,
       brain_completed_at: timestamp(),
       human_action_checkpoint_id: checkpointId,
       current_run_id: null,
@@ -2389,12 +2408,12 @@ async function resumeAutopilotProgramAfterHumanAction(db, tenantId, scope = {}) 
       run_id: brainRunId,
       workspace_id: run.workspace_id || mission.workspace_id || null,
       project_id: run.project_id || mission.project_id || null,
-      worker_id: brainOutput.worker_id || run.worker_id || mission.preferred_worker_id || 'W01',
+      worker_id: finalBrainOutput.worker_id || run.worker_id || mission.preferred_worker_id || 'W01',
       executor_id: run.executor_id || null,
       status: 'SUCCESS',
       result_type: 'BRAIN_OUTPUT',
       summary: 'Brain output persisted after Human Action validation.',
-      output: brainOutput,
+      output: finalBrainOutput,
       created_at: timestamp()
     });
 
@@ -2406,23 +2425,26 @@ async function resumeAutopilotProgramAfterHumanAction(db, tenantId, scope = {}) 
     };
     tx.set(missionRef, {
       state: 'PLANNING',
-      autopilot_phase: 'PROGRAM',
-      brain_run_id: brainRunId,
-      brain_output_result_id: resultRef.id,
+      autopilot_phase: isRetryResume ? 'RETRY_EXECUTION' : 'PROGRAM',
+      ...(isRetryResume ? { last_retry_brain_run_id: brainRunId } : { brain_run_id: brainRunId, brain_output_result_id: resultRef.id }),
       current_task_id: taskRef.id,
+      current_retry_task_id: isRetryResume ? taskRef.id : mission.current_retry_task_id || null,
       human_action_required: false,
       human_action_checkpoint: resolvedCheckpoint,
+      pending_retry_execution: isRetryResume ? null : mission.pending_retry_execution || null,
+      retry_status: isRetryResume ? 'QUEUED' : mission.retry_status || null,
       autopilot_allowed_files: Array.isArray(taskSpec.allowed_files) ? taskSpec.allowed_files : [],
       updated_at: timestamp()
     }, { merge: true });
     tx.set(roadmapRef, {
       milestones: roadmapMilestonesWithState(roadmap, milestoneId, 'RUNNING', {
         mission_id: missionId,
-        brain_run_id: brainRunId,
+        ...(isRetryResume ? { last_retry_brain_run_id: brainRunId } : { brain_run_id: brainRunId }),
         human_action_required: false,
         human_action_checkpoint: resolvedCheckpoint,
         waiting_status: 'RESOLVED',
-        blocked_reason: null
+        blocked_reason: null,
+        retry_status: isRetryResume ? 'QUEUED' : milestone.retry_status || null
       }),
       updated_at: timestamp()
     }, { merge: true });

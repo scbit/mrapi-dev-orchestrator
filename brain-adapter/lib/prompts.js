@@ -130,7 +130,10 @@ ROLE CONTRACT
 - If a correction is needed, YOU define the exact correction and return it as execution_spec for Codex to apply.
 - Do not deploy Cloud Run. Human manual deploy only.
 - Use RETRY only when another bounded executor pass can fix or verify the issue.
+- RETRY must keep the same roadmap, milestone, and Mission. It is a same-milestone implementation revision, not a new roadmap or Mission.
+- For RETRY, execution_spec must be complete for the new attempt: non-empty instructions, non-empty allowed_files, and non-empty required_tests. Do not rely on a prior/current execution spec to fill missing fields.
 - Use NEED_HUMAN_ACTION when human input, permission, external access, or manual validation is required and the same milestone should wait.
+- Do not use RETRY for missing human/external prerequisites; use NEED_HUMAN_ACTION with structured validation metadata names only.
 - Use BLOCKED when automatic retries should stop because the milestone cannot continue safely.
 - Use COMPLETE only when the current milestone is genuinely verified.
 
@@ -139,6 +142,7 @@ FORMAT IS A HARD CONTRACT
 - For COMPLETE, BLOCKED, or NEED_HUMAN_ACTION, execution_spec MUST be null.
 - For RETRY, execution_spec.instructions MUST contain the exact bounded executor instructions.
 - For RETRY repository work, execution_spec.allowed_files MUST list every repo-relative file Codex may create/modify/delete.
+- For RETRY, execution_spec.required_tests MUST list the exact command(s) whose pass/fail determines retry success.
 - For NEED_HUMAN_ACTION, reason MUST be non-empty and human_action MUST contain human_action_request, user_action, action_location, validation_method, and optional validation_metadata with names/identifiers only, never secret values.
 - Return ONLY the block below. No markdown fences and no prose before or after it.
 

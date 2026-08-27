@@ -20,7 +20,7 @@ function seed() {
 test('RETRY preserves Brain allowed_files in both task_spec and brain_output.task_spec', async () => {
   const db = seed();
   const allowed = ['src/services/autopilot.js', 'test/autopilot-v3-loop.test.js'];
-  const out = await completeVerificationBrainRun(db,'t1','verify1',{output_text:`<MRAPI_AUTOPILOT>${JSON.stringify({action:'RETRY',reason:'bounded fix',execution_spec:{instructions:'Apply exact bounded fix',allowed_files:allowed,success_criteria:['focused tests pass'],stop_conditions:['NO DEPLOY']}})}</MRAPI_AUTOPILOT>`});
+  const out = await completeVerificationBrainRun(db,'t1','verify1',{output_text:`<MRAPI_AUTOPILOT>${JSON.stringify({action:'RETRY',reason:'bounded fix',execution_spec:{instructions:'Apply exact bounded fix',allowed_files:allowed,required_tests:['node --test retry.test.js'],success_criteria:['focused tests pass'],stop_conditions:['NO DEPLOY']}})}</MRAPI_AUTOPILOT>`});
   assert.equal(out.action,'RETRY');
   const task = db.get('tasks',out.task_id);
   assert.deepEqual(task.task_spec.allowed_files, allowed);
@@ -36,7 +36,7 @@ test('RETRY without allowed_files blocks instead of queuing an unsafe executor t
 });
 
 
-test('RETRY carries forward prior attempt allowed_files so same-mission dirty worktree remains in scope', async () => {
+test('RETRY stores prior allowed_files for audit but active task uses only current Brain scope', async () => {
   const db = seed();
   db.set('tasks','task_prev',{
     id:'task_prev',tenant_id:'t1',mission_id:'mission1',
@@ -47,11 +47,12 @@ test('RETRY carries forward prior attempt allowed_files so same-mission dirty wo
     ...db.get('missions','mission1'),
     current_task_id:'task_prev'
   });
-  const out = await completeVerificationBrainRun(db,'t1','verify1',{output_text:`<MRAPI_AUTOPILOT>${JSON.stringify({action:'RETRY',reason:'bounded fix',execution_spec:{instructions:'Apply follow-up fix',allowed_files:['test/autopilot-v3-loop.test.js'],success_criteria:['focused tests pass'],stop_conditions:['NO DEPLOY']}})}</MRAPI_AUTOPILOT>`});
+  const out = await completeVerificationBrainRun(db,'t1','verify1',{output_text:`<MRAPI_AUTOPILOT>${JSON.stringify({action:'RETRY',reason:'bounded fix',execution_spec:{instructions:'Apply follow-up fix',allowed_files:['test/autopilot-v3-loop.test.js'],required_tests:['node --test retry.test.js'],success_criteria:['focused tests pass'],stop_conditions:['NO DEPLOY']}})}</MRAPI_AUTOPILOT>`});
   assert.equal(out.action,'RETRY');
   const task = db.get('tasks',out.task_id);
-  const expected = ['src/services/autopilot.js','src/services/orchestration.js','test/autopilot-v3-loop.test.js'];
+  const expected = ['test/autopilot-v3-loop.test.js'];
   assert.deepEqual(task.task_spec.allowed_files, expected);
   assert.deepEqual(task.brain_output.task_spec.allowed_files, expected);
   assert.deepEqual(db.get('missions','mission1').autopilot_allowed_files, expected);
+  assert.equal(db.get('missions','mission1').autopilot_retry_history[0].prior_task_id, 'task_prev');
 });

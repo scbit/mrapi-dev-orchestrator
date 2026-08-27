@@ -93,6 +93,90 @@ function sanitizeMetadata(value) {
   return out;
 }
 
+function sanitizeAuditValue(value, depth = 0) {
+  if (value == null) return value;
+  if (depth > 6) return null;
+  if (value instanceof Date) return value;
+  if (Array.isArray(value)) return value.slice(0, 100).map((item) => sanitizeAuditValue(item, depth + 1));
+  if (typeof value !== 'object') return typeof value === 'string' ? clean(value, 50000) : value;
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (/secret|token|password|credential|private[_-]?key|value/i.test(key)) continue;
+    out[key] = sanitizeAuditValue(item, depth + 1);
+  }
+  return out;
+}
+
+function boundedRetryHistory(mission, entry) {
+  const existing = Array.isArray(mission.autopilot_retry_history)
+    ? mission.autopilot_retry_history
+    : Array.isArray(mission.retry_revision_history)
+      ? mission.retry_revision_history
+      : [];
+  return [...existing, sanitizeAuditValue(entry)].slice(-10);
+}
+
+function retryExecutionSpecSnapshot(spec) {
+  return sanitizeAuditValue({
+    title: spec?.title || '',
+    objective: spec?.objective || '',
+    instructions: spec?.instructions || '',
+    allowed_files: Array.isArray(spec?.allowed_files) ? spec.allowed_files : [],
+    required_tests: Array.isArray(spec?.required_tests) ? spec.required_tests : [],
+    diagnostic_tests: Array.isArray(spec?.diagnostic_tests) ? spec.diagnostic_tests : [],
+    success_criteria: Array.isArray(spec?.success_criteria) ? spec.success_criteria : [],
+    stop_conditions: Array.isArray(spec?.stop_conditions) ? spec.stop_conditions : [],
+    required_env_vars: Array.isArray(spec?.required_env_vars) ? spec.required_env_vars : [],
+    required_environment_variables: Array.isArray(spec?.required_environment_variables) ? spec.required_environment_variables : [],
+    requires_repository: spec?.requires_repository === true,
+    repository_required: spec?.repository_required === true,
+    prerequisites: Array.isArray(spec?.prerequisites) ? spec.prerequisites : [],
+    execution_prerequisites: Array.isArray(spec?.execution_prerequisites) ? spec.execution_prerequisites : [],
+    preflight: spec?.preflight || null
+  });
+}
+
+function retryTaskSpec(milestone, executionSpec) {
+  return {
+    title: `Autopilot retry: ${milestone.title}`,
+    objective: `Apply Brain correction for ${milestone.title}`,
+    instructions: executionSpec.instructions,
+    allowed_files: executionSpec.allowed_files,
+    required_tests: executionSpec.required_tests,
+    diagnostic_tests: executionSpec.diagnostic_tests,
+    success_criteria: executionSpec.success_criteria,
+    stop_conditions: executionSpec.stop_conditions,
+    required_env_vars: executionSpec.required_env_vars,
+    required_environment_variables: executionSpec.required_environment_variables,
+    requires_repository: executionSpec.requires_repository,
+    repository_required: executionSpec.repository_required,
+    prerequisites: executionSpec.prerequisites,
+    execution_prerequisites: executionSpec.execution_prerequisites,
+    preflight: executionSpec.preflight
+  };
+}
+
+function retryBrainOutput({ tenantId, mission, run, milestone, taskSpec }) {
+  return {
+    objective: `Apply Brain correction for ${milestone.title}`,
+    worker_id: mission.preferred_worker_id || 'W01',
+    requires_execution: true,
+    execution_type: 'CODEX',
+    task_spec: taskSpec,
+    execution_constraints: {
+      no_gcp: true,
+      no_cloud_run: true,
+      no_deploy: true,
+      deployment: 'HUMAN_MANUAL_DEPLOY'
+    },
+    brain_run_id: run.id,
+    tenant_id: tenantId,
+    workspace_id: mission.workspace_id || null,
+    project_id: mission.project_id || null,
+    mission_id: mission.id
+  };
+}
+
 function normalizeHumanActionCheckpoint(input = {}, existing = null) {
   const now = milestoneTimestamp();
   const checkpointType = clean(input.checkpoint_type || input.type || 'PREREQUISITE', 120).toUpperCase();
@@ -122,6 +206,7 @@ function normalizeHumanActionCheckpoint(input = {}, existing = null) {
     roadmap_id: input.roadmap_id || null,
     milestone_id: input.milestone_id || null,
     mission_id: input.mission_id || null,
+    brain_run_id: input.brain_run_id || null,
     paused_from_phase: clean(input.paused_from_phase || input.resume_phase || '', 120) || null,
     reason: clean(input.reason || input.blocker_code || '', 1000) || null,
     blocker_code: clean(input.blocker_code || requirementType, 200),
@@ -301,13 +386,27 @@ function parseAutopilotDecision(text) {
             ? [...new Set(parsed.execution_spec.allowed_files.map((x) => clean(x, 1000).replace(/\\/g, '/')).filter(Boolean))].slice(0, 100)
             : [],
           required_tests: normalizeStringList(
-            parsed.execution_spec.required_tests || parsed.execution_spec.tests || parsed.execution_spec.success_criteria,
+            parsed.execution_spec.required_tests || parsed.execution_spec.tests,
             30,
             4000
           ),
           diagnostic_tests: normalizeStringList(parsed.execution_spec.diagnostic_tests, 30, 4000),
           success_criteria: normalizeStringList(parsed.execution_spec.success_criteria, 30, 1000),
           stop_conditions: normalizeStringList(parsed.execution_spec.stop_conditions, 30, 1000)
+          ,
+          required_env_vars: normalizeStringList(parsed.execution_spec.required_env_vars, 30, 500),
+          required_environment_variables: normalizeStringList(parsed.execution_spec.required_environment_variables, 30, 500),
+          requires_repository: parsed.execution_spec.requires_repository === true,
+          repository_required: parsed.execution_spec.repository_required === true,
+          prerequisites: Array.isArray(parsed.execution_spec.prerequisites)
+            ? parsed.execution_spec.prerequisites.filter((item) => item && typeof item === 'object').slice(0, 30).map((item) => sanitizeAuditValue(item))
+            : [],
+          execution_prerequisites: Array.isArray(parsed.execution_spec.execution_prerequisites)
+            ? parsed.execution_spec.execution_prerequisites.filter((item) => item && typeof item === 'object').slice(0, 30).map((item) => sanitizeAuditValue(item))
+            : [],
+          preflight: parsed.execution_spec.preflight && typeof parsed.execution_spec.preflight === 'object'
+            ? sanitizeAuditValue(parsed.execution_spec.preflight)
+            : null
         }
       : null
   };
@@ -824,6 +923,7 @@ function checkpointFromAutopilotDecision(decision, scope, existing = null) {
     ...scope,
     checkpoint_type: source.checkpoint_type || 'AUTOPILOT_VERIFICATION',
     requirement_type: source.requirement_type || 'HUMAN_ACTION',
+    brain_run_id: scope.brain_run_id || null,
     human_action_request: source.human_action_request || source.request || decision.reason,
     user_action: source.user_action,
     action_location: source.action_location,
@@ -1000,19 +1100,22 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
       const error = new Error('MILESTONE_NOT_FOUND'); error.status = 404; throw error;
     }
 
-    let priorAllowedFiles = [];
+    let priorTask = null;
     if (mission.current_task_id) {
       const priorTaskSnap = await tx.get(db.collection('tasks').doc(mission.current_task_id));
       if (priorTaskSnap.exists && priorTaskSnap.data().tenant_id === tenantId) {
-        const priorTask = priorTaskSnap.data();
-        const source = Array.isArray(priorTask.task_spec?.allowed_files)
-          ? priorTask.task_spec.allowed_files
-          : Array.isArray(priorTask.brain_output?.task_spec?.allowed_files)
-            ? priorTask.brain_output.task_spec.allowed_files
-            : [];
-        priorAllowedFiles = source.map((x) => clean(x, 1000).replace(/\\/g, '/')).filter(Boolean);
+        priorTask = { id: priorTaskSnap.id, ...priorTaskSnap.data() };
       }
     }
+    const runsSnap = await tx.get(db.collection('runs').where('tenant_id', '==', tenantId).limit(200));
+    const priorExecutionRun = runsSnap.docs
+      .map((doc) => ({ id: doc.id, ...doc.data() }))
+      .filter((item) => item.mission_id === mission.id && item.run_type === 'EXECUTION_RUN')
+      .sort((a, b) => Number(b.started_at?.toMillis?.() || b.created_at?.toMillis?.() || 0) - Number(a.started_at?.toMillis?.() || a.created_at?.toMillis?.() || 0))[0] || null;
+    const projectSnap = mission.project_id ? await tx.get(db.collection('projects').doc(mission.project_id)) : null;
+    const project = projectSnap?.exists && projectSnap.data().tenant_id === tenantId
+      ? { id: projectSnap.id, ...projectSnap.data() }
+      : {};
 
     const outputText = clean(input.output_text || input.summary || '', 100000);
     const decision = parseAutopilotDecision(outputText);
@@ -1076,6 +1179,7 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
         roadmap_id: roadmap.id,
         milestone_id: milestone.id,
         mission_id: mission.id,
+        brain_run_id: run.id,
         paused_from_phase: 'VERIFY_EXECUTION'
       }, existing);
       tx.set(roadmapRef, {
@@ -1115,11 +1219,116 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
         decision.action = 'BLOCKED';
         decision.reason = `${decision.reason} RETRY requires Brain-defined execution_spec.required_tests.`.trim();
       } else {
+        const currentAttempt = attempt + 1;
+        const retryRevision = Number(mission.autopilot_retry_revision || mission.retry_revision || 0) + 1;
+        const activeExecutionSpec = retryExecutionSpecSnapshot(decision.execution_spec);
+        const taskSpec = retryTaskSpec(milestone, activeExecutionSpec);
+        const brainOutput = retryBrainOutput({ tenantId, mission, run, milestone, taskSpec });
+        const retryAuditEntry = {
+          attempt: currentAttempt,
+          revision: retryRevision,
+          verification_brain_run_id: run.id,
+          prior_task_id: priorTask?.id || mission.current_task_id || null,
+          prior_execution_run_id: priorExecutionRun?.id || priorTask?.current_run_id || priorTask?.execution_run_id || null,
+          prior_result_id: priorExecutionRun?.result_id || priorTask?.result_id || null,
+          prior_verification_brain_run_id: milestone.verification_brain_run_id || mission.verification_brain_run_id || null,
+          prior_reason: decision.reason,
+          decided_at: milestoneTimestamp(),
+          execution_spec: activeExecutionSpec
+        };
+        const retryHistory = boundedRetryHistory(mission, retryAuditEntry);
+        const { deterministicProgramPreflight } = require('./orchestration');
+        const checkpoint = deterministicProgramPreflight({
+          tenantId,
+          brainOutput,
+          mission: {
+            ...mission,
+            id: mission.id,
+            autopilot_phase: 'RETRY_EXECUTION',
+            pending_retry_execution: {
+              attempt: currentAttempt,
+              revision: retryRevision,
+              verification_brain_run_id: run.id,
+              brain_output: brainOutput,
+              task_spec: taskSpec
+            }
+          },
+          run: { ...run, id: run.id, autopilot_phase: 'RETRY_EXECUTION' },
+          roadmap,
+          milestone,
+          project
+        });
+        if (checkpoint) {
+          const retryCheckpoint = normalizeHumanActionCheckpoint({
+            ...checkpoint,
+            checkpoint_type: 'RETRY_PREFLIGHT',
+            tenant_id: tenantId,
+            roadmap_id: roadmap.id,
+            milestone_id: milestone.id,
+            mission_id: mission.id,
+            brain_run_id: run.id,
+            paused_from_phase: 'RETRY_EXECUTION',
+            validation_metadata: checkpoint.validation_metadata
+          }, unresolvedHumanActionCheckpoint(milestone));
+          const pendingRetryExecution = sanitizeAuditValue({
+            attempt: currentAttempt,
+            revision: retryRevision,
+            verification_brain_run_id: run.id,
+            reason: decision.reason,
+            brain_output: brainOutput,
+            task_spec: taskSpec,
+            execution_spec: activeExecutionSpec,
+            checkpoint_id: retryCheckpoint.checkpoint_id,
+            created_at: milestoneTimestamp()
+          });
+          tx.set(roadmapRef, {
+            milestones: milestoneWithState(roadmap, milestone.id, 'NEED_HUMAN_ACTION', {
+              mission_id: mission.id,
+              last_retry_brain_run_id: run.id,
+              retry_attempt: currentAttempt,
+              retry_revision: retryRevision,
+              retry_status: 'NEED_HUMAN_ACTION',
+              active_retry_execution_spec: activeExecutionSpec,
+              retry_history: retryHistory,
+              human_action_required: true,
+              human_action_checkpoint: retryCheckpoint,
+              waiting_status: retryCheckpoint.waiting_status,
+              blocked_reason: retryCheckpoint.blocker_code
+            }),
+            updated_at: timestamp()
+          }, { merge: true });
+          tx.set(missionRef, {
+            state: 'NEED_HUMAN_ACTION',
+            autopilot_phase: 'NEED_HUMAN_ACTION',
+            autopilot_attempt_count: currentAttempt,
+            autopilot_retry_revision: retryRevision,
+            retry_status: 'NEED_HUMAN_ACTION',
+            last_retry_brain_run_id: run.id,
+            last_retry_reason: decision.reason,
+            active_retry_execution_spec: activeExecutionSpec,
+            pending_retry_execution: pendingRetryExecution,
+            autopilot_retry_history: retryHistory,
+            human_action_required: true,
+            human_action_checkpoint: retryCheckpoint,
+            blocker_code: retryCheckpoint.blocker_code,
+            blocker_message: retryCheckpoint.human_action_request,
+            updated_at: timestamp()
+          }, { merge: true });
+          result = {
+            success: false,
+            action: 'NEED_HUMAN_ACTION',
+            roadmap_id: roadmap.id,
+            milestone_id: milestone.id,
+            mission_id: mission.id,
+            checkpoint_id: retryCheckpoint.checkpoint_id,
+            human_action_checkpoint: retryCheckpoint,
+            attempt: currentAttempt,
+            revision: retryRevision,
+            reason: retryCheckpoint.reason || decision.reason
+          };
+          return;
+        }
         const taskRef = db.collection('tasks').doc();
-        const cumulativeAllowedFiles = [...new Set([
-          ...priorAllowedFiles,
-          ...(decision.execution_spec.allowed_files || [])
-        ].map((x) => clean(x, 1000).replace(/\\/g, '/')).filter(Boolean))].slice(0, 100);
         tx.set(taskRef, {
           id: taskRef.id,
           tenant_id: tenantId,
@@ -1127,45 +1336,10 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
           workspace_id: mission.workspace_id || null,
           project_id: mission.project_id || null,
           worker_id: mission.preferred_worker_id || 'W01',
-          title: `Autopilot retry: ${milestone.title}`,
-          objective: `Apply Brain correction for ${milestone.title}`,
-          task_spec: {
-            title: `Autopilot retry: ${milestone.title}`,
-            objective: `Apply Brain correction for ${milestone.title}`,
-            instructions: decision.execution_spec.instructions,
-            allowed_files: cumulativeAllowedFiles,
-            required_tests: decision.execution_spec.required_tests,
-            diagnostic_tests: decision.execution_spec.diagnostic_tests,
-            success_criteria: decision.execution_spec.success_criteria,
-            stop_conditions: decision.execution_spec.stop_conditions
-          },
-          brain_output: {
-            objective: `Apply Brain correction for ${milestone.title}`,
-            worker_id: mission.preferred_worker_id || 'W01',
-            requires_execution: true,
-            execution_type: 'CODEX',
-            task_spec: {
-              title: `Autopilot retry: ${milestone.title}`,
-              objective: `Apply Brain correction for ${milestone.title}`,
-              instructions: decision.execution_spec.instructions,
-              allowed_files: cumulativeAllowedFiles,
-              required_tests: decision.execution_spec.required_tests,
-              diagnostic_tests: decision.execution_spec.diagnostic_tests,
-              success_criteria: decision.execution_spec.success_criteria,
-              stop_conditions: decision.execution_spec.stop_conditions
-            },
-            execution_constraints: {
-              no_gcp: true,
-              no_cloud_run: true,
-              no_deploy: true,
-              deployment: 'HUMAN_MANUAL_DEPLOY'
-            },
-            brain_run_id: run.id,
-            tenant_id: tenantId,
-            workspace_id: mission.workspace_id || null,
-            project_id: mission.project_id || null,
-            mission_id: mission.id
-          },
+          title: taskSpec.title,
+          objective: taskSpec.objective,
+          task_spec: taskSpec,
+          brain_output: brainOutput,
           execution_constraints: {
             no_gcp: true,
             no_cloud_run: true,
@@ -1176,7 +1350,10 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
           state: 'QUEUED',
           phase: 'EXECUTION_PENDING',
           autopilot_phase: 'RETRY',
-          attempt_count: attempt + 1,
+          attempt_count: currentAttempt,
+          autopilot_retry_revision: retryRevision,
+          retry_of_task_id: priorTask?.id || mission.current_task_id || null,
+          retry_of_run_id: priorExecutionRun?.id || priorTask?.current_run_id || priorTask?.execution_run_id || null,
           brain_run_id: run.id,
           brain_completed_at: timestamp(),
           current_run_id: null,
@@ -1187,15 +1364,28 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
         tx.set(missionRef, {
           state: 'RUNNING',
           autopilot_phase: 'RETRY_EXECUTION',
-          autopilot_attempt_count: attempt + 1,
+          autopilot_attempt_count: currentAttempt,
+          autopilot_retry_revision: retryRevision,
+          retry_status: 'QUEUED',
+          last_retry_brain_run_id: run.id,
+          last_retry_reason: decision.reason,
           current_task_id: taskRef.id,
-          autopilot_allowed_files: cumulativeAllowedFiles,
+          current_retry_task_id: taskRef.id,
+          active_retry_execution_spec: activeExecutionSpec,
+          pending_retry_execution: null,
+          autopilot_retry_history: retryHistory,
+          autopilot_allowed_files: activeExecutionSpec.allowed_files,
           updated_at: timestamp()
         }, { merge: true });
         tx.set(roadmapRef, {
           milestones: milestoneWithState(roadmap, milestone.id, 'RUNNING', {
             mission_id: mission.id,
-            last_retry_brain_run_id: run.id
+            last_retry_brain_run_id: run.id,
+            retry_attempt: currentAttempt,
+            retry_revision: retryRevision,
+            retry_status: 'QUEUED',
+            active_retry_execution_spec: activeExecutionSpec,
+            retry_history: retryHistory
           }),
           updated_at: timestamp()
         }, { merge: true });
@@ -1206,7 +1396,8 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
           milestone_id: milestone.id,
           mission_id: mission.id,
           task_id: taskRef.id,
-          attempt: attempt + 1,
+          attempt: currentAttempt,
+          revision: retryRevision,
           reason: decision.reason
         };
         return;
@@ -1418,7 +1609,7 @@ async function confirmHumanActionReady(db, tenantId, roadmapId, checkpointId, in
     };
   });
 
-  if (outcome?.state === 'NEED_HUMAN_ACTION' || outcome?.resume_phase === 'VERIFY_EXECUTION' || outcome?.resume_phase === 'VERIFYING') {
+  if (outcome?.no_new_work === true || outcome?.state === 'NEED_HUMAN_ACTION' || outcome?.resume_phase === 'VERIFY_EXECUTION' || outcome?.resume_phase === 'VERIFYING') {
     return outcome;
   }
   if (outcome?.state === 'RESOLVED' && outcome?.brain_run_id) {
