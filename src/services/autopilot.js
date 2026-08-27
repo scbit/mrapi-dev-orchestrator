@@ -240,10 +240,53 @@ function retryBrainOutput({ tenantId, mission, run, milestone, taskSpec }) {
   };
 }
 
+function checkpointRequirementKey(checkpoint) {
+  return clean(
+    checkpoint?.requirement_key ||
+    checkpoint?.human_action_request ||
+    checkpoint?.user_action ||
+    '',
+    2000
+  );
+}
+
+function equivalentHumanActionCheckpoint(existing, input, checkpointType, requirementType) {
+  if (!existing || existing.human_action_required !== true) return false;
+  const continuityMatches = (
+    (!input.tenant_id || !existing.tenant_id || existing.tenant_id === input.tenant_id) &&
+    (!input.roadmap_id || !existing.roadmap_id || existing.roadmap_id === input.roadmap_id) &&
+    (!input.milestone_id || !existing.milestone_id || existing.milestone_id === input.milestone_id) &&
+    (!input.mission_id || !existing.mission_id || existing.mission_id === input.mission_id)
+  );
+  if (!continuityMatches) return false;
+  const existingType = clean(existing.checkpoint_type || existing.type || 'PREREQUISITE', 120).toUpperCase();
+  const existingRequirement = clean(existing.requirement_type || existingType, 120).toUpperCase();
+  if (existingType !== checkpointType || existingRequirement !== requirementType) return false;
+  const existingMethod = validationMethod(existing);
+  const inputMethod = clean(input.validation_method || 'manual_confirmation', 1000).toLowerCase().replace(/[\s-]+/g, '_');
+  if (existingMethod !== inputMethod) return false;
+  return checkpointRequirementKey(existing) === clean(input.requirement_key || input.human_action_request || input.user_action || '', 2000);
+}
+
 function normalizeHumanActionCheckpoint(input = {}, existing = null) {
   const now = milestoneTimestamp();
   const checkpointType = clean(input.checkpoint_type || input.type || 'PREREQUISITE', 120).toUpperCase();
   const requirementType = clean(input.requirement_type || checkpointType, 120).toUpperCase();
+  const equivalentExisting = equivalentHumanActionCheckpoint(existing, input, checkpointType, requirementType)
+    ? existing
+    : null;
+  const existingStatus = checkpointStatus(equivalentExisting);
+  const prior = equivalentExisting && ['WAITING_FOR_HUMAN', 'NEED_HUMAN_ACTION'].includes(existingStatus)
+    ? equivalentExisting
+    : null;
+  const resolvedPrior = equivalentExisting && existingStatus === 'RESOLVED'
+    ? equivalentExisting
+    : null;
+  const generation = prior
+    ? Number(prior.generation || 1)
+    : resolvedPrior
+      ? Number(resolvedPrior.generation || 1) + 1
+      : Number(input.generation || 1);
   const seed = input.checkpoint_seed || [
     input.tenant_id,
     input.roadmap_id,
@@ -251,14 +294,18 @@ function normalizeHumanActionCheckpoint(input = {}, existing = null) {
     input.mission_id,
     checkpointType,
     requirementType,
-    input.requirement_key || input.human_action_request || input.user_action
+    input.requirement_key || input.human_action_request || input.user_action,
+    generation > 1 ? `generation:${generation}` : null
   ].filter(Boolean).join(':');
-  const prior = existing && existing.human_action_required === true ? existing : null;
   return {
     human_action_required: true,
     checkpoint_id: prior?.checkpoint_id || input.checkpoint_id || checkpointId(seed),
+    parent_checkpoint_id: prior?.parent_checkpoint_id || resolvedPrior?.checkpoint_id || input.parent_checkpoint_id || null,
+    supersedes_checkpoint_id: prior?.supersedes_checkpoint_id || resolvedPrior?.checkpoint_id || input.supersedes_checkpoint_id || null,
+    generation,
     checkpoint_type: checkpointType,
     requirement_type: requirementType,
+    requirement_key: clean(input.requirement_key || prior?.requirement_key || resolvedPrior?.requirement_key || input.human_action_request || input.user_action || '', 2000) || null,
     human_action_request: clean(input.human_action_request || input.request || input.reason || 'Human action is required.', 2000),
     user_action: clean(input.user_action || input.human_action_request || 'Complete the requested action, then rerun validation.', 2000),
     action_location: clean(input.action_location || 'external', 1000),
@@ -266,6 +313,9 @@ function normalizeHumanActionCheckpoint(input = {}, existing = null) {
     validation_metadata: sanitizeMetadata(input.validation_metadata),
     status: 'WAITING_FOR_HUMAN',
     waiting_status: 'WAITING_FOR_HUMAN',
+    tenant_id: input.tenant_id || prior?.tenant_id || resolvedPrior?.tenant_id || null,
+    workspace_id: input.workspace_id || prior?.workspace_id || resolvedPrior?.workspace_id || null,
+    project_id: input.project_id || prior?.project_id || resolvedPrior?.project_id || null,
     roadmap_id: input.roadmap_id || null,
     milestone_id: input.milestone_id || null,
     mission_id: input.mission_id || null,
@@ -674,6 +724,9 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
     }
 
     if (status === 'PASS') {
+      const pausePhase = clean(checkpoint.paused_from_phase || checkpoint.resume_phase || mission.paused_from_phase || 'PROGRAM', 120).toUpperCase() || 'PROGRAM';
+      const resumesVerification = pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING';
+      const resumesGitStage = pausePhase === 'GIT_STAGE';
       const updatedCheckpoint = resolvedCheckpoint(checkpoint, {
         ok: true,
         message: safeMessage,
@@ -683,7 +736,7 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
       }, now);
       const brainRunId = checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null;
       tx.set(roadmapRef, {
-        milestones: milestoneWithState(roadmap, milestone.id, 'NEED_HUMAN_ACTION', {
+        milestones: milestoneWithState(roadmap, milestone.id, resumesVerification ? 'VERIFYING' : (resumesGitStage ? 'RUNNING' : 'NEED_HUMAN_ACTION'), {
           mission_id: mission.id,
           brain_run_id: milestone.brain_run_id || mission.brain_run_id || null,
           verification_brain_run_id: milestone.verification_brain_run_id || mission.verification_brain_run_id || null,
@@ -695,22 +748,22 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
         updated_at: timestamp()
       }, { merge: true });
       tx.set(missionRef, {
-        state: 'NEED_HUMAN_ACTION',
-        autopilot_phase: 'NEED_HUMAN_ACTION',
+        state: resumesVerification || resumesGitStage ? 'RUNNING' : 'NEED_HUMAN_ACTION',
+        autopilot_phase: resumesVerification ? 'VERIFYING' : (resumesGitStage ? 'GIT_STAGE' : 'NEED_HUMAN_ACTION'),
         human_action_required: false,
         human_action_checkpoint: updatedCheckpoint,
         updated_at: timestamp()
       }, { merge: true });
       outcome = {
-        resumed: false,
-        state: 'RESOLVED',
+        resumed: resumesVerification || resumesGitStage,
+        state: resumesVerification ? 'VERIFYING' : (resumesGitStage ? 'GIT_STAGE' : 'RESOLVED'),
         roadmap_id: roadmap.id,
         milestone_id: milestone.id,
         mission_id: mission.id,
         brain_run_id: brainRunId,
         checkpoint_id: checkpoint.checkpoint_id,
         validation_id: validation.id,
-        resume_phase: clean(checkpoint.paused_from_phase || checkpoint.resume_phase || mission.paused_from_phase || 'PROGRAM', 120).toUpperCase() || 'PROGRAM',
+        resume_phase: pausePhase,
         message: safeMessage
       };
       return;
@@ -1771,9 +1824,11 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
     }
 
     if (decision.action === 'NEED_HUMAN_ACTION') {
-      const existing = unresolvedHumanActionCheckpoint(milestone);
+      const existing = milestone?.human_action_checkpoint || milestone?.human_action || null;
       const checkpoint = checkpointFromAutopilotDecision(decision, {
         tenant_id: tenantId,
+        workspace_id: mission.workspace_id || roadmap.workspace_id || project.workspace_id || null,
+        project_id: mission.project_id || roadmap.project_id || project.id || null,
         roadmap_id: roadmap.id,
         milestone_id: milestone.id,
         mission_id: mission.id,
@@ -1861,13 +1916,15 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
             ...checkpoint,
             checkpoint_type: 'RETRY_PREFLIGHT',
             tenant_id: tenantId,
+            workspace_id: mission.workspace_id || roadmap.workspace_id || project.workspace_id || null,
+            project_id: mission.project_id || roadmap.project_id || project.id || null,
             roadmap_id: roadmap.id,
             milestone_id: milestone.id,
             mission_id: mission.id,
             brain_run_id: run.id,
             paused_from_phase: 'RETRY_EXECUTION',
             validation_metadata: checkpoint.validation_metadata
-          }, unresolvedHumanActionCheckpoint(milestone));
+          }, milestone?.human_action_checkpoint || milestone?.human_action || null);
           const pendingRetryExecution = sanitizeAuditValue({
             attempt: currentAttempt,
             revision: retryRevision,
@@ -2168,6 +2225,8 @@ async function completeGitStageExecutionRun(db, tenantId, runId, input = {}) {
         checkpoint_type: git.checkpoint?.checkpoint_type || git.reason || 'GIT_AUTH',
         requirement_type: git.checkpoint?.requirement_type || git.reason || 'GIT_AUTH',
         tenant_id: tenantId,
+        workspace_id: mission.workspace_id || roadmap.workspace_id || null,
+        project_id: mission.project_id || roadmap.project_id || null,
         roadmap_id: roadmap.id,
         milestone_id: milestone.id,
         mission_id: mission.id,
@@ -2182,7 +2241,7 @@ async function completeGitStageExecutionRun(db, tenantId, runId, input = {}) {
           changed_files: Array.isArray(git.changed_files) ? git.changed_files : [],
           staged_files: Array.isArray(git.staged_files) ? git.staged_files : []
         }
-      }, unresolvedHumanActionCheckpoint(milestone));
+      }, milestone?.human_action_checkpoint || milestone?.human_action || null);
       tx.set(roadmapRef, {
         milestones: milestoneWithState(roadmap, milestone.id, 'NEED_HUMAN_ACTION', {
           human_action_required: true,

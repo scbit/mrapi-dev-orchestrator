@@ -218,6 +218,109 @@ test('repeat unresolved preflight reuses checkpoint and creates no duplicate wor
   assert.equal(values(db, 'tasks').length, 0);
 });
 
+test('resolved repository-clean preflight generates checkpoint2 and unresolved replay stays tenant and mission scoped', async () => {
+  const dirtyPreflight = {
+    preflight: [{
+      type: 'MANUAL_HUMAN',
+      name: 'repository_dirty',
+      human_action_request: 'Clean the repository worktree before continuing.',
+      user_action: 'Remove or commit local changes, then press LISTO.',
+      action_location: 'project repository',
+      validation_method: 'git_worktree_clean',
+      validation_metadata: { repository_path: 'C:/untrusted/request-path', repository_identity: 'untrusted/repo' }
+    }]
+  };
+  const db = new DB(); seedProgram(db, { project: { local_path: 'C:/trusted/repo', repository_full_name: 'org/repo' } });
+  await completeBrainRun(db, 'tenant_a', 'brain_a', { output_text: programOutput(dirtyPreflight) });
+  const cp1 = checkpoint(db);
+  assert.equal(cp1.status, 'WAITING_FOR_HUMAN');
+  assert.equal(cp1.validation_method, 'git_worktree_clean');
+  assert.equal(cp1.validation_metadata.repository_path, 'C:/trusted/repo');
+  assert.equal(cp1.validation_metadata.repository_identity, 'org/repo');
+
+  const resolvedCp1 = { ...cp1, status: 'RESOLVED', waiting_status: 'RESOLVED' };
+  db.set('roadmaps', 'roadmap_a', {
+    milestones: [
+      db.get('roadmaps', 'roadmap_a').milestones[0],
+      { ...db.get('roadmaps', 'roadmap_a').milestones[1], human_action_checkpoint: resolvedCp1, waiting_status: 'RESOLVED' }
+    ]
+  }, { merge: true });
+  db.set('missions', 'mission_a', {
+    state: 'PLANNING',
+    autopilot_phase: 'PROGRAM',
+    human_action_required: false,
+    human_action_checkpoint: resolvedCp1
+  }, { merge: true });
+  db.set('runs', 'brain_b', { ...db.get('runs', 'brain_a'), id: 'brain_b', state: 'RUNNING' });
+
+  await completeBrainRun(db, 'tenant_a', 'brain_b', { output_text: programOutput(dirtyPreflight) });
+  const cp2 = checkpoint(db);
+  assert.notEqual(cp2.checkpoint_id, cp1.checkpoint_id);
+  assert.equal(cp2.status, 'WAITING_FOR_HUMAN');
+  assert.equal(cp2.tenant_id, cp1.tenant_id);
+  assert.equal(cp2.roadmap_id, cp1.roadmap_id);
+  assert.equal(cp2.milestone_id, cp1.milestone_id);
+  assert.equal(cp2.mission_id, cp1.mission_id);
+  assert.equal(cp2.validation_method, 'git_worktree_clean');
+  assert.equal(cp2.validation_metadata.repository_path, 'C:/trusted/repo');
+  assert.equal(cp2.validation_metadata.repository_identity, 'org/repo');
+  assert.equal(cp2.parent_checkpoint_id, cp1.checkpoint_id);
+  assert.equal(cp2.generation, 2);
+  assert.equal(resolvedCp1.status, 'RESOLVED');
+
+  db.set('runs', 'brain_c', { ...db.get('runs', 'brain_a'), id: 'brain_c', state: 'RUNNING' });
+  await completeBrainRun(db, 'tenant_a', 'brain_c', { output_text: programOutput(dirtyPreflight) });
+  assert.equal(checkpoint(db).checkpoint_id, cp2.checkpoint_id);
+  assert.equal(values(db, 'tasks').length, 0);
+
+  db.set('projects', 'project_b', {
+    id: 'project_b',
+    tenant_id: 'tenant_b',
+    workspace_id: 'workspace_b',
+    local_path: 'C:/trusted/repo-b',
+    repository_full_name: 'org/repo-b'
+  });
+  db.set('roadmaps', 'roadmap_b', {
+    id: 'roadmap_b',
+    tenant_id: 'tenant_b',
+    workspace_id: 'workspace_b',
+    project_id: 'project_b',
+    state: 'ACTIVE',
+    milestones: [
+      { id: 'm0', title: 'Done', state: 'COMPLETED', order: 1, depends_on: [] },
+      { id: 'm1', title: 'Other current', state: 'PLANNING', order: 2, depends_on: ['m0'] }
+    ]
+  });
+  db.set('missions', 'mission_b', {
+    id: 'mission_b',
+    tenant_id: 'tenant_b',
+    workspace_id: 'workspace_b',
+    project_id: 'project_b',
+    preferred_worker_id: 'W01',
+    state: 'PLANNING',
+    autopilot_mode: true,
+    autopilot_phase: 'PROGRAM',
+    roadmap_id: 'roadmap_b',
+    milestone_id: 'm1'
+  });
+  db.set('runs', 'brain_tenant_b', {
+    ...db.get('runs', 'brain_a'),
+    id: 'brain_tenant_b',
+    tenant_id: 'tenant_b',
+    state: 'RUNNING',
+    mission_id: 'mission_b',
+    workspace_id: 'workspace_b',
+    project_id: 'project_b',
+    roadmap_id: 'roadmap_b'
+  });
+  await completeBrainRun(db, 'tenant_b', 'brain_tenant_b', { output_text: programOutput(dirtyPreflight) });
+  const tenantBCp = db.get('roadmaps', 'roadmap_b').milestones[1].human_action_checkpoint;
+  assert.notEqual(tenantBCp.checkpoint_id, cp2.checkpoint_id);
+  assert.equal(tenantBCp.tenant_id, 'tenant_b');
+  assert.equal(tenantBCp.mission_id, 'mission_b');
+  assert.equal(tenantBCp.validation_metadata.repository_path, 'C:/trusted/repo-b');
+});
+
 test('completed predecessors stay completed and cross-tenant complete mutates nothing', async () => {
   const db = new DB(); seedProgram(db);
   const before = JSON.stringify(db.collections);

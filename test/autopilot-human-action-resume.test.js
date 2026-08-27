@@ -159,6 +159,25 @@ function programOutput(extraSpec = {}) {
   })}</MRAPI_CONTROL>`;
 }
 
+function dirtyBeforeExecutionDecision() {
+  return '<MRAPI_AUTOPILOT>' + JSON.stringify({
+    action: 'NEED_HUMAN_ACTION',
+    reason: 'AUTOPILOT_REPO_DIRTY_BEFORE_EXECUTION',
+    human_action: {
+      checkpoint_type: 'PROGRAM_PREFLIGHT',
+      requirement_type: 'MANUAL_HUMAN',
+      human_action_request: 'Clean the repository worktree before continuing.',
+      user_action: 'Commit, stash, or remove local changes, then press LISTO.',
+      action_location: 'project repository',
+      validation_method: 'git_worktree_clean',
+      validation_metadata: { repository_path: 'C:/trusted/repo', repository_identity: 'org/repo' },
+      blocker_code: 'AUTOPILOT_REPO_DIRTY_BEFORE_EXECUTION',
+      requirement_key: 'MANUAL_HUMAN:repository_dirty'
+    },
+    execution_spec: null
+  }) + '</MRAPI_AUTOPILOT>';
+}
+
 async function pauseWith(db, extraSpec) {
   const out = await completeBrainRun(db, 'tenant_a', 'brain_a', { output_text: programOutput(extraSpec) });
   assert.equal(out.action, 'NEED_HUMAN_ACTION');
@@ -317,6 +336,136 @@ test('HOST_LOCAL PASS result resolves checkpoint and resumes same Mission once',
   assert.equal(replay.reused, true);
   assert.equal(replay.task_id, out.task_id);
   assert.deepEqual(workCounts(db), { ...before, tasks: before.tasks + 1 });
+});
+
+async function dirtyResumeScenario({ failCheckpoint2 = false } = {}) {
+  const db = new DB();
+  seedProgram(db, { project: { local_path: 'C:/trusted/repo', repository_full_name: 'org/repo' } });
+  db.set('workers', 'W01', { id: 'W01', tenant_id: 'tenant_a', state: 'IDLE' });
+  const cp1 = await pauseWith(db, {
+    prerequisites: [{
+      type: 'MANUAL_HUMAN',
+      name: 'repository_dirty',
+      human_action_request: 'Clean the repository worktree before continuing.',
+      user_action: 'Commit, stash, or remove local changes, then press LISTO.',
+      action_location: 'project repository',
+      validation_method: 'git_worktree_clean',
+      validation_metadata: { repository_path: 'C:/trusted/repo', repository_identity: 'org/repo' }
+    }]
+  });
+  await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp1.checkpoint_id, { ready: true });
+  const cp1Validation = await claimNextTask(db, 'tenant_a', 'executor_a', { repository_path: 'C:/trusted/repo' });
+  const pass1 = await completeRun(db, 'tenant_a', cp1Validation.run.id, {
+    success: true,
+    summary: 'Repository worktree is clean.',
+    output: {
+      validation_id: cp1Validation.host_validation.id,
+      checkpoint_id: cp1.checkpoint_id,
+      validator: 'git_worktree_clean',
+      status: 'PASS',
+      safe_message: 'Repository worktree is clean.',
+      validation_result_id: 'cp1_pass'
+    }
+  });
+  assert.equal(pass1.resumed, true);
+  assert.equal(pass1.mission_id, 'mission_a');
+  assert.equal(checkpoint(db).checkpoint_id, cp1.checkpoint_id);
+  assert.equal(checkpoint(db).status, 'RESOLVED');
+  const resolvedCp1 = { ...checkpoint(db) };
+
+  const continuationTaskId = pass1.task_id;
+  const resumedClaim = await claimNextTask(db, 'tenant_a', 'executor_a', { repository_path: 'C:/trusted/repo' });
+  assert.equal(resumedClaim.task.id, continuationTaskId);
+  const failedExecution = await completeRun(db, 'tenant_a', resumedClaim.run.id, {
+    success: false,
+    summary: 'AUTOPILOT_REPO_DIRTY_BEFORE_EXECUTION',
+    error: 'AUTOPILOT_REPO_DIRTY_BEFORE_EXECUTION',
+    output: {
+      error_code: 'AUTOPILOT_REPO_DIRTY_BEFORE_EXECUTION',
+      safe_message: 'Repository worktree is dirty before execution.'
+    }
+  });
+  const verifyRunId = failedExecution.autopilot_verification.verification_run_id;
+  const beforeNewCheckpoint = workCounts(db);
+  const needHuman = await completeVerificationBrainRun(db, 'tenant_a', verifyRunId, {
+    output_text: dirtyBeforeExecutionDecision()
+  });
+  const cp2 = checkpoint(db);
+  assert.equal(needHuman.action, 'NEED_HUMAN_ACTION');
+  assert.notEqual(cp2.checkpoint_id, cp1.checkpoint_id);
+  assert.equal(cp2.status, 'WAITING_FOR_HUMAN');
+  assert.equal(cp2.tenant_id, 'tenant_a');
+  assert.equal(cp2.roadmap_id, cp1.roadmap_id);
+  assert.equal(cp2.milestone_id, cp1.milestone_id);
+  assert.equal(cp2.mission_id, cp1.mission_id);
+  assert.equal(cp2.validation_method, 'git_worktree_clean');
+  assert.equal(cp2.validation_metadata.repository_path, 'C:/trusted/repo');
+  assert.equal(cp2.validation_metadata.repository_identity, 'org/repo');
+  assert.equal(cp2.parent_checkpoint_id, cp1.checkpoint_id);
+  assert.equal(cp2.generation, 2);
+  assert.equal(resolvedCp1.status, 'RESOLVED');
+
+  db.set('runs', 'verify_replay', { ...db.get('runs', verifyRunId), id: 'verify_replay', state: 'RUNNING' });
+  const replay = await completeVerificationBrainRun(db, 'tenant_a', 'verify_replay', {
+    output_text: dirtyBeforeExecutionDecision()
+  });
+  assert.equal(replay.checkpoint_id, cp2.checkpoint_id);
+  assert.equal(checkpoint(db).checkpoint_id, cp2.checkpoint_id);
+  assert.deepEqual(workCounts(db), { ...beforeNewCheckpoint, brainRuns: beforeNewCheckpoint.brainRuns + 1 });
+
+  await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp2.checkpoint_id, { ready: true });
+  const cp2Validation = await claimNextTask(db, 'tenant_a', 'executor_a', { repository_path: 'C:/trusted/repo' });
+  const beforeCp2Result = workCounts(db);
+  const cp2Result = await completeRun(db, 'tenant_a', cp2Validation.run.id, {
+    success: !failCheckpoint2,
+    summary: failCheckpoint2 ? 'Repository worktree remains dirty.' : 'Repository worktree is clean.',
+    output: {
+      validation_id: cp2Validation.host_validation.id,
+      checkpoint_id: cp2.checkpoint_id,
+      validator: 'git_worktree_clean',
+      status: failCheckpoint2 ? 'FAIL' : 'PASS',
+      safe_message: failCheckpoint2 ? 'Repository worktree remains dirty.' : 'Repository worktree is clean.',
+      validation_result_id: failCheckpoint2 ? 'cp2_fail' : 'cp2_pass'
+    }
+  });
+  return { db, cp1: resolvedCp1, cp2, cp2Result, beforeCp2Result, cp2Validation, continuationTaskId };
+}
+
+test('post-resume dirty pre-execution re-arms a new current HOST_LOCAL checkpoint for the same Mission', async () => {
+  const { db, cp1, cp2, cp2Result, beforeCp2Result, cp2Validation, continuationTaskId } = await dirtyResumeScenario();
+  assert.equal(cp2Result.resumed, true);
+  assert.equal(cp2Result.state, 'VERIFYING');
+  assert.equal(cp2Result.mission_id, 'mission_a');
+  assert.equal(cp2Result.checkpoint_id, cp2.checkpoint_id);
+  assert.equal(checkpoint(db).checkpoint_id, cp2.checkpoint_id);
+  assert.equal(checkpoint(db).status, 'RESOLVED');
+  assert.equal(checkpoint(db).parent_checkpoint_id, cp1.checkpoint_id);
+  assert.equal(db.get('missions', 'mission_a').state, 'RUNNING');
+  assert.equal(db.get('missions', 'mission_a').autopilot_phase, 'VERIFYING');
+  assert.equal(db.get('missions', 'mission_a').current_task_id, continuationTaskId);
+  assert.equal(values(db, 'missions').length, 1);
+  assert.deepEqual(workCounts(db), beforeCp2Result);
+
+  const replayPass = await completeRun(db, 'tenant_a', cp2Validation.run.id, {
+    success: true,
+    summary: 'Repository worktree is clean.',
+    output: { validation_result_id: 'cp2_pass' }
+  });
+  assert.equal(replayPass.reused, true);
+  assert.equal(replayPass.task_id, continuationTaskId);
+  assert.deepEqual(workCounts(db), beforeCp2Result);
+});
+
+test('post-resume dirty pre-execution checkpoint FAIL keeps checkpoint2 waiting and checkpoint1 resolved', async () => {
+  const { db, cp1, cp2, cp2Result, beforeCp2Result } = await dirtyResumeScenario({ failCheckpoint2: true });
+  assert.equal(cp2Result.resumed, false);
+  assert.equal(cp2Result.checkpoint_id, cp2.checkpoint_id);
+  assert.equal(checkpoint(db).checkpoint_id, cp2.checkpoint_id);
+  assert.equal(checkpoint(db).status, 'WAITING_FOR_HUMAN');
+  assert.equal(checkpoint(db).parent_checkpoint_id, cp1.checkpoint_id);
+  assert.equal(cp1.status, 'RESOLVED');
+  assert.equal(values(db, 'missions').length, 1);
+  assert.deepEqual(workCounts(db), beforeCp2Result);
 });
 
 test('HOST_LOCAL FAIL result keeps same checkpoint unresolved and creates no business work', async () => {

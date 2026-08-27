@@ -1270,10 +1270,12 @@ function capabilityIsUnavailable(name, project = {}, mission = {}) {
 }
 
 function checkpointForMissingPreflight({ tenantId, mission, run, roadmap, milestone, project, blocker }) {
-  const existing = unresolvedHumanActionCheckpoint(milestone);
+  const existing = milestone?.human_action_checkpoint || milestone?.human_action || null;
   const pausedFromPhase = cleanPreflightText(blocker.paused_from_phase || run?.autopilot_phase || mission?.autopilot_phase || 'PROGRAM', 120).toUpperCase();
   return normalizeHumanActionCheckpoint({
     tenant_id: tenantId,
+    workspace_id: mission.workspace_id || roadmap?.workspace_id || project?.workspace_id || null,
+    project_id: mission.project_id || roadmap?.project_id || project?.id || null,
     roadmap_id: roadmap?.id || mission.roadmap_id || run.roadmap_id || null,
     milestone_id: milestone?.id || mission.milestone_id || run.milestone_id || null,
     mission_id: mission.id || run.mission_id || null,
