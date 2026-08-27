@@ -361,7 +361,7 @@ test('resolved PROGRAM checkpoint without continuation task recovers same Missio
     ...cp,
     status: 'RESOLVED',
     waiting_status: 'RESOLVED',
-    human_action_required: false,
+    human_action_required: true,
     continuation_task_id: null,
     validation_result: {
       ok: true,
@@ -478,6 +478,7 @@ test('runner next-task recovers resolved PROGRAM checkpoint without continuation
   assert.equal(values(db, 'missions').length, 1);
   assert.equal(values(db, 'tasks').length, 1);
   assert.equal(checkpoint(db).status, 'RESOLVED');
+  assert.equal(checkpoint(db).human_action_required, false);
   assert.equal(checkpoint(db).continuation_task_id, claimed.task.id);
   assert.equal(db.get('roadmaps', 'roadmap_a').milestones[1].state, 'RUNNING');
 

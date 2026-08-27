@@ -251,7 +251,9 @@ function checkpointRequirementKey(checkpoint) {
 }
 
 function equivalentHumanActionCheckpoint(existing, input, checkpointType, requirementType) {
-  if (!existing || existing.human_action_required !== true) return false;
+  if (!existing) return false;
+  const status = checkpointStatus(existing);
+  if (existing.human_action_required !== true && status !== 'RESOLVED') return false;
   const continuityMatches = (
     (!input.tenant_id || !existing.tenant_id || existing.tenant_id === input.tenant_id) &&
     (!input.roadmap_id || !existing.roadmap_id || existing.roadmap_id === input.roadmap_id) &&
@@ -855,7 +857,6 @@ async function recoverResolvedProgramHumanActionContinuation(db, tenantId) {
       for (const milestone of roadmap.milestones || []) {
         const checkpoint = milestone?.human_action_checkpoint || milestone?.human_action || null;
         if (!checkpoint || checkpointStatus(checkpoint) !== 'RESOLVED') continue;
-        if (checkpoint.human_action_required !== false) continue;
         if (checkpoint.continuation_task_id) continue;
         const resumePhase = clean(checkpoint.paused_from_phase || checkpoint.resume_phase || '', 120).toUpperCase() || 'PROGRAM';
         if (resumePhase !== 'PROGRAM') continue;
@@ -975,6 +976,7 @@ function resolvedCheckpoint(checkpoint, validation, now = milestoneTimestamp()) 
     ...checkpoint,
     status: 'RESOLVED',
     waiting_status: 'RESOLVED',
+    human_action_required: false,
     resolved_at: now,
     resolved_by: 'HUMAN_READY_CONFIRMATION',
     last_validation_at: now,
