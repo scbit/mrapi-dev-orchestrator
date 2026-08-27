@@ -536,6 +536,29 @@ function plannerPageHtml() {
       return '';
     }
 
+    function explicitHumanActionBoolean(item, fields) {
+      for (const candidate of explicitHumanActionObjects(item)) {
+        if (!candidate || typeof candidate !== 'object') continue;
+        for (const field of fields) {
+          if (candidate[field] === true) return true;
+        }
+      }
+      return false;
+    }
+
+    function collectExplicitValues(item, fields) {
+      const values = new Set();
+      if (!item || typeof item !== 'object') return values;
+      for (const candidate of explicitHumanActionObjects(item)) {
+        if (!candidate || typeof candidate !== 'object') continue;
+        for (const field of fields) {
+          const value = text(candidate[field]).trim();
+          if (value) values.add(value);
+        }
+      }
+      return values;
+    }
+
     function checkpointFriendlyStatus(rawValue, source) {
       if (explicitHumanActionMarker(rawValue)) return 'Need human action';
       if (!text(rawValue).trim() && requiresHumanAction(source)) return 'Need human action';
@@ -545,6 +568,34 @@ function plannerPageHtml() {
     function isUnresolvedHumanActionStatus(rawValue) {
       const status = text(rawValue).trim().toUpperCase();
       return ['WAITING_FOR_HUMAN', 'NEED_HUMAN_ACTION', 'NEEDS_HUMAN_ACTION', 'HUMAN_ACTION_REQUIRED'].includes(status);
+    }
+
+    function explicitCurrentHumanActionSignal(source) {
+      return explicitHumanActionBoolean(source, [
+        'is_current',
+        'current',
+        'active',
+        'is_current_checkpoint',
+        'is_active_checkpoint',
+        'current_human_action',
+        'human_action_current',
+        'human_action_active'
+      ]);
+    }
+
+    function consistentHumanActionProvenance(source, proposal, sourceMilestoneId, checkpointId) {
+      const proposalId = text(proposal?.roadmap_id || proposal?.proposal_id || proposal?.id || state.proposalId).trim();
+      const roadmapIds = collectExplicitValues(source, ['roadmap_id', 'proposal_id']);
+      if (proposalId && roadmapIds.size && !roadmapIds.has(proposalId)) return false;
+
+      const sourceMissionId = text(source?.mission_id || source?.planner_mission_id || '').trim();
+      const checkpointMissionIds = collectExplicitValues(source, ['mission_id', 'planner_mission_id']);
+      if (sourceMissionId && checkpointMissionIds.size && !checkpointMissionIds.has(sourceMissionId)) return false;
+
+      const checkpointMilestoneIds = collectExplicitValues(source, ['milestone_id', 'source_milestone_id']);
+      if (sourceMilestoneId && checkpointMilestoneIds.size && !checkpointMilestoneIds.has(sourceMilestoneId)) return false;
+
+      return Boolean(checkpointId);
     }
 
     function humanActionViewModel(source, options = {}) {
@@ -559,6 +610,8 @@ function plannerPageHtml() {
       const actionLocation = explicitHumanActionValue(source, ['action_location', 'location', 'where']);
       const validationMethod = explicitHumanActionValue(source, ['validation_method', 'validation', 'validator']);
       const validationMessage = explicitHumanActionValue(source, ['last_validation_message', 'validation_message', 'safe_validation_message']);
+      const isCurrent = Boolean(options.isCurrent || explicitCurrentHumanActionSignal(source));
+      const hasValidCheckpointContext = consistentHumanActionProvenance(source, options.proposal, sourceMilestoneId, id);
       return {
         id,
         type,
@@ -576,8 +629,8 @@ function plannerPageHtml() {
         sourceKind: options.sourceKind || 'roadmap',
         sourceMilestoneId,
         sourceMilestoneTitle,
-        isCurrent: Boolean(options.isCurrent),
-        canConfirmReady: Boolean(options.isCurrent && id && isUnresolvedHumanActionStatus(rawStatus)),
+        isCurrent,
+        canConfirmReady: Boolean(isCurrent && hasValidCheckpointContext && isUnresolvedHumanActionStatus(rawStatus)),
         identity: id
           ? 'id:' + id
           : [
@@ -608,6 +661,8 @@ function plannerPageHtml() {
       const views = [];
       const seen = new Set();
       const currentId = text(proposal?.current_milestone_id || proposal?.milestone_id || '').trim();
+      const activeCheckpointIds = collectExplicitValues(proposal, ['active_checkpoint_id', 'current_checkpoint_id', 'active_human_action_checkpoint_id', 'current_human_action_checkpoint_id', 'checkpoint_id']);
+      const activeMilestoneIds = collectExplicitValues(proposal, ['active_milestone_id', 'current_milestone_id', 'milestone_id', 'active_human_action_milestone_id', 'current_human_action_milestone_id']);
       const currentObject = currentMilestone(proposal);
       const addCandidate = (view) => {
         if (view) candidates.push(view);
@@ -615,23 +670,30 @@ function plannerPageHtml() {
 
       addCandidate(humanActionViewModel(proposal, {
         sourceKind: 'roadmap',
+        proposal,
         isCurrent: !currentId && currentObject && currentObject === proposal
       }));
 
       for (const item of milestones) {
         const milestone = item.milestone;
         const milestoneId = text(milestone?.id).trim();
+        const checkpointId = explicitHumanActionValue(milestone, ['checkpoint_id', 'human_action_id', 'action_id']);
         addCandidate(humanActionViewModel(milestone, {
           sourceKind: 'milestone',
+          proposal,
           sourceMilestoneId: milestoneId,
           sourceMilestoneTitle: milestone?.title,
-          isCurrent: Boolean(milestoneId && milestoneId === currentId) || (currentObject && currentObject === milestone)
+          isCurrent: Boolean(milestoneId && milestoneId === currentId) ||
+            Boolean(checkpointId && activeCheckpointIds.has(checkpointId)) ||
+            Boolean(milestoneId && activeMilestoneIds.has(milestoneId)) ||
+            (currentObject && currentObject === milestone)
         }));
       }
       if (currentObject && currentObject !== proposal && !milestones.some((item) => item.milestone === currentObject)) {
         const milestoneId = text(currentObject.id || currentId).trim();
         addCandidate(humanActionViewModel(currentObject, {
           sourceKind: 'milestone',
+          proposal,
           sourceMilestoneId: milestoneId,
           sourceMilestoneTitle: currentObject.title,
           isCurrent: true

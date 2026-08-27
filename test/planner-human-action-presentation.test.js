@@ -260,6 +260,109 @@ test('Proposal unavailable still renders explicit active Human Action continuity
   assert.deepEqual(visibleActions(planner), { approve: false, requestChanges: false, start: false });
 });
 
+test('Proposal unavailable enables LISTO for explicit active m6 checkpoint without lifecycle side effects', async () => {
+  const calls = [];
+  let readyOutcome = 'unresolved';
+  const checkpoint = humanMilestone({
+    id: 'm6',
+    order: 6,
+    title: 'Manual deployment checkpoint',
+    checkpoint_id: 'checkpoint_m6',
+    milestone_id: 'm6',
+    mission_id: 'mission_m6',
+    roadmap_id: 'roadmap_human_action',
+    human_action_required: true,
+    human_action_request: 'MRAPI needs manual deployment confirmation.',
+    user_action: 'Confirm the m6 deployment checklist is complete.',
+    action_location: 'Deployment checklist',
+    validation_method: 'manual_confirmation',
+    status: 'WAITING_FOR_HUMAN',
+    state: 'NEED_HUMAN_ACTION',
+    human_action_checkpoint: {
+      checkpoint_id: 'checkpoint_m6',
+      checkpoint_type: 'MANUAL_ACTION',
+      checkpoint_status: 'WAITING_FOR_HUMAN',
+      waiting_status: 'WAITING_FOR_HUMAN',
+      milestone_id: 'm6',
+      mission_id: 'mission_m6',
+      roadmap_id: 'roadmap_human_action',
+      human_action_required: true
+    }
+  });
+  const malformed = proposal({
+    summary: '',
+    active_human_action_checkpoint_id: 'checkpoint_m6',
+    current_human_action_milestone_id: 'm6',
+    milestones: [
+      { id: 'm5', order: 5, title: 'Malformed prior milestone', state: 'COMPLETED' },
+      checkpoint
+    ]
+  });
+  const planner = createHarness(async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (url === '/api/workspaces' || url === '/api/projects') return response({ items: [] });
+    if (url === '/api/planner/recent?limit=10') return response({ items: [] });
+    if (url === '/api/planner/proposals/roadmap_human_action/human-action/checkpoint_m6/ready') {
+      if (readyOutcome === 'unresolved') {
+        return response({ resumed: false, state: 'NEED_HUMAN_ACTION', checkpoint_id: 'checkpoint_m6', message: 'Deployment confirmation is still missing.' });
+      }
+      return response({ resumed: true, checkpoint_id: 'checkpoint_m6', task_id: 'task_m6' });
+    }
+    if (url === '/api/planner/proposals/roadmap_human_action') {
+      return response(proposal({
+        current_milestone_id: 'm6',
+        milestones: [humanMilestone({
+          id: 'm6',
+          checkpoint_id: 'checkpoint_m6',
+          human_action_checkpoint: { checkpoint_id: 'checkpoint_m6', status: 'RESOLVED', milestone_id: 'm6', mission_id: 'mission_m6', roadmap_id: 'roadmap_human_action', human_action_required: true },
+          status: 'RESOLVED',
+          state: 'RESOLVED'
+        })]
+      }));
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  });
+  await flush();
+  calls.length = 0;
+
+  planner.renderProposal(malformed);
+  let rendered = planner.els.proposalView.innerHTML;
+  assert.match(rendered, /Proposal unavailable/);
+  assert.match(rendered, /human-action-panel is-current/);
+  assert.match(rendered, /MRAPI needs:<\/strong> MRAPI needs manual deployment confirmation/);
+  assert.match(rendered, /data-human-action-ready="1" data-checkpoint-id="checkpoint_m6">LISTO<\/button>/);
+  assert.doesNotMatch(rendered, /LISTO is available only for the current unresolved checkpoint/);
+
+  planner.els.proposalView.listeners.click({
+    target: { dataset: { humanActionReady: '1', checkpointId: 'checkpoint_m6' }, disabled: false }
+  });
+  await flush();
+  assert.deepEqual(calls.map((call) => [call.url, call.options.method]), [
+    ['/api/planner/proposals/roadmap_human_action/human-action/checkpoint_m6/ready', 'POST']
+  ]);
+  assert.equal(JSON.parse(calls[0].options.body).ready, true);
+  assert.equal(calls.some((call) => /\/approve$|\/request-changes$|\/start$|\/api\/tasks|EXECUTION_RUN/.test(call.url)), false);
+  assert.match(planner.els.status.textContent, /Deployment confirmation is still missing/);
+  assert.match(planner.els.proposalView.innerHTML, /human-action-panel is-current/);
+
+  calls.length = 0;
+  readyOutcome = 'success';
+  planner.renderProposal(malformed);
+  planner.els.proposalView.listeners.click({
+    target: { dataset: { humanActionReady: '1', checkpointId: 'checkpoint_m6' }, disabled: false }
+  });
+  await flush();
+  assert.deepEqual(calls.map((call) => call.url), [
+    '/api/planner/proposals/roadmap_human_action/human-action/checkpoint_m6/ready',
+    '/api/planner/proposals/roadmap_human_action',
+    '/api/planner/recent?limit=10'
+  ]);
+  assert.equal(calls.some((call) => /\/approve$|\/request-changes$|\/start$|\/api\/tasks|EXECUTION_RUN/.test(call.url)), false);
+  rendered = planner.els.proposalView.innerHTML;
+  assert.doesNotMatch(rendered, /data-human-action-ready="1" data-checkpoint-id="checkpoint_m6"/);
+  assert.match(rendered, /<button class="primary" type="button" disabled>LISTO<\/button>/);
+});
+
 test('checkpoint IDs, types, source milestone, and raw status stay in Advanced details', async () => {
   const planner = createHarness();
   planner.renderProposal(proposal({ milestones: [humanMilestone()] }));
