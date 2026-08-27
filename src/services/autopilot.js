@@ -465,6 +465,7 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
     }
     const validation = { id: validationSnap.id, ...validationSnap.data() };
     const resultToken = clean(input.result_id || input.validation_result_id || input.output?.validation_result_id || input.output?.result_id || validation.run_id || '', 300);
+    const inputRunId = clean(input.run_id || input.output?.run_id || '', 300);
     const reportedValidationId = clean(input.output?.validation_id || input.validation_id || '', 300);
     const reportedCheckpointId = clean(input.output?.checkpoint_id || input.checkpoint_id || '', 300);
     const reportedValidator = clean(input.output?.validator || input.validator || '', 300).toLowerCase().replace(/[\s-]+/g, '_');
@@ -483,23 +484,21 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
       error.status = 409;
       throw error;
     }
-    if (['PASS', 'FAIL'].includes(String(validation.status || '').toUpperCase())) {
-      outcome = {
-        resumed: validation.status === 'PASS',
-        reused: true,
-        no_new_work: true,
-        state: validation.status,
-        roadmap_id: validation.roadmap_id,
-        milestone_id: validation.milestone_id,
-        mission_id: validation.mission_id,
-        checkpoint_id: validation.checkpoint_id,
-        validation_id: validation.id,
-        message: validation.safe_message || 'Host validation result was already applied.'
-      };
-      return;
+    if (inputRunId && validation.run_id !== inputRunId) {
+      const error = new Error('HOST_VALIDATION_RUN_PROVENANCE_INVALID');
+      error.status = 409;
+      throw error;
     }
 
-    const status = input.success === true ? 'PASS' : 'FAIL';
+    const persistedStatus = String(validation.status || validation.state || '').toUpperCase();
+    if (['PASS', 'FAIL'].includes(persistedStatus) && resultToken && validation.result_id && validation.result_id !== resultToken) {
+      const error = new Error('HOST_VALIDATION_RESULT_REPLAY_MISMATCH');
+      error.status = 409;
+      throw error;
+    }
+
+    const reportedStatus = clean(input.output?.status || input.status || '', 100).toUpperCase();
+    const status = input.success === true && (!reportedStatus || reportedStatus === 'PASS') ? 'PASS' : 'FAIL';
     const safeMessage = clean(input.summary || input.output?.safe_message || input.output?.message || (status === 'PASS' ? 'Repository worktree is clean.' : 'Repository worktree remains dirty.'), 1000);
     const boundedDiagnostics = input.output?.diagnostics && typeof input.output.diagnostics === 'object'
       ? sanitizeAuditValue(input.output.diagnostics, 0)
@@ -524,7 +523,7 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
       error.status = 404;
       throw error;
     }
-    if (runRef && (!runSnap.exists || runSnap.data().tenant_id !== tenantId || runSnap.data().state !== 'RUNNING')) {
+    if (runRef && (!runSnap.exists || runSnap.data().tenant_id !== tenantId)) {
       const error = new Error('HOST_VALIDATION_RUN_NOT_ACTIVE');
       error.status = 409;
       throw error;
@@ -532,6 +531,34 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
 
     const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
     const mission = { id: missionSnap.id, ...missionSnap.data() };
+    const run = runSnap?.exists ? { id: runSnap.id, ...runSnap.data() } : null;
+    if (
+      run &&
+      (
+        run.run_type !== 'HOST_VALIDATION_RUN' ||
+        run.host_validation_id !== validation.id ||
+        (inputRunId && run.id !== inputRunId) ||
+        run.roadmap_id !== validation.roadmap_id ||
+        run.milestone_id !== validation.milestone_id ||
+        run.mission_id !== validation.mission_id ||
+        run.checkpoint_id !== validation.checkpoint_id ||
+        run.validator !== validation.validator
+      )
+    ) {
+      const error = new Error('HOST_VALIDATION_RUN_PROVENANCE_INVALID');
+      error.status = 409;
+      throw error;
+    }
+    if (persistedStatus && !['PENDING', 'RUNNING', 'PASS', 'FAIL'].includes(persistedStatus)) {
+      const error = new Error('HOST_VALIDATION_STATE_INVALID');
+      error.status = 409;
+      throw error;
+    }
+    if (run && !['RUNNING', 'COMPLETED', 'FAILED'].includes(String(run.state || '').toUpperCase())) {
+      const error = new Error('HOST_VALIDATION_RUN_NOT_ACTIVE');
+      error.status = 409;
+      throw error;
+    }
     const milestone = (roadmap.milestones || []).find((item) => item.id === validation.milestone_id);
     const checkpoint = milestone?.human_action_checkpoint || milestone?.human_action || null;
     if (
@@ -548,21 +575,72 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
       error.status = 409;
       throw error;
     }
+    if (validationMethod(checkpoint) !== validation.validator) {
+      const error = new Error('HOST_VALIDATION_VALIDATOR_PROVENANCE_INVALID');
+      error.status = 409;
+      throw error;
+    }
+
     const checkpointState = checkpointStatus(checkpoint);
-    if (!['WAITING_FOR_HUMAN', 'NEED_HUMAN_ACTION'].includes(checkpointState)) {
+    const checkpointValidation = checkpoint.validation_result && typeof checkpoint.validation_result === 'object'
+      ? checkpoint.validation_result
+      : {};
+    const resolvedBySameValidation = (
+      checkpointState === 'RESOLVED' &&
+      checkpointValidation.validation_id === validation.id &&
+      (!validation.run_id || checkpointValidation.run_id === validation.run_id) &&
+      (!validation.result_id || checkpointValidation.result_id === validation.result_id)
+    );
+    if (['PASS', 'FAIL'].includes(persistedStatus)) {
+      if (persistedStatus === 'PASS') {
+        if (!resolvedBySameValidation) {
+          const error = new Error('HOST_VALIDATION_CHECKPOINT_REPLAY_INVALID');
+          error.status = 409;
+          throw error;
+        }
+        const brainRunId = checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null;
+        const resumePhase = clean(checkpoint.paused_from_phase || checkpoint.resume_phase || mission.paused_from_phase || 'PROGRAM', 120).toUpperCase() || 'PROGRAM';
+        outcome = {
+          resumed: true,
+          reused: true,
+          no_new_work: Boolean(checkpoint.continuation_task_id),
+          state: checkpoint.continuation_task_id ? 'RESUMED' : 'RESOLVED',
+          roadmap_id: roadmap.id,
+          milestone_id: milestone.id,
+          mission_id: mission.id,
+          brain_run_id: brainRunId,
+          task_id: checkpoint.continuation_task_id || mission.current_task_id || null,
+          checkpoint_id: checkpoint.checkpoint_id,
+          validation_id: validation.id,
+          resume_phase: resumePhase,
+          message: validation.safe_message || 'Host validation result was already applied.'
+        };
+        return;
+      }
+      if (!['WAITING_FOR_HUMAN', 'NEED_HUMAN_ACTION'].includes(checkpointState)) {
+        const error = new Error('HOST_VALIDATION_CHECKPOINT_REPLAY_INVALID');
+        error.status = 409;
+        throw error;
+      }
       outcome = {
-        resumed: checkpointState === 'RESOLVED',
+        resumed: false,
         reused: true,
         no_new_work: true,
-        state: checkpointState || 'UNKNOWN',
+        state: 'NEED_HUMAN_ACTION',
         roadmap_id: roadmap.id,
         milestone_id: milestone.id,
         mission_id: mission.id,
         checkpoint_id: checkpoint.checkpoint_id,
         validation_id: validation.id,
-        message: 'Host validation result was replayed after checkpoint state changed.'
+        message: validation.safe_message || 'Host validation result was already applied.'
       };
       return;
+    }
+
+    if (!['WAITING_FOR_HUMAN', 'NEED_HUMAN_ACTION'].includes(checkpointState)) {
+      const error = new Error('HOST_VALIDATION_CHECKPOINT_NOT_CURRENT');
+      error.status = 409;
+      throw error;
     }
 
     const now = milestoneTimestamp();
@@ -596,7 +674,13 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
     }
 
     if (status === 'PASS') {
-      const updatedCheckpoint = resolvedCheckpoint(checkpoint, { ok: true, message: safeMessage }, now);
+      const updatedCheckpoint = resolvedCheckpoint(checkpoint, {
+        ok: true,
+        message: safeMessage,
+        validation_id: validation.id,
+        run_id: validation.run_id || run?.id || null,
+        result_id: resultToken || validation.result_id || null
+      }, now);
       const brainRunId = checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null;
       tx.set(roadmapRef, {
         milestones: milestoneWithState(roadmap, milestone.id, 'NEED_HUMAN_ACTION', {
@@ -758,7 +842,10 @@ function resolvedCheckpoint(checkpoint, validation, now = milestoneTimestamp()) 
     validation_result: {
       ok: true,
       method: validationMethod(checkpoint) || null,
-      checked_at: now
+      checked_at: now,
+      validation_id: validation.validation_id || null,
+      run_id: validation.run_id || null,
+      result_id: validation.result_id || null
     },
     updated_at: now
   };

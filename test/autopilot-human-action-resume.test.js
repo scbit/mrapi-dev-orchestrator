@@ -59,6 +59,14 @@ function workCounts(db) {
     executionRuns: values(db, 'runs').filter((run) => run.run_type === 'EXECUTION_RUN').length
   };
 }
+function mutationCounts(db) {
+  return {
+    missions: values(db, 'missions').length,
+    tasks: values(db, 'tasks').length,
+    brainRuns: values(db, 'runs').filter((run) => run.run_type === 'BRAIN_RUN').length,
+    executionRuns: values(db, 'runs').filter((run) => run.run_type === 'EXECUTION_RUN').length
+  };
+}
 
 function gitRepo(t) {
   const git = gitFlow.resolveGitCommand();
@@ -157,6 +165,23 @@ async function pauseWith(db, extraSpec) {
   return checkpoint(db);
 }
 
+async function hostValidationScenario(db) {
+  seedProgram(db, { project: { local_path: 'C:/trusted/repo' } });
+  const cp = await pauseWith(db, {
+    prerequisites: [{
+      type: 'MANUAL_HUMAN',
+      human_action_request: 'Clean the repository worktree.',
+      user_action: 'Commit, stash, or remove local changes, then press LISTO.',
+      action_location: 'project repository',
+      validation_method: 'git_worktree_clean',
+      validation_metadata: { repository_path: 'C:/trusted/repo' }
+    }]
+  });
+  const dispatched = await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp.checkpoint_id, { ready: true });
+  const claim = await claimNextTask(db, 'tenant_a', 'executor_a', { repository_path: 'C:/trusted/repo' });
+  return { cp, dispatched, claim };
+}
+
 test('missing env var LISTO keeps same checkpoint and creates no work', async () => {
   const old = process.env.MRAPI_LISTO_SECRET;
   delete process.env.MRAPI_LISTO_SECRET;
@@ -248,22 +273,12 @@ test('HOST_LOCAL repository-clean LISTO dispatches one checkpoint-linked validat
 });
 
 test('HOST_LOCAL PASS result resolves checkpoint and resumes same Mission once', async () => {
-  const db = new DB(); seedProgram(db, { project: { local_path: 'C:/trusted/repo' } });
-  const cp = await pauseWith(db, {
-    prerequisites: [{
-      type: 'MANUAL_HUMAN',
-      human_action_request: 'Clean the repository worktree.',
-      user_action: 'Commit, stash, or remove local changes, then press LISTO.',
-      action_location: 'project repository',
-      validation_method: 'git_worktree_clean',
-      validation_metadata: { repository_path: 'C:/trusted/repo' }
-    }]
-  });
-  const dispatched = await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp.checkpoint_id, { ready: true });
-  const claim = await claimNextTask(db, 'tenant_a', 'executor_a', { repository_path: 'C:/trusted/repo' });
+  const db = new DB();
+  const { cp, dispatched, claim } = await hostValidationScenario(db);
   assert.equal(claim.work_type, 'HOST_VALIDATION');
   assert.equal(claim.host_validation.id, dispatched.host_validation_id);
   const before = workCounts(db);
+  const missionCount = values(db, 'missions').length;
   const out = await completeRun(db, 'tenant_a', claim.run.id, {
     success: true,
     summary: 'Repository worktree is clean.',
@@ -280,7 +295,18 @@ test('HOST_LOCAL PASS result resolves checkpoint and resumes same Mission once',
   assert.equal(out.roadmap_id, 'roadmap_a');
   assert.equal(out.milestone_id, 'm1');
   assert.equal(out.mission_id, 'mission_a');
-  assert.equal(checkpoint(db).status, 'RESOLVED');
+  const resolved = checkpoint(db);
+  assert.equal(resolved.status, 'RESOLVED');
+  assert.equal(resolved.roadmap_id, 'roadmap_a');
+  assert.equal(resolved.milestone_id, 'm1');
+  assert.equal(resolved.mission_id, 'mission_a');
+  assert.equal(resolved.checkpoint_id, cp.checkpoint_id);
+  assert.equal(resolved.validation_result.validation_id, claim.host_validation.id);
+  assert.equal(resolved.validation_result.run_id, claim.run.id);
+  assert.equal(resolved.validation_result.result_id, 'result_pass_1');
+  assert.equal(db.get('host_validations', claim.host_validation.id).status, 'PASS');
+  assert.equal(db.get('runs', claim.run.id).state, 'COMPLETED');
+  assert.equal(values(db, 'missions').length, missionCount);
   assert.deepEqual(workCounts(db), { ...before, tasks: before.tasks + 1 });
 
   const replay = await completeRun(db, 'tenant_a', claim.run.id, {
@@ -289,6 +315,7 @@ test('HOST_LOCAL PASS result resolves checkpoint and resumes same Mission once',
     output: { validation_result_id: 'result_pass_1' }
   });
   assert.equal(replay.reused, true);
+  assert.equal(replay.task_id, out.task_id);
   assert.deepEqual(workCounts(db), { ...before, tasks: before.tasks + 1 });
 });
 
@@ -327,6 +354,8 @@ test('HOST_LOCAL FAIL result keeps same checkpoint unresolved and creates no bus
   assert.equal(db.get('missions', 'mission_a').state, 'NEED_HUMAN_ACTION');
   assert.match(out.message, /worktree remains dirty/i);
   assert.match(checkpoint(db).last_validation_message, /worktree remains dirty/i);
+  assert.equal(db.get('host_validations', claim.host_validation.id).status, 'FAIL');
+  assert.equal(db.get('runs', claim.run.id).state, 'FAILED');
   assert.deepEqual(workCounts(db), before);
 
   const replay = await completeRun(db, 'tenant_a', claim.run.id, {
@@ -343,19 +372,8 @@ test('HOST_LOCAL FAIL result keeps same checkpoint unresolved and creates no bus
 });
 
 test('HOST_LOCAL tenant mismatch and wrong checkpoint result are rejected without mutation', async () => {
-  const db = new DB(); seedProgram(db, { project: { local_path: 'C:/trusted/repo' } });
-  const cp = await pauseWith(db, {
-    prerequisites: [{
-      type: 'MANUAL_HUMAN',
-      human_action_request: 'Clean the repository worktree.',
-      user_action: 'Clean it.',
-      action_location: 'project repository',
-      validation_method: 'git_worktree_clean',
-      validation_metadata: { repository_path: 'C:/trusted/repo' }
-    }]
-  });
-  await confirmHumanActionReady(db, 'tenant_a', 'roadmap_a', cp.checkpoint_id, { ready: true });
-  const claim = await claimNextTask(db, 'tenant_a', 'executor_a', { repository_path: 'C:/trusted/repo' });
+  const db = new DB();
+  const { cp, claim } = await hostValidationScenario(db);
   const beforeTenantMismatch = JSON.stringify(db.collections);
   await assert.rejects(() => completeRun(db, 'tenant_b', claim.run.id, {
     success: true,
@@ -364,25 +382,65 @@ test('HOST_LOCAL tenant mismatch and wrong checkpoint result are rejected withou
   }), /RUN_NOT_FOUND/);
   assert.equal(JSON.stringify(db.collections), beforeTenantMismatch);
 
-  db.set('roadmaps', 'roadmap_a', {
-    milestones: [
-      db.get('roadmaps', 'roadmap_a').milestones[0],
-      {
-        ...db.get('roadmaps', 'roadmap_a').milestones[1],
-        human_action_checkpoint: {
-          ...checkpoint(db),
-          checkpoint_id: 'other_checkpoint'
-        }
-      }
-    ]
-  }, { merge: true });
   const beforeWrongCheckpoint = JSON.stringify(db.collections);
   await assert.rejects(() => completeRun(db, 'tenant_a', claim.run.id, {
     success: true,
     summary: 'Repository worktree is clean.',
-    output: { validation_result_id: 'wrong_checkpoint' }
-  }), /HOST_VALIDATION_CHECKPOINT_PROVENANCE_INVALID/);
+    output: { checkpoint_id: 'other_checkpoint', validation_result_id: 'wrong_checkpoint' }
+  }), /HOST_VALIDATION_RESULT_CHECKPOINT_MISMATCH/);
   assert.equal(JSON.stringify(db.collections), beforeWrongCheckpoint);
+});
+
+test('HOST_LOCAL rejects wrong validation, run linkage, and continuity identity before mutation', async () => {
+  {
+    const db = new DB();
+    const { claim } = await hostValidationScenario(db);
+    const before = JSON.stringify(db.collections);
+    await assert.rejects(() => completeRun(db, 'tenant_a', claim.run.id, {
+      success: true,
+      summary: 'Repository worktree is clean.',
+      output: { validation_id: 'other_validation', validation_result_id: 'wrong_validation' }
+    }), /HOST_VALIDATION_RESULT_ID_MISMATCH/);
+    assert.equal(JSON.stringify(db.collections), before);
+  }
+
+  {
+    const db = new DB();
+    const { claim } = await hostValidationScenario(db);
+    const beforeCounts = mutationCounts(db);
+    const beforeRoadmap = JSON.stringify(db.get('roadmaps', 'roadmap_a'));
+    const beforeMission = JSON.stringify(db.get('missions', 'mission_a'));
+    db.set('runs', claim.run.id, { host_validation_id: 'other_validation' }, { merge: true });
+    await assert.rejects(() => completeRun(db, 'tenant_a', claim.run.id, {
+      success: true,
+      summary: 'Repository worktree is clean.',
+      output: { validation_result_id: 'wrong_run_link' }
+    }), /HOST_VALIDATION_NOT_FOUND|HOST_VALIDATION_RUN_PROVENANCE_INVALID/);
+    assert.deepEqual(mutationCounts(db), beforeCounts);
+    assert.equal(JSON.stringify(db.get('roadmaps', 'roadmap_a')), beforeRoadmap);
+    assert.equal(JSON.stringify(db.get('missions', 'mission_a')), beforeMission);
+  }
+
+  for (const [field, error] of [
+    ['mission_id', /MISSION_NOT_FOUND|HOST_VALIDATION_CHECKPOINT_PROVENANCE_INVALID/],
+    ['roadmap_id', /ROADMAP_NOT_FOUND|HOST_VALIDATION_CHECKPOINT_PROVENANCE_INVALID/],
+    ['milestone_id', /HOST_VALIDATION_RUN_PROVENANCE_INVALID|HOST_VALIDATION_CHECKPOINT_PROVENANCE_INVALID/]
+  ]) {
+    const db = new DB();
+    const { claim } = await hostValidationScenario(db);
+    const beforeCounts = mutationCounts(db);
+    const beforeRoadmap = JSON.stringify(db.get('roadmaps', 'roadmap_a'));
+    const beforeMission = JSON.stringify(db.get('missions', 'mission_a'));
+    db.set('host_validations', claim.host_validation.id, { [field]: `wrong_${field}` }, { merge: true });
+    await assert.rejects(() => completeRun(db, 'tenant_a', claim.run.id, {
+      success: true,
+      summary: 'Repository worktree is clean.',
+      output: { validation_result_id: `wrong_${field}` }
+    }), error);
+    assert.deepEqual(mutationCounts(db), beforeCounts);
+    assert.equal(JSON.stringify(db.get('roadmaps', 'roadmap_a')), beforeRoadmap);
+    assert.equal(JSON.stringify(db.get('missions', 'mission_a')), beforeMission);
+  }
 });
 
 test('HOST_LOCAL pending and running LISTO calls reuse the same validation item', async () => {

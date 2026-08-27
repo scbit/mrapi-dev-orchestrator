@@ -3166,6 +3166,7 @@ async function completeRun(db, tenantId, runId, input) {
     const run = existingRunSnap.data();
     return applyHostValidationResult(db, tenantId, run.host_validation_id, {
       ...input,
+      run_id: runId,
       result_id: input?.output?.validation_result_id || input?.output?.result_id || runId
     });
   }

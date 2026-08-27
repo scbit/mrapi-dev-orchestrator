@@ -28,6 +28,7 @@ function seed(db){
 }
 
 function values(db,c){return Object.values(db.data[c]||{});}
+function loopCounts(db){return {missions:values(db,'missions').length,tasks:values(db,'tasks').length,runs:values(db,'runs').length};}
 
 function gitRepo(t){
   const git=gitFlow.resolveGitCommand();
@@ -118,11 +119,19 @@ test('host validation claim is distinct from normal execution claim and maps PAS
   assert.equal(claim.host_validation.id,dispatched.host_validation_id);
   const shadowResult=runGitWorktreeCleanHostValidation(claim.host_validation,{repositoryPath:repo.dir});
   assert.equal(shadowResult.success,true);
+  const beforeCounts=loopCounts(db);
   const complete=await completeRun(db,'t1',claim.run.id,{success:shadowResult.success,summary:shadowResult.safe_message,output:{validation_id:claim.host_validation.id,checkpoint_id:pause.checkpoint_id,validator:'git_worktree_clean',status:'PASS',safe_message:shadowResult.safe_message,diagnostics:shadowResult.diagnostics,validation_result_id:'pass_result'}});
   assert.equal(complete.resumed,true);
   assert.equal(complete.mission_id,'mission1');
   assert.equal(db.get('roadmaps','r1').milestones[1].human_action_checkpoint.checkpoint_id,pause.checkpoint_id);
   assert.equal(db.get('roadmaps','r1').milestones[1].human_action_checkpoint.status,'RESOLVED');
+  assert.equal(db.get('roadmaps','r1').milestones[1].human_action_checkpoint.validation_result.validation_id,claim.host_validation.id);
+  assert.equal(db.get('runs',claim.run.id).state,'COMPLETED');
+  assert.deepEqual(loopCounts(db),{...beforeCounts,tasks:beforeCounts.tasks+1});
+  const replay=await completeRun(db,'t1',claim.run.id,{success:true,summary:shadowResult.safe_message,output:{validation_result_id:'pass_result'}});
+  assert.equal(replay.reused,true);
+  assert.equal(replay.task_id,complete.task_id);
+  assert.deepEqual(loopCounts(db),{...beforeCounts,tasks:beforeCounts.tasks+1});
   assert.equal(repo.status(),beforeStatus);
 });
 
@@ -148,5 +157,6 @@ test('host validation reports dirty repository as FAIL without changing repo sta
   assert.equal(complete.checkpoint_id,pause.checkpoint_id);
   assert.equal(db.get('roadmaps','r1').milestones[1].human_action_checkpoint.status,'WAITING_FOR_HUMAN');
   assert.match(db.get('roadmaps','r1').milestones[1].human_action_checkpoint.last_validation_message,/dirty/i);
+  assert.equal(db.get('runs',claim.run.id).state,'FAILED');
   assert.deepEqual({missions:values(db,'missions').length,tasks:values(db,'tasks').length,runs:values(db,'runs').length},beforeCounts);
 });
