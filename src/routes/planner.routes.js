@@ -9,6 +9,23 @@ const {
   requestPlannerRoadmapChanges,
   startPlannerRoadmap
 } = require('../services/planner');
+const { confirmHumanActionReady } = require('../services/autopilot');
+
+function validateHumanActionReadyBody(body = {}) {
+  const allowed = new Set(['ready', 'confirm', 'confirmed', 'listo']);
+  for (const key of Object.keys(body || {})) {
+    if (!allowed.has(key)) {
+      const error = new Error('HUMAN_ACTION_READY_BODY_UNSUPPORTED_FIELD');
+      error.status = 400;
+      throw error;
+    }
+  }
+  if (!(body.ready === true || body.confirm === true || body.confirmed === true || body.listo === true)) {
+    const error = new Error('HUMAN_ACTION_READY_CONFIRMATION_REQUIRED');
+    error.status = 400;
+    throw error;
+  }
+}
 
 function createPlannerRouter({ db }) {
   const router = express.Router();
@@ -30,6 +47,23 @@ function createPlannerRouter({ db }) {
   router.get('/proposals/:proposalId', async (req, res, next) => {
     try {
       res.json(serializeFirestore(await getPlannerProposal(db, req.tenantId, req.params.proposalId)));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.post('/proposals/:proposalId/human-action/:checkpointId/ready', async (req, res, next) => {
+    try {
+      validateHumanActionReadyBody(req.body || {});
+      const result = await confirmHumanActionReady(
+        db,
+        req.tenantId,
+        req.params.proposalId,
+        req.params.checkpointId,
+        req.body || {}
+      );
+      res.status(result.resumed === false ? 200 : 202).json(serializeFirestore(result));
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });
       next(error);

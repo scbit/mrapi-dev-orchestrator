@@ -1144,6 +1144,7 @@ function checkpointForMissingPreflight({ tenantId, mission, run, roadmap, milest
     action_location: blocker.action_location,
     validation_method: blocker.validation_method,
     validation_metadata: blocker.validation_metadata,
+    paused_from_phase: 'PROGRAM',
     reason: blocker.reason,
     blocker_code: blocker.blocker_code,
     requirement_key: blocker.requirement_key
@@ -2264,6 +2265,189 @@ async function completeBrainRun(db, tenantId, runId, input) {
   return result;
 }
 
+async function resumeAutopilotProgramAfterHumanAction(db, tenantId, scope = {}) {
+  const missionId = String(scope.missionId || scope.mission_id || '').trim();
+  const roadmapId = String(scope.roadmapId || scope.roadmap_id || '').trim();
+  const milestoneId = String(scope.milestoneId || scope.milestone_id || '').trim();
+  const brainRunId = String(scope.brainRunId || scope.brain_run_id || '').trim();
+  const checkpointId = String(scope.checkpointId || scope.checkpoint_id || '').trim();
+  if (!missionId || !roadmapId || !milestoneId || !brainRunId || !checkpointId) {
+    const error = new Error('HUMAN_ACTION_RESUME_SCOPE_REQUIRED');
+    error.status = 409;
+    throw error;
+  }
+
+  const missionRef = db.collection('missions').doc(missionId);
+  const runRef = db.collection('runs').doc(brainRunId);
+  const roadmapRef = db.collection('roadmaps').doc(roadmapId);
+  const taskRef = db.collection('tasks').doc();
+  const resultRef = db.collection('results').doc();
+  let result = null;
+
+  await db.runTransaction(async (tx) => {
+    const missionSnap = await tx.get(missionRef);
+    const runSnap = await tx.get(runRef);
+    const roadmapSnap = await tx.get(roadmapRef);
+    if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+      const error = new Error('MISSION_NOT_FOUND'); error.status = 404; throw error;
+    }
+    if (!runSnap.exists || runSnap.data().tenant_id !== tenantId) {
+      const error = new Error('RUN_NOT_FOUND'); error.status = 404; throw error;
+    }
+    if (!roadmapSnap.exists || roadmapSnap.data().tenant_id !== tenantId) {
+      const error = new Error('ROADMAP_NOT_FOUND'); error.status = 404; throw error;
+    }
+
+    const mission = missionSnap.data();
+    const run = runSnap.data();
+    const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
+    const milestone = (roadmap.milestones || []).find((item) => item.id === milestoneId);
+    if (!milestone) {
+      const error = new Error('MILESTONE_NOT_FOUND'); error.status = 404; throw error;
+    }
+    const checkpoint = milestone.human_action_checkpoint || milestone.human_action || null;
+    if (
+      !checkpoint ||
+      checkpoint.checkpoint_id !== checkpointId ||
+      String(checkpoint.status || checkpoint.waiting_status || '').toUpperCase() !== 'RESOLVED'
+    ) {
+      const error = new Error('HUMAN_ACTION_CHECKPOINT_NOT_RESOLVED');
+      error.status = 409;
+      throw error;
+    }
+    if (
+      run.run_type !== 'BRAIN_RUN' ||
+      run.state !== 'COMPLETED' ||
+      String(run.autopilot_phase || '').toUpperCase() !== 'PROGRAM' ||
+      run.mission_id !== missionId ||
+      (run.roadmap_id || roadmapId) !== roadmapId ||
+      (run.milestone_id || milestoneId) !== milestoneId
+    ) {
+      const error = new Error('HUMAN_ACTION_PROGRAM_RUN_NOT_RESUMABLE');
+      error.status = 409;
+      throw error;
+    }
+
+    const taskSnap = await tx.get(db.collection('tasks').where('tenant_id', '==', tenantId).limit(200));
+    const existingTask = taskSnap.docs
+      .map((doc) => ({ id: doc.id, ...doc.data() }))
+      .find((task) => (
+        task.mission_id === missionId &&
+        task.brain_run_id === brainRunId &&
+        ['QUEUED', 'ASSIGNED', 'WAITING', 'RUNNING', 'TESTING', 'DONE', 'COMPLETED'].includes(String(task.state || '').toUpperCase())
+      ));
+    if (existingTask) {
+      result = {
+        resumed: true,
+        reused: true,
+        no_new_work: true,
+        state: 'RESUMED',
+        roadmap_id: roadmapId,
+        milestone_id: milestoneId,
+        mission_id: missionId,
+        brain_run_id: brainRunId,
+        task_id: existingTask.id,
+        checkpoint_id: checkpointId
+      };
+      return;
+    }
+
+    const brainOutput = run.brain_output && typeof run.brain_output === 'object'
+      ? run.brain_output
+      : buildBrainOutput({ id: brainRunId, ...run }, { output_text: run.output_text || '' });
+    const taskSpec = brainOutput.task_spec || {};
+    tx.set(taskRef, {
+      id: taskRef.id,
+      tenant_id: tenantId,
+      mission_id: missionId,
+      workspace_id: run.workspace_id || mission.workspace_id || null,
+      project_id: run.project_id || mission.project_id || null,
+      worker_id: brainOutput.worker_id || run.worker_id || mission.preferred_worker_id || 'W01',
+      title: taskSpec.title || brainOutput.objective,
+      objective: taskSpec.objective || brainOutput.objective,
+      task_spec: taskSpec,
+      priority: mission.priority || 'NORMAL',
+      state: 'QUEUED',
+      phase: 'EXECUTION_PENDING',
+      autopilot_phase: 'PROGRAM',
+      attempt_count: 0,
+      brain_run_id: brainRunId,
+      brain_output: brainOutput,
+      brain_completed_at: timestamp(),
+      human_action_checkpoint_id: checkpointId,
+      current_run_id: null,
+      claimed_by_executor_id: null,
+      created_at: timestamp(),
+      updated_at: timestamp()
+    }, { merge: true });
+
+    tx.set(resultRef, {
+      id: resultRef.id,
+      tenant_id: tenantId,
+      mission_id: missionId,
+      task_id: taskRef.id,
+      run_id: brainRunId,
+      workspace_id: run.workspace_id || mission.workspace_id || null,
+      project_id: run.project_id || mission.project_id || null,
+      worker_id: brainOutput.worker_id || run.worker_id || mission.preferred_worker_id || 'W01',
+      executor_id: run.executor_id || null,
+      status: 'SUCCESS',
+      result_type: 'BRAIN_OUTPUT',
+      summary: 'Brain output persisted after Human Action validation.',
+      output: brainOutput,
+      created_at: timestamp()
+    });
+
+    const resolvedCheckpoint = {
+      ...checkpoint,
+      continuation_task_id: taskRef.id,
+      continuation_result_id: resultRef.id,
+      updated_at: new Date()
+    };
+    tx.set(missionRef, {
+      state: 'PLANNING',
+      autopilot_phase: 'PROGRAM',
+      brain_run_id: brainRunId,
+      brain_output_result_id: resultRef.id,
+      current_task_id: taskRef.id,
+      human_action_required: false,
+      human_action_checkpoint: resolvedCheckpoint,
+      autopilot_allowed_files: Array.isArray(taskSpec.allowed_files) ? taskSpec.allowed_files : [],
+      updated_at: timestamp()
+    }, { merge: true });
+    tx.set(roadmapRef, {
+      milestones: roadmapMilestonesWithState(roadmap, milestoneId, 'RUNNING', {
+        mission_id: missionId,
+        brain_run_id: brainRunId,
+        human_action_required: false,
+        human_action_checkpoint: resolvedCheckpoint,
+        waiting_status: 'RESOLVED',
+        blocked_reason: null
+      }),
+      updated_at: timestamp()
+    }, { merge: true });
+
+    result = {
+      resumed: true,
+      reused: false,
+      no_new_work: false,
+      state: 'RESUMED',
+      roadmap_id: roadmapId,
+      milestone_id: milestoneId,
+      mission_id: missionId,
+      brain_run_id: brainRunId,
+      task_id: taskRef.id,
+      result_id: resultRef.id,
+      checkpoint_id: checkpointId
+    };
+  });
+
+  if (result?.no_new_work !== true) {
+    await emitEvent(db, tenantId, 'HUMAN_ACTION_PROGRAM_RESUMED', result, 'OPERATIVE');
+  }
+  return result;
+}
+
 async function getMissionPlan(db, tenantId, missionId) {
   const missionSnap = await db.collection('missions').doc(missionId).get();
   if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
@@ -3353,5 +3537,6 @@ module.exports = {
   completeRun,
   completeManualCodexHandoff,
   recoverAbandonedBrainRuns,
+  resumeAutopilotProgramAfterHumanAction,
   parseBrainResponse
 };

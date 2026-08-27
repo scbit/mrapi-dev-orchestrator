@@ -253,16 +253,75 @@ test('LISTO is visible only for explicit Human Action and has no continuation si
   await flush();
   calls.length = 0;
 
-  planner.renderProposal(proposal({ milestones: [humanMilestone()] }));
-  assert.match(planner.els.proposalView.innerHTML, /<button class="primary" type="button" disabled>LISTO<\/button>/);
-  assert.match(planner.els.proposalView.innerHTML, /Confirmation will be enabled when MRAPI provides a continuation endpoint/);
+  planner.renderProposal(proposal({ current_milestone_id: 'human_m1', milestones: [humanMilestone()] }));
+  assert.match(planner.els.proposalView.innerHTML, /data-human-action-ready="1" data-checkpoint-id="checkpoint_1">LISTO<\/button>/);
+  assert.match(planner.els.proposalView.innerHTML, /MRAPI will re-check the persisted condition before resuming/);
   assert.doesNotMatch(planner.els.proposalView.innerHTML, /continued|successfully resumed|execution continued/i);
   assert.deepEqual(calls, []);
 
+  planner.renderProposal(proposal({ milestones: [humanMilestone({ state: 'RESOLVED', status: 'RESOLVED' })] }));
+  assert.match(planner.els.proposalView.innerHTML, /<button class="primary" type="button" disabled>LISTO<\/button>/);
+
   const source = fs.readFileSync(path.join(__dirname, '..', 'src', 'routes', 'planner.ui.routes.js'), 'utf8');
-  assert.doesNotMatch(source, /\/continue|\/resume|\/human-action|\/checkpoint\/complete|\/listo/);
-  assert.doesNotMatch(source, /LISTO[\s\S]{0,240}fetch\(|fetch\([\s\S]{0,240}LISTO/);
+  assert.match(source, /\/human-action\/' \+ encodeURIComponent\(checkpointId\) \+ '\/ready/);
   assert.doesNotMatch(source, /LISTO[\s\S]{0,240}\/approve|LISTO[\s\S]{0,240}\/start|LISTO[\s\S]{0,240}request-changes/);
+});
+
+test('LISTO posts once to Human Action endpoint and unresolved response keeps panel and message', async () => {
+  const calls = [];
+  const planner = createHarness(async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (url === '/api/workspaces' || url === '/api/projects') return response({ items: [] });
+    if (url === '/api/planner/recent?limit=10') return response({ items: [] });
+    if (url === '/api/planner/proposals/roadmap_human_action/human-action/checkpoint_1/ready') {
+      return response({ resumed: false, state: 'NEED_HUMAN_ACTION', checkpoint_id: 'checkpoint_1', message: 'Environment variable FOO is not configured.' });
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  });
+  await flush();
+  calls.length = 0;
+  planner.renderProposal(proposal({ current_milestone_id: 'human_m1', milestones: [humanMilestone()] }));
+
+  await planner.els.proposalView.listeners.click({
+    target: { dataset: { humanActionReady: '1', checkpointId: 'checkpoint_1' }, disabled: false }
+  });
+  await flush();
+  assert.deepEqual(calls.map((call) => [call.url, call.options.method]), [
+    ['/api/planner/proposals/roadmap_human_action/human-action/checkpoint_1/ready', 'POST']
+  ]);
+  assert.equal(JSON.parse(calls[0].options.body).ready, true);
+  assert.match(planner.els.status.textContent, /Environment variable FOO is not configured/);
+  assert.match(planner.els.proposalView.innerHTML, /human-action-panel/);
+});
+
+test('successful LISTO refreshes canonical proposal and avoids lifecycle mutation endpoints', async () => {
+  const calls = [];
+  const planner = createHarness(async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (url === '/api/workspaces' || url === '/api/projects') return response({ items: [] });
+    if (url === '/api/planner/recent?limit=10') return response({ items: [] });
+    if (url === '/api/planner/proposals/roadmap_human_action/human-action/checkpoint_1/ready') {
+      return response({ resumed: true, checkpoint_id: 'checkpoint_1', task_id: 'task_1' });
+    }
+    if (url === '/api/planner/proposals/roadmap_human_action') {
+      return response(proposal({ milestones: [{ ...proposal().milestones[0], state: 'RUNNING' }] }));
+    }
+    throw new Error(`Unexpected fetch ${url}`);
+  });
+  await flush();
+  calls.length = 0;
+  planner.renderProposal(proposal({ current_milestone_id: 'human_m1', milestones: [humanMilestone()] }));
+
+  await planner.els.proposalView.listeners.click({
+    target: { dataset: { humanActionReady: '1', checkpointId: 'checkpoint_1' }, disabled: false }
+  });
+  await flush();
+  assert.deepEqual(calls.map((call) => call.url), [
+    '/api/planner/proposals/roadmap_human_action/human-action/checkpoint_1/ready',
+    '/api/planner/proposals/roadmap_human_action',
+    '/api/planner/recent?limit=10'
+  ]);
+  assert.equal(calls.some((call) => /\/approve$|\/request-changes$|\/start$|\/api\/tasks|EXECUTION_RUN/.test(call.url)), false);
 });
 
 test('multiple Human Action checkpoints render deterministically, deduplicate by checkpoint ID, and emphasize current first', async () => {
@@ -302,9 +361,9 @@ test('multiple Human Action checkpoints render deterministically, deduplicate by
   }));
 
   const rendered = planner.els.proposalView.innerHTML;
-  assert.equal((rendered.match(/human-action-panel/g) || []).length, 2);
-  assert.equal((rendered.match(/checkpoint_1/g) || []).length, 1);
-  assert.equal((rendered.match(/checkpoint_2/g) || []).length, 1);
+  assert.equal((rendered.match(/<section class="human-action-panel/g) || []).length, 2);
+  assert.equal((rendered.match(/checkpoint_1/g) || []).length >= 1, true);
+  assert.equal((rendered.match(/checkpoint_2/g) || []).length >= 1, true);
   assert.equal(rendered.indexOf('MRAPI needs current confirmation') < rendered.indexOf('MRAPI needs first confirmation'), true);
 });
 

@@ -122,6 +122,7 @@ function normalizeHumanActionCheckpoint(input = {}, existing = null) {
     roadmap_id: input.roadmap_id || null,
     milestone_id: input.milestone_id || null,
     mission_id: input.mission_id || null,
+    paused_from_phase: clean(input.paused_from_phase || input.resume_phase || '', 120) || null,
     reason: clean(input.reason || input.blocker_code || '', 1000) || null,
     blocker_code: clean(input.blocker_code || requirementType, 200),
     created_at: prior?.created_at || now,
@@ -134,6 +135,142 @@ function unresolvedHumanActionCheckpoint(milestone) {
   if (!checkpoint || checkpoint.human_action_required !== true) return null;
   const status = String(checkpoint.status || checkpoint.waiting_status || '').toUpperCase();
   return status === 'WAITING_FOR_HUMAN' || status === 'NEED_HUMAN_ACTION' ? checkpoint : null;
+}
+
+function checkpointStatus(checkpoint) {
+  return String(checkpoint?.status || checkpoint?.waiting_status || '').toUpperCase();
+}
+
+function localPathFromProject(project = {}) {
+  const runtime = project.runtime_context && typeof project.runtime_context === 'object'
+    ? project.runtime_context
+    : {};
+  return clean(runtime.repository_path || runtime.local_path || project.repository_path || project.local_path || '', 2000);
+}
+
+function capabilityAvailable(name, project = {}, mission = {}) {
+  const key = clean(name, 500);
+  if (!key) return false;
+  const contexts = [
+    mission.capabilities,
+    mission.permissions,
+    mission.access,
+    project.capabilities,
+    project.permissions,
+    project.access,
+    project.runtime_context?.capabilities,
+    project.runtime_context?.permissions,
+    project.runtime_context?.access
+  ].filter((item) => item && typeof item === 'object');
+  for (const context of contexts) {
+    if (!Object.prototype.hasOwnProperty.call(context, key)) continue;
+    const value = context[key];
+    return value === true || value === 'available' || value === 'granted' || value === 'enabled';
+  }
+  return false;
+}
+
+function validationMethod(checkpoint) {
+  return clean(checkpoint?.validation_method || '', 1000).toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function manualConfirmationAllowed(checkpoint) {
+  return ['manual_confirmation', 'manual_confirm', 'human_confirmation'].includes(validationMethod(checkpoint));
+}
+
+function validateHumanActionCheckpoint(checkpoint, { project = {}, mission = {} } = {}) {
+  const requirement = clean(checkpoint?.requirement_type || checkpoint?.checkpoint_type || '', 120).toUpperCase();
+  const method = validationMethod(checkpoint);
+  const metadata = checkpoint?.validation_metadata && typeof checkpoint.validation_metadata === 'object'
+    ? checkpoint.validation_metadata
+    : {};
+
+  if (requirement === 'MANUAL_DEPLOY') {
+    return {
+      ok: false,
+      message: 'Deployment identity validation is not implemented until the Cloud Run deploy checkpoint milestone.'
+    };
+  }
+
+  if (['ENV_VAR', 'ENVIRONMENT_VARIABLE', 'ENVIRONMENT_VARIABLES', 'REQUIRED_ENV_VAR'].includes(requirement)) {
+    const name = clean(metadata.env_var_name || metadata.name || metadata.variable_name || '', 500);
+    if (!name) return { ok: false, malformed: true, message: 'Environment variable checkpoint is missing a variable name.' };
+    return process.env[name]
+      ? { ok: true, message: `Environment variable ${name} is configured.` }
+      : { ok: false, message: `Environment variable ${name} is not configured.` };
+  }
+
+  if (['REPOSITORY_LOCAL_PATH', 'REPOSITORY', 'LOCAL_PATH'].includes(requirement)) {
+    const path = localPathFromProject(project);
+    if (!path) return { ok: false, message: 'Project repository local path is not configured.' };
+    const predicate = clean(metadata.path_predicate || metadata.predicate || '', 300).toLowerCase();
+    if (predicate && !['present', 'exists', 'configured', 'non_empty'].includes(predicate)) {
+      return { ok: false, message: `Repository local path predicate ${predicate} is not supported yet.` };
+    }
+    return { ok: true, message: 'Project repository local path is configured.' };
+  }
+
+  if (['CAPABILITY', 'PERMISSION', 'ACCESS'].includes(requirement)) {
+    const name = clean(metadata.name || metadata.capability || metadata.permission || metadata.access || '', 500);
+    if (!name) return { ok: false, malformed: true, message: 'Capability checkpoint is missing a capability name.' };
+    return capabilityAvailable(name, project, mission)
+      ? { ok: true, message: `${requirement.toLowerCase()} ${name} is available.` }
+      : { ok: false, message: `${requirement.toLowerCase()} ${name} is not available in project runtime metadata.` };
+  }
+
+  if (requirement === 'EXTERNAL_ACCESS') {
+    const validator = clean(metadata.validator_key || metadata.capability_key || metadata.capability || '', 500);
+    if (validator) {
+      return capabilityAvailable(validator, project, mission)
+        ? { ok: true, message: `External access validator ${validator} is available.` }
+        : { ok: false, message: `External access validator ${validator} is not available.` };
+    }
+    if (manualConfirmationAllowed(checkpoint)) {
+      return { ok: true, message: 'Manual confirmation accepted for this external-access checkpoint.' };
+    }
+    return { ok: false, message: 'External-access checkpoint has no deterministic validator and does not allow manual confirmation.' };
+  }
+
+  if (['MANUAL_HUMAN', 'HUMAN_ACTION', 'MANUAL_ACTION'].includes(requirement)) {
+    return manualConfirmationAllowed(checkpoint)
+      ? { ok: true, message: 'Manual confirmation accepted for this checkpoint.' }
+      : { ok: false, message: 'Manual confirmation is not the persisted validator for this checkpoint.' };
+  }
+
+  return {
+    ok: false,
+    message: `Unsupported Human Action checkpoint type ${requirement || 'UNKNOWN'} remains unresolved.`
+  };
+}
+
+function resolvedCheckpoint(checkpoint, validation, now = milestoneTimestamp()) {
+  return {
+    ...checkpoint,
+    status: 'RESOLVED',
+    waiting_status: 'RESOLVED',
+    resolved_at: now,
+    resolved_by: 'HUMAN_READY_CONFIRMATION',
+    last_validation_at: now,
+    last_validation_message: clean(validation.message, 1000),
+    validation_result: {
+      ok: true,
+      method: validationMethod(checkpoint) || null,
+      checked_at: now
+    },
+    updated_at: now
+  };
+}
+
+function unresolvedValidatedCheckpoint(checkpoint, validation, now = milestoneTimestamp()) {
+  return {
+    ...checkpoint,
+    status: checkpoint.status || 'WAITING_FOR_HUMAN',
+    waiting_status: checkpoint.waiting_status || 'WAITING_FOR_HUMAN',
+    last_validation_at: now,
+    validation_attempt_count: Number(checkpoint.validation_attempt_count || 0) + 1,
+    last_validation_message: clean(validation.message, 1000),
+    updated_at: now
+  };
 }
 
 function parseAutopilotDecision(text) {
@@ -708,7 +845,8 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
         tenant_id: tenantId,
         roadmap_id: roadmap.id,
         milestone_id: milestone.id,
-        mission_id: mission.id
+        mission_id: mission.id,
+        paused_from_phase: 'VERIFY_EXECUTION'
       }, existing);
       tx.set(roadmapRef, {
         milestones: milestoneWithHumanAction(roadmap, milestone.id, checkpoint),
@@ -872,6 +1010,182 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
   return result;
 }
 
+async function confirmHumanActionReady(db, tenantId, roadmapId, checkpointId, input = {}) {
+  const confirmed = input.ready === true || input.confirm === true || input.confirmed === true || input.listo === true;
+  if (!confirmed) {
+    const error = new Error('HUMAN_ACTION_READY_CONFIRMATION_REQUIRED');
+    error.status = 400;
+    throw error;
+  }
+
+  let outcome = null;
+  await db.runTransaction(async (tx) => {
+    const roadmapRef = db.collection('roadmaps').doc(roadmapId);
+    const roadmapSnap = await tx.get(roadmapRef);
+    if (!roadmapSnap.exists || roadmapSnap.data().tenant_id !== tenantId) {
+      const error = new Error('PLANNER_PROPOSAL_NOT_FOUND'); error.status = 404; throw error;
+    }
+    const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
+    if (roadmap.proposal_type && roadmap.proposal_type !== 'PLANNER_ROADMAP') {
+      const error = new Error('PLANNER_PROPOSAL_NOT_FOUND'); error.status = 404; throw error;
+    }
+
+    const matchingMilestones = (roadmap.milestones || []).filter((milestone) => {
+      const checkpoint = milestone?.human_action_checkpoint || milestone?.human_action || null;
+      return checkpoint?.checkpoint_id === checkpointId;
+    });
+    const milestone = matchingMilestones[0] || null;
+    const checkpoint = milestone?.human_action_checkpoint || milestone?.human_action || null;
+    if (!milestone || !checkpoint) {
+      const error = new Error('HUMAN_ACTION_CHECKPOINT_NOT_FOUND'); error.status = 404; throw error;
+    }
+
+    const currentHumanMilestone = (roadmap.milestones || []).find((item) => unresolvedHumanActionCheckpoint(item));
+    if (
+      currentHumanMilestone &&
+      currentHumanMilestone.id !== milestone.id &&
+      unresolvedHumanActionCheckpoint(currentHumanMilestone)?.checkpoint_id !== checkpointId
+    ) {
+      const error = new Error('HUMAN_ACTION_CHECKPOINT_STALE');
+      error.status = 409;
+      throw error;
+    }
+
+    const missionId = checkpoint.mission_id || milestone.mission_id;
+    const missionRef = missionId ? db.collection('missions').doc(missionId) : null;
+    const missionSnap = missionRef ? await tx.get(missionRef) : null;
+    if (!missionRef || !missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+      const error = new Error('HUMAN_ACTION_CHECKPOINT_NOT_FOUND'); error.status = 404; throw error;
+    }
+    const mission = { id: missionSnap.id, ...missionSnap.data() };
+    if (
+      checkpoint.roadmap_id !== roadmap.id ||
+      checkpoint.milestone_id !== milestone.id ||
+      checkpoint.mission_id !== mission.id ||
+      mission.roadmap_id !== roadmap.id ||
+      mission.milestone_id !== milestone.id
+    ) {
+      const error = new Error('HUMAN_ACTION_CHECKPOINT_PROVENANCE_INVALID');
+      error.status = 409;
+      throw error;
+    }
+
+    const projectSnap = mission.project_id ? await tx.get(db.collection('projects').doc(mission.project_id)) : null;
+    const project = projectSnap?.exists && projectSnap.data().tenant_id === tenantId
+      ? { id: projectSnap.id, ...projectSnap.data() }
+      : {};
+
+    const status = checkpointStatus(checkpoint);
+    if (status === 'RESOLVED') {
+      const inferredResolvedPausePhase = String(checkpoint.checkpoint_type || '').toUpperCase() === 'AUTOPILOT_VERIFICATION'
+        ? 'VERIFY_EXECUTION'
+        : '';
+      const resolvedPausePhase = clean(checkpoint.paused_from_phase || checkpoint.resume_phase || mission.paused_from_phase || inferredResolvedPausePhase, 120).toUpperCase();
+      outcome = {
+        resumed: true,
+        reused: true,
+        no_new_work: true,
+        state: resolvedPausePhase === 'VERIFY_EXECUTION' || resolvedPausePhase === 'VERIFYING' ? 'VERIFYING' : 'RESOLVED',
+        roadmap_id: roadmap.id,
+        milestone_id: milestone.id,
+        mission_id: mission.id,
+        brain_run_id: checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null,
+        task_id: checkpoint.continuation_task_id || mission.current_task_id || null,
+        checkpoint_id: checkpointId,
+        resume_phase: resolvedPausePhase || null,
+        message: 'Human Action checkpoint was already resolved.'
+      };
+      return;
+    }
+    if (!['WAITING_FOR_HUMAN', 'NEED_HUMAN_ACTION'].includes(status)) {
+      const error = new Error('HUMAN_ACTION_CHECKPOINT_NOT_WAITING');
+      error.status = 409;
+      throw error;
+    }
+
+    const validation = validateHumanActionCheckpoint(checkpoint, { project, mission });
+    const now = milestoneTimestamp();
+    if (!validation.ok) {
+      const updatedCheckpoint = unresolvedValidatedCheckpoint(checkpoint, validation, now);
+      tx.set(roadmapRef, {
+        milestones: milestoneWithHumanAction(roadmap, milestone.id, updatedCheckpoint),
+        updated_at: timestamp()
+      }, { merge: true });
+      tx.set(missionRef, {
+        state: 'NEED_HUMAN_ACTION',
+        autopilot_phase: 'NEED_HUMAN_ACTION',
+        human_action_required: true,
+        human_action_checkpoint: updatedCheckpoint,
+        blocker_code: updatedCheckpoint.blocker_code,
+        blocker_message: updatedCheckpoint.human_action_request,
+        updated_at: timestamp()
+      }, { merge: true });
+      outcome = {
+        resumed: false,
+        state: 'NEED_HUMAN_ACTION',
+        roadmap_id: roadmap.id,
+        milestone_id: milestone.id,
+        mission_id: mission.id,
+        checkpoint_id: checkpointId,
+        message: validation.message
+      };
+      return;
+    }
+
+    const updatedCheckpoint = resolvedCheckpoint(checkpoint, validation, now);
+    const inferredPausePhase = String(checkpoint.checkpoint_type || '').toUpperCase() === 'AUTOPILOT_VERIFICATION'
+      ? 'VERIFY_EXECUTION'
+      : '';
+    const pausePhase = clean(checkpoint.paused_from_phase || checkpoint.resume_phase || mission.paused_from_phase || inferredPausePhase, 120).toUpperCase();
+    const brainRunId = checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null;
+    tx.set(roadmapRef, {
+      milestones: milestoneWithState(roadmap, milestone.id, pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING' ? 'VERIFYING' : 'NEED_HUMAN_ACTION', {
+        mission_id: mission.id,
+        brain_run_id: milestone.brain_run_id || mission.brain_run_id || null,
+        verification_brain_run_id: milestone.verification_brain_run_id || mission.verification_brain_run_id || null,
+        human_action_required: false,
+        human_action_checkpoint: updatedCheckpoint,
+        waiting_status: 'RESOLVED',
+        blocked_reason: null
+      }),
+      updated_at: timestamp()
+    }, { merge: true });
+    tx.set(missionRef, {
+      state: pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING' ? 'RUNNING' : 'NEED_HUMAN_ACTION',
+      autopilot_phase: pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING' ? 'VERIFYING' : 'NEED_HUMAN_ACTION',
+      human_action_required: false,
+      human_action_checkpoint: updatedCheckpoint,
+      updated_at: timestamp()
+    }, { merge: true });
+    outcome = {
+      resumed: pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING',
+      state: pausePhase === 'VERIFY_EXECUTION' || pausePhase === 'VERIFYING' ? 'VERIFYING' : 'RESOLVED',
+      roadmap_id: roadmap.id,
+      milestone_id: milestone.id,
+      mission_id: mission.id,
+      brain_run_id: brainRunId,
+      checkpoint_id: checkpointId,
+      resume_phase: pausePhase || 'PROGRAM',
+      message: validation.message
+    };
+  });
+
+  if (outcome?.state === 'NEED_HUMAN_ACTION' || outcome?.resume_phase === 'VERIFY_EXECUTION' || outcome?.resume_phase === 'VERIFYING') {
+    return outcome;
+  }
+  if (outcome?.state === 'RESOLVED' && outcome?.brain_run_id) {
+    const { resumeAutopilotProgramAfterHumanAction } = require('./orchestration');
+    return resumeAutopilotProgramAfterHumanAction(db, tenantId, {
+      mission_id: outcome.mission_id,
+      roadmap_id: outcome.roadmap_id,
+      milestone_id: outcome.milestone_id,
+      brain_run_id: outcome.brain_run_id,
+      checkpoint_id: outcome.checkpoint_id
+    });
+  }
+  return outcome;
+}
+
 module.exports = {
   TERMINAL_MISSION_STATES,
   linkedMissionBlocksFreshStart,
@@ -879,6 +1193,8 @@ module.exports = {
   parseAutopilotDecision,
   normalizeHumanActionCheckpoint,
   unresolvedHumanActionCheckpoint,
+  validateHumanActionCheckpoint,
+  confirmHumanActionReady,
   milestoneWithHumanAction,
   failClosedHumanActionReason,
   startNextRoadmapMilestone,

@@ -172,6 +172,7 @@ function plannerPageHtml() {
       recentPlannerRequests: [],
       recentLoading: true,
       recentError: '',
+      humanActionSubmitting: false,
       restoredPlanner: false,
       activeContext: null,
       pendingAuthoritativeContext: null
@@ -499,6 +500,7 @@ function plannerPageHtml() {
       if (explicitHumanActionMarker(item.action_type || item.checkpoint_type || item.type)) return true;
       if (item.action && typeof item.action === 'object' && explicitHumanActionMarker(item.action.type || item.action.kind || item.action.state)) return true;
       if (item.checkpoint && typeof item.checkpoint === 'object' && explicitHumanActionMarker(item.checkpoint.type || item.checkpoint.kind || item.checkpoint.state)) return true;
+      if (item.human_action_checkpoint && typeof item.human_action_checkpoint === 'object') return item.human_action_checkpoint.human_action_required === true || explicitHumanActionMarker(item.human_action_checkpoint.status || item.human_action_checkpoint.waiting_status || item.human_action_checkpoint.checkpoint_type);
       return item.executor_required === false && (
         explicitHumanActionMarker(item.handoff_type) ||
         explicitHumanActionMarker(item.review_type)
@@ -522,6 +524,7 @@ function plannerPageHtml() {
       const objects = [item];
       if (item.action && typeof item.action === 'object') objects.push(item.action);
       if (item.checkpoint && typeof item.checkpoint === 'object') objects.push(item.checkpoint);
+      if (item.human_action_checkpoint && typeof item.human_action_checkpoint === 'object') objects.push(item.human_action_checkpoint);
       return objects;
     }
 
@@ -539,13 +542,18 @@ function plannerPageHtml() {
       return titleCaseState(rawValue, 'Need human action');
     }
 
+    function isUnresolvedHumanActionStatus(rawValue) {
+      const status = text(rawValue).trim().toUpperCase();
+      return ['WAITING_FOR_HUMAN', 'NEED_HUMAN_ACTION', 'NEEDS_HUMAN_ACTION', 'HUMAN_ACTION_REQUIRED'].includes(status);
+    }
+
     function humanActionViewModel(source, options = {}) {
       if (!requiresHumanAction(source)) return null;
       const sourceMilestoneId = text(options.sourceMilestoneId || source?.id || '').trim();
       const sourceMilestoneTitle = text(options.sourceMilestoneTitle || source?.title || '').trim();
       const id = explicitHumanActionValue(source, ['checkpoint_id', 'human_action_id', 'action_id']);
       const type = explicitHumanActionValue(source, ['checkpoint_type', 'human_action_type', 'action_type', 'type']);
-      const rawStatus = explicitHumanActionValue(source, ['checkpoint_state', 'checkpoint_status', 'human_action_state', 'human_action_status', 'status', 'revision_status', 'state', 'lifecycle_state']);
+      const rawStatus = explicitHumanActionValue(source, ['checkpoint_state', 'checkpoint_status', 'human_action_state', 'human_action_status', 'status', 'waiting_status', 'revision_status', 'state', 'lifecycle_state']);
       const requirement = explicitHumanActionValue(source, ['human_action', 'human_action_request', 'checkpoint_message', 'requirement', 'reason']);
       const userAction = explicitHumanActionValue(source, ['user_action', 'required_action', 'action_instruction', 'instructions']);
       return {
@@ -561,6 +569,7 @@ function plannerPageHtml() {
         sourceMilestoneId,
         sourceMilestoneTitle,
         isCurrent: Boolean(options.isCurrent),
+        canConfirmReady: Boolean(options.isCurrent && id && isUnresolvedHumanActionStatus(rawStatus)),
         identity: id
           ? 'id:' + id
           : [
@@ -925,14 +934,16 @@ function plannerPageHtml() {
       const source = view.sourceKind === 'milestone'
         ? 'Milestone: ' + (view.sourceMilestoneTitle || view.sourceMilestoneId || 'Not recorded')
         : 'Roadmap-level checkpoint';
+      const readyAction = view.canConfirmReady
+        ? '<button class="primary" type="button" data-human-action-ready="1" data-checkpoint-id="' + escapeHtml(view.id) + '">LISTO</button><span class="small">MRAPI will re-check the persisted condition before resuming.</span>'
+        : '<button class="primary" type="button" disabled>LISTO</button><span class="small">LISTO is available only for the current unresolved checkpoint.</span>';
       return '<section class="human-action-panel' + (view.isCurrent ? ' is-current' : '') + '" aria-label="Human action required">' +
         '<span class="label">HUMAN ACTION</span><h3>Need human action</h3>' +
         '<div class="checkpoint-source">' + escapeHtml(source) + '</div>' +
         '<p><strong>MRAPI needs:</strong> ' + escapeHtml(view.requirementText) + '</p>' +
         '<p><strong>What you need to do:</strong> ' + escapeHtml(view.userActionText) + '</p>' +
         '<p><strong>Current checkpoint status:</strong> ' + escapeHtml(view.friendlyStatus) + '</p>' +
-        '<div class="human-action-actions"><button class="primary" type="button" disabled>LISTO</button>' +
-        '<span class="small">Confirmation will be enabled when MRAPI provides a continuation endpoint.</span></div>' +
+        '<div class="human-action-actions">' + readyAction + '</div>' +
         renderHumanActionAdvancedDetails(view) +
         '</section>';
     }
@@ -1129,6 +1140,34 @@ function plannerPageHtml() {
       }
     }
 
+    async function confirmHumanActionReady(button) {
+      const proposalId = els.proposalId.value.trim() || state.proposalId;
+      const checkpointId = text(button?.dataset?.checkpointId).trim();
+      if (!proposalId || !checkpointId) return setStatus('LISTO failed: checkpoint context is incomplete.', 'error');
+      if (state.humanActionSubmitting) return;
+      state.humanActionSubmitting = true;
+      button.disabled = true;
+      setStatus('Validating Human Action checkpoint...', '');
+      try {
+        const result = await fetch('/api/planner/proposals/' + encodeURIComponent(proposalId) + '/human-action/' + encodeURIComponent(checkpointId) + '/ready', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ ready: true })
+        }).then(parseResponse);
+        if (result && result.resumed === false) {
+          setStatus('Human Action still required: ' + text(result.message || 'validation did not pass'), 'error');
+          return;
+        }
+        setStatus('Human Action validated. Refreshing roadmap...', 'success');
+        await loadProposal();
+        loadRecentPlannerRequests();
+      } catch (error) {
+        setStatus('LISTO failed: ' + error.message, 'error');
+      } finally {
+        state.humanActionSubmitting = false;
+      }
+    }
+
     async function loadPlannerContextOptions() {
       state.contextLoading = true;
       state.contextError = '';
@@ -1209,6 +1248,10 @@ function plannerPageHtml() {
     });
 
     els.refresh.addEventListener('click', loadProposal);
+    els.proposalView.addEventListener('click', (event) => {
+      const button = event.target?.closest ? event.target.closest('[data-human-action-ready]') : event.target;
+      if (button?.dataset?.humanActionReady) confirmHumanActionReady(button);
+    });
     els.recentList.addEventListener('click', (event) => {
       const row = event.target?.closest ? event.target.closest('[data-proposal-id]') : event.target;
       const proposalId = row?.dataset?.proposalId;
