@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { completeBrainRun } = require('../src/services/orchestration');
 const {
   completeVerificationBrainRun,
   continueRoadmapAfterComplete
@@ -384,6 +385,52 @@ test('auto advance creates no Executor Task directly before Brain PROGRAM contra
   await complete(db);
   assert.equal(tasks(db).length, 0);
   assert.equal(executionRuns(db).length, 0);
+});
+
+test('trusted Planner Brain-only milestone cannot be escalated into Executor work by Brain output', async () => {
+  const db = new DB();
+  seed(db, {
+    milestones: [
+      { id: 'm1', title: 'Brain only', state: 'PLANNING', order: 1, depends_on: [], mission_id: 'mission_m1', executor_required: false },
+      { id: 'm2', title: 'Executor work', state: 'PENDING', order: 2, depends_on: ['m1'], executor_required: true }
+    ]
+  });
+  db.set('roadmaps', 'roadmap_a', { proposal_type: 'PLANNER_ROADMAP' }, { merge: true });
+  db.set('missions', 'mission_m1', {
+    ...db.get('missions', 'mission_m1'),
+    state: 'PLANNING',
+    autopilot_phase: 'PROGRAM',
+    milestone_id: 'm1',
+    brain_run_id: 'brain_m1'
+  });
+  db.set('runs', 'brain_m1', {
+    id: 'brain_m1',
+    tenant_id: 'tenant_a',
+    run_type: 'BRAIN_RUN',
+    state: 'RUNNING',
+    mission_id: 'mission_m1',
+    workspace_id: 'workspace_a',
+    project_id: 'project_a',
+    worker_id: 'W01',
+    autopilot_mode: true,
+    autopilot_phase: 'PROGRAM',
+    roadmap_id: 'roadmap_a',
+    milestone_id: 'm1'
+  });
+
+  const out = await completeBrainRun(db, 'tenant_a', 'brain_m1', {
+    output_text: '<MRAPI_CONTROL>{"requires_execution":true,"execution_type":"EXECUTOR","task_spec":{"title":"Escalate","objective":"Try to create work","instructions":"Should not become a Task.","allowed_files":["src/services/orchestration.js"],"required_tests":["node --test test/autopilot-auto-advance.test.js"]}}</MRAPI_CONTROL><MRAPI_RESULT>Brain-only milestone completed.</MRAPI_RESULT>'
+  });
+
+  assert.equal(out.requires_execution, false);
+  assert.equal(out.task_id, null);
+  assert.equal(out.continuation_state, 'STARTED');
+  assert.equal(milestone(db, 'm1').state, 'COMPLETED');
+  assert.equal(milestone(db, 'm2').state, 'PLANNING');
+  assert.equal(tasks(db).filter((task) => task.mission_id === 'mission_m1').length, 0);
+  assert.equal(executionRuns(db).filter((run) => run.mission_id === 'mission_m1').length, 0);
+  assert.equal(values(db, 'missions').length, 2);
+  assert.equal(runs(db, 'PROGRAM').filter((run) => run.mission_id === milestone(db, 'm2').mission_id).length, 1);
 });
 
 test('completed milestone Mission and Run audit IDs are preserved', async () => {

@@ -10,6 +10,7 @@ const { buildCodexHandoff } = require('./codexHandoff');
 const {
   queueVerificationBrainRun,
   completeVerificationBrainRun,
+  continueRoadmapAfterComplete,
   normalizeHumanActionCheckpoint,
   unresolvedHumanActionCheckpoint,
   applyHostValidationResult,
@@ -1211,6 +1212,15 @@ function roadmapCompletedAfter(milestones) {
   return milestones.every((item) => ['COMPLETED', 'SKIPPED'].includes(item.state));
 }
 
+function trustedPlannerMilestoneIsBrainOnly(mission, run, autopilotRoadmap) {
+  return (
+    mission?.autopilot_mode === true &&
+    String(run?.autopilot_phase || mission?.autopilot_phase || '').toUpperCase() === 'PROGRAM' &&
+    autopilotRoadmap?.roadmap?.proposal_type === 'PLANNER_ROADMAP' &&
+    autopilotRoadmap?.milestone?.executor_required === false
+  );
+}
+
 function cleanPreflightText(value, max = 2000) {
   return String(value || '').trim().slice(0, max);
 }
@@ -1991,6 +2001,7 @@ async function completeBrainRun(db, tenantId, runId, input) {
         project = { id: projectSnap.id, ...projectSnap.data() };
       }
     }
+    const trustedBrainOnlyMilestone = trustedPlannerMilestoneIsBrainOnly(mission, run, autopilotRoadmap);
 
     if (mission.planning_mode === 'REQUIRED' && mission.approval_status !== 'APPROVED') {
       const revision = Number(mission.plan_revision_number || 0) + 1;
@@ -2065,15 +2076,18 @@ async function completeBrainRun(db, tenantId, runId, input) {
       return;
     }
 
-    if (brainOutput.requires_execution === false) {
-      if (!hasMeaningfulText(brainOutput.final_result_text)) {
+    if (trustedBrainOnlyMilestone || brainOutput.requires_execution === false) {
+      const completedBrainOutput = trustedBrainOnlyMilestone
+        ? { ...brainOutput, requires_execution: false, execution_type: 'BRAIN_ONLY' }
+        : brainOutput;
+      if (!hasMeaningfulText(completedBrainOutput.final_result_text)) {
         tx.update(runRef, {
           state: 'FAILED',
           progress_percent: Number(run.progress_percent || 0),
           progress_message: 'Brain-only result missing final user-facing answer',
           error: 'BRAIN_RESULT_MISSING',
           output_text: outputText,
-          brain_output: brainOutput,
+          brain_output: completedBrainOutput,
           brain_chat_url: input.brain_chat_url || null,
           completed_at: timestamp(),
           updated_at: timestamp()
@@ -2106,13 +2120,13 @@ async function completeBrainRun(db, tenantId, runId, input) {
         return;
       }
 
-      const finalResultText = brainOutput.final_result_text;
+      const finalResultText = completedBrainOutput.final_result_text;
       tx.update(runRef, {
         state: 'COMPLETED',
         progress_percent: 100,
         progress_message: brainResultSummary(input, finalResultText).slice(0, 2000),
         output_text: outputText,
-        brain_output: brainOutput,
+        brain_output: completedBrainOutput,
         brain_chat_url: input.brain_chat_url || null,
         completed_at: timestamp(),
         updated_at: timestamp()
@@ -2126,7 +2140,7 @@ async function completeBrainRun(db, tenantId, runId, input) {
         run_id: runId,
         workspace_id: run.workspace_id || null,
         project_id: run.project_id || null,
-        worker_id: brainOutput.worker_id,
+        worker_id: completedBrainOutput.worker_id,
         executor_id: run.executor_id || null,
         brain_run_id: runId,
         run_type: 'BRAIN_RUN',
@@ -2137,7 +2151,7 @@ async function completeBrainRun(db, tenantId, runId, input) {
         summary: brainResultSummary(input, finalResultText),
         content: finalResultText,
         text: finalResultText,
-        output: brainOutput,
+        output: completedBrainOutput,
         created_at: timestamp()
       });
 
@@ -2174,8 +2188,11 @@ async function completeBrainRun(db, tenantId, runId, input) {
         task_id: null,
         brain_run_id: runId,
         result_id: resultRef.id,
-        brain_output: brainOutput,
-        requires_execution: false
+        brain_output: completedBrainOutput,
+        requires_execution: false,
+        roadmap_id: autopilotRoadmap?.roadmap?.id || null,
+        milestone_id: autopilotRoadmap?.milestone?.id || null,
+        autopilot_completed_milestone_id: trustedBrainOnlyMilestone ? autopilotRoadmap.milestone.id : null
       };
       return;
     }
@@ -2421,6 +2438,18 @@ async function completeBrainRun(db, tenantId, runId, input) {
     result,
     result.success === false ? 'WARNING' : 'OPERATIVE'
   );
+  if (result.success !== false && result.requires_execution === false && result.roadmap_id && result.autopilot_completed_milestone_id) {
+    const continuation = await continueRoadmapAfterComplete(db, tenantId, result.roadmap_id, result.autopilot_completed_milestone_id);
+    return {
+      ...result,
+      auto_advance: continuation.auto_advance === true,
+      continuation_state: continuation.continuation_state,
+      next_milestone_id: continuation.next_milestone_id || null,
+      next_mission_id: continuation.next_mission_id || null,
+      next_brain_run_id: continuation.next_brain_run_id || null,
+      checkpoint_id: continuation.checkpoint_id || null
+    };
+  }
   return result;
 }
 
