@@ -502,20 +502,32 @@ function validateRepositoryCleanCheckpoint(checkpoint, { project = {} } = {}) {
   };
 }
 
+function isTrustedCompletedProgramBrainRun(run, tenantId, { milestone = {}, mission = {}, roadmap = {} } = {}) {
+  return (
+    run &&
+    run.tenant_id === tenantId &&
+    run.run_type === 'BRAIN_RUN' &&
+    run.state === 'COMPLETED' &&
+    String(run.autopilot_phase || '').toUpperCase() === 'PROGRAM' &&
+    run.mission_id === mission.id &&
+    (run.roadmap_id || roadmap.id) === roadmap.id &&
+    (run.milestone_id || milestone.id) === milestone.id
+  );
+}
+
 async function resolveTrustedProgramBrainRunId(tx, db, tenantId, { checkpoint = {}, milestone = {}, mission = {}, roadmap = {} } = {}) {
   const direct = clean(checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || '', 300);
-  if (direct) return direct;
+  if (direct) {
+    const directSnap = await tx.get(db.collection('runs').doc(direct));
+    if (directSnap.exists && isTrustedCompletedProgramBrainRun({ id: directSnap.id, ...directSnap.data() }, tenantId, { milestone, mission, roadmap })) {
+      return direct;
+    }
+  }
   const runsSnap = await tx.get(db.collection('runs').where('tenant_id', '==', tenantId).limit(200));
-  const candidates = runsSnap.docs
+  const candidate = runsSnap.docs
     .map((doc) => ({ id: doc.id, ...doc.data() }))
-    .filter((run) => (
-      run.run_type === 'BRAIN_RUN' &&
-      String(run.autopilot_phase || '').toUpperCase() === 'PROGRAM' &&
-      run.mission_id === mission.id &&
-      (run.roadmap_id || roadmap.id) === roadmap.id &&
-      (run.milestone_id || milestone.id) === milestone.id
-    ));
-  return (candidates.find((run) => run.state === 'COMPLETED') || candidates[0] || null)?.id || null;
+    .find((run) => isTrustedCompletedProgramBrainRun(run, tenantId, { milestone, mission, roadmap }));
+  return candidate?.id || null;
 }
 
 async function applyHostValidationResult(db, tenantId, validationId, input = {}) {
@@ -832,6 +844,55 @@ async function applyHostValidationResult(db, tenantId, validationId, input = {})
     });
   }
   return outcome;
+}
+
+async function recoverResolvedProgramHumanActionContinuation(db, tenantId) {
+  let scope = null;
+  await db.runTransaction(async (tx) => {
+    const roadmapsSnap = await tx.get(db.collection('roadmaps').where('tenant_id', '==', tenantId).limit(200));
+    for (const roadmapDoc of roadmapsSnap.docs) {
+      const roadmap = { id: roadmapDoc.id, ...roadmapDoc.data() };
+      for (const milestone of roadmap.milestones || []) {
+        const checkpoint = milestone?.human_action_checkpoint || milestone?.human_action || null;
+        if (!checkpoint || checkpointStatus(checkpoint) !== 'RESOLVED') continue;
+        if (checkpoint.human_action_required !== false) continue;
+        if (checkpoint.continuation_task_id) continue;
+        const resumePhase = clean(checkpoint.paused_from_phase || checkpoint.resume_phase || '', 120).toUpperCase() || 'PROGRAM';
+        if (resumePhase !== 'PROGRAM') continue;
+        if (
+          checkpoint.roadmap_id !== roadmap.id ||
+          checkpoint.milestone_id !== milestone.id ||
+          !checkpoint.mission_id
+        ) continue;
+
+        const missionRef = db.collection('missions').doc(checkpoint.mission_id);
+        const missionSnap = await tx.get(missionRef);
+        if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) continue;
+        const mission = { id: missionSnap.id, ...missionSnap.data() };
+        if (
+          TERMINAL_MISSION_STATES.has(String(mission.state || '').toUpperCase()) ||
+          mission.roadmap_id !== roadmap.id ||
+          mission.milestone_id !== milestone.id ||
+          mission.human_action_required !== false
+        ) continue;
+
+        const brainRunId = await resolveTrustedProgramBrainRunId(tx, db, tenantId, { checkpoint, milestone, mission, roadmap });
+        if (!brainRunId) continue;
+        scope = {
+          mission_id: mission.id,
+          roadmap_id: roadmap.id,
+          milestone_id: milestone.id,
+          brain_run_id: brainRunId,
+          checkpoint_id: checkpoint.checkpoint_id
+        };
+        return;
+      }
+    }
+  });
+
+  if (!scope) return null;
+  const { resumeAutopilotProgramAfterHumanAction } = require('./orchestration');
+  return resumeAutopilotProgramAfterHumanAction(db, tenantId, scope);
 }
 
 function validateHumanActionCheckpoint(checkpoint, { project = {}, mission = {} } = {}) {
@@ -2567,6 +2628,7 @@ module.exports = {
   validateHumanActionCheckpoint,
   repositoryCleanValidator,
   applyHostValidationResult,
+  recoverResolvedProgramHumanActionContinuation,
   confirmHumanActionReady,
   milestoneWithHumanAction,
   failClosedHumanActionReason,

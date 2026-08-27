@@ -12,7 +12,8 @@ const {
   completeVerificationBrainRun,
   normalizeHumanActionCheckpoint,
   unresolvedHumanActionCheckpoint,
-  applyHostValidationResult
+  applyHostValidationResult,
+  recoverResolvedProgramHumanActionContinuation
 } = require('./autopilot');
 
 function getEvidenceBucket() {
@@ -656,6 +657,13 @@ async function claimHostValidationWork(db, tenantId, executorId, executor, allow
         run_id: claimed.run.id
       }, 'OPERATIVE');
       return claimed;
+    }
+  }
+
+  if (options.skipResolvedProgramRecovery !== true) {
+    const recovered = await recoverResolvedProgramHumanActionContinuation(db, tenantId);
+    if (recovered) {
+      return claimNextTask(db, tenantId, executorId, { ...options, skipResolvedProgramRecovery: true });
     }
   }
 
