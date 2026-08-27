@@ -387,6 +387,97 @@ function validateAllowedGitStatusChanges(statusText, allowedFiles = []) {
   return verifyAllowedChanges(statusText, allowedFiles);
 }
 
+function comparableLocalPath(value) {
+  return String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function runGitWorktreeCleanHostValidation(validation, options = {}) {
+  const repositoryPath = String(validation?.repository_path || '').trim();
+  const runnerRepositoryPath = String(options.repositoryPath || cfg.repoPath || '').trim();
+  if (!repositoryPath || !runnerRepositoryPath || comparableLocalPath(repositoryPath) !== comparableLocalPath(runnerRepositoryPath)) {
+    return {
+      success: false,
+      safe_message: 'Host validation repository path is not authorized for this Shadow runner.',
+      diagnostics: { error_code: 'HOST_VALIDATION_REPOSITORY_UNAUTHORIZED' }
+    };
+  }
+
+  const command = resolveGitCommand();
+  if (!command) {
+    return {
+      success: false,
+      safe_message: 'Git command is not available for host-local repository validation.',
+      diagnostics: { error_code: 'GIT_COMMAND_NOT_FOUND' }
+    };
+  }
+
+  const status = getStatus(repositoryPath, command);
+  if (!status.ok) {
+    return {
+      success: false,
+      safe_message: 'Repository worktree status could not be read.',
+      diagnostics: {
+        error_code: 'GIT_STATUS_FAILED',
+        exit_status: status.status ?? null,
+        stderr_tail: String(status.stderr || '').slice(-500)
+      }
+    };
+  }
+
+  const dirty = String(status.stdout || '').trim().length > 0;
+  return {
+    success: !dirty,
+    safe_message: dirty ? 'Repository worktree remains dirty.' : 'Repository worktree is clean.',
+    diagnostics: {
+      porcelain_line_count: dirty ? String(status.stdout || '').split(/\r?\n/).filter(Boolean).length : 0
+    }
+  };
+}
+
+async function completeHostValidationRun(runId, validation, result) {
+  return request(`/api/runner/runs/${encodeURIComponent(runId)}/complete`, {
+    success: result.success === true,
+    summary: result.safe_message,
+    output: {
+      validation_id: validation.id,
+      checkpoint_id: validation.checkpoint_id || null,
+      validator: validation.validator || validation.validation_method || null,
+      status: result.success === true ? 'PASS' : 'FAIL',
+      safe_message: result.safe_message,
+      diagnostics: result.diagnostics || null,
+      validation_result_id: `${runId}:host_validation_result`
+    }
+  });
+}
+
+async function executeHostValidationClaim(claim) {
+  const validation = claim.host_validation || claim.validation || {};
+  const run = claim.run || {};
+  currentRunId = run.id;
+  try {
+    console.log('[SHADOW] HOST_VALIDATION', validation.id, run.id);
+    await progress(run.id, 25, 'Running host-local validation');
+    const validator = String(validation.validator || validation.validation_method || '').toLowerCase();
+    const result = validator === 'git_worktree_clean' || validator === 'repository_clean' || validator === 'repository_worktree_clean' || validator === 'worktree_clean'
+      ? runGitWorktreeCleanHostValidation(validation, { repositoryPath: cfg.repoPath })
+      : {
+          success: false,
+          safe_message: 'Host-local validator is not supported by this Shadow runner.',
+          diagnostics: { error_code: 'HOST_VALIDATION_UNSUPPORTED' }
+        };
+    await progress(run.id, 90, result.safe_message);
+    const completion = await completeHostValidationRun(run.id, validation, result);
+    console.log(
+      result.success ? '[SHADOW] HOST_VALIDATION PASS' : '[SHADOW] HOST_VALIDATION FAIL',
+      validation.id,
+      run.id
+    );
+    return completion;
+  } finally {
+    currentRunId = null;
+  }
+}
+
 
 function validatePreExecutionWorktree({ autopilotPhase, beforeStatus, allowedFiles }) {
   const phase = String(autopilotPhase || '').trim();
@@ -632,6 +723,10 @@ async function executeGitStageClaim(claim, executionRun) {
 }
 
 async function executeClaim(claim) {
+  if (claim?.work_type === 'HOST_VALIDATION' || claim?.run?.run_type === 'HOST_VALIDATION_RUN') {
+    return executeHostValidationClaim(claim);
+  }
+
   const { task, run: executionRun } = claim;
   const codexHandoff = claim.codex_handoff || task.codex_handoff || null;
   const handoffTask = codexHandoff ? { ...task, codex_handoff: codexHandoff } : task;
@@ -829,12 +924,16 @@ async function loop() {
 
         pollFailures = 0;
         if (claim) {
-          console.log(
-            '[SHADOW] claimed',
-            claim.task.id,
-            claim.run.id,
-            claim.run.run_type
-          );
+          if (claim.work_type === 'HOST_VALIDATION' || claim.run?.run_type === 'HOST_VALIDATION_RUN') {
+            console.log('[SHADOW] claimed host validation', claim.host_validation?.id || claim.validation?.id, claim.run.id);
+          } else {
+            console.log(
+              '[SHADOW] claimed',
+              claim.task.id,
+              claim.run.id,
+              claim.run.run_type
+            );
+          }
           await executeClaim(claim);
         } else {
           await sleep(cfg.pollMs);
@@ -872,6 +971,8 @@ module.exports = {
   isRunAlreadyTerminalError,
   workingTreeStatus,
   validateAllowedGitStatusChanges,
+  runGitWorktreeCleanHostValidation,
+  executeHostValidationClaim,
   allowedFilesFromClaim,
   validateAutopilotHandoff,
   validatePreExecutionWorktree,

@@ -76,6 +76,10 @@ function checkpointId(seed) {
   return `human_action_${crypto.createHash('sha256').update(String(seed || '')).digest('hex').slice(0, 24)}`;
 }
 
+function hostValidationId(seed) {
+  return `host_validation_${crypto.createHash('sha256').update(String(seed || '')).digest('hex').slice(0, 24)}`;
+}
+
 function sanitizeMetadata(value) {
   if (!value || typeof value !== 'object') return {};
   const out = {};
@@ -343,26 +347,328 @@ function repositoryCleanValidator(checkpoint) {
   return checkpoint?.repository_clean === true;
 }
 
-function validateRepositoryCleanCheckpoint(checkpoint, { project = {} } = {}) {
+function hostLocalValidator(checkpoint) {
+  return repositoryCleanValidator(checkpoint);
+}
+
+function repositoryPathForHostValidation(checkpoint, project = {}) {
   const metadata = checkpoint?.validation_metadata && typeof checkpoint.validation_metadata === 'object'
     ? checkpoint.validation_metadata
     : {};
-  const repositoryPath = clean(metadata.repository_path || metadata.local_path || localPathFromProject(project), 2000);
-  if (!repositoryPath) return { ok: false, message: 'Project repository local path is not configured.' };
+  return clean(metadata.repository_path || metadata.local_path || localPathFromProject(project), 2000);
+}
 
-  let gitFlow = null;
-  try {
-    gitFlow = require('../../runner/adapters/git-flow');
-  } catch {
-    return { ok: false, message: 'Git status validator is not available for repository-clean validation.' };
+function validatorIdentity(checkpoint) {
+  return validationMethod(checkpoint) || 'unknown_validator';
+}
+
+function hostValidationAttempt(checkpoint) {
+  return Number(checkpoint?.validation_attempt_count || 0) + 1;
+}
+
+function hostValidationSeed({ tenantId, checkpoint, validator, attempt }) {
+  return [
+    tenantId,
+    checkpoint?.roadmap_id,
+    checkpoint?.milestone_id,
+    checkpoint?.mission_id,
+    checkpoint?.checkpoint_id,
+    validator,
+    attempt
+  ].filter(Boolean).join(':');
+}
+
+async function createOrReuseHostValidation(tx, db, tenantId, { roadmap, milestone, mission, checkpoint, project }) {
+  const validator = validatorIdentity(checkpoint);
+  const repositoryPath = repositoryPathForHostValidation(checkpoint, project);
+  const attempt = hostValidationAttempt(checkpoint);
+  const validationRef = db.collection('host_validations').doc(hostValidationId(hostValidationSeed({
+    tenantId,
+    checkpoint,
+    validator,
+    attempt
+  })));
+  const existingSnap = await tx.get(validationRef);
+  if (existingSnap.exists) {
+    const existing = existingSnap.data();
+    if (
+      existing.tenant_id !== tenantId ||
+      existing.checkpoint_id !== checkpoint.checkpoint_id ||
+      existing.roadmap_id !== roadmap.id ||
+      existing.milestone_id !== milestone.id ||
+      existing.mission_id !== mission.id
+    ) {
+      const error = new Error('HOST_VALIDATION_PROVENANCE_INVALID');
+      error.status = 409;
+      throw error;
+    }
+    return { id: validationRef.id, ...existing, reused: true };
   }
-  const command = gitFlow.resolveGitCommand();
-  if (!command) return { ok: false, message: 'Git command is not available for repository-clean validation.' };
-  const status = gitFlow.getStatus(repositoryPath, command);
-  if (!status.ok) return { ok: false, message: 'Repository worktree status could not be read.' };
-  return gitFlow.hasChanges(status.stdout)
-    ? { ok: false, message: 'Repository worktree remains dirty.' }
-    : { ok: true, message: 'Repository worktree is clean.' };
+
+  const validation = {
+    id: validationRef.id,
+    tenant_id: tenantId,
+    workspace_id: mission.workspace_id || roadmap.workspace_id || project.workspace_id || null,
+    project_id: mission.project_id || roadmap.project_id || project.id || null,
+    roadmap_id: roadmap.id,
+    milestone_id: milestone.id,
+    mission_id: mission.id,
+    checkpoint_id: checkpoint.checkpoint_id,
+    validator,
+    validator_type: 'HOST_LOCAL',
+    validation_method: validator,
+    validation_target: 'git_worktree_clean',
+    repository_path: repositoryPath || null,
+    repository_identity: clean(
+      checkpoint.validation_metadata?.repository_identity ||
+      checkpoint.validation_metadata?.repository_full_name ||
+      project.repository_full_name ||
+      project.repository_url ||
+      project.id ||
+      '',
+      1000
+    ) || null,
+    worker_id: mission.preferred_worker_id || project.default_worker_id || 'W01',
+    state: repositoryPath ? 'PENDING' : 'FAILED',
+    status: repositoryPath ? 'PENDING' : 'FAIL',
+    attempt,
+    safe_message: repositoryPath
+      ? 'Host-local repository validation is pending on Shadow.'
+      : 'Project repository local path is not configured.',
+    created_at: timestamp(),
+    updated_at: timestamp()
+  };
+  tx.set(validationRef, validation);
+  return { ...validation, reused: false };
+}
+
+function validateRepositoryCleanCheckpoint(checkpoint, { project = {} } = {}) {
+  const repositoryPath = repositoryPathForHostValidation(checkpoint, project);
+  if (!repositoryPath) return { ok: false, message: 'Project repository local path is not configured.' };
+  return {
+    ok: false,
+    host_local: true,
+    message: 'Repository-clean validation must run on the authorized Shadow host.'
+  };
+}
+
+async function applyHostValidationResult(db, tenantId, validationId, input = {}) {
+  const validationRef = db.collection('host_validations').doc(validationId);
+  let outcome = null;
+
+  await db.runTransaction(async (tx) => {
+    const validationSnap = await tx.get(validationRef);
+    if (!validationSnap.exists || validationSnap.data().tenant_id !== tenantId) {
+      const error = new Error('HOST_VALIDATION_NOT_FOUND');
+      error.status = 404;
+      throw error;
+    }
+    const validation = { id: validationSnap.id, ...validationSnap.data() };
+    const resultToken = clean(input.result_id || input.validation_result_id || input.output?.validation_result_id || input.output?.result_id || validation.run_id || '', 300);
+    const reportedValidationId = clean(input.output?.validation_id || input.validation_id || '', 300);
+    const reportedCheckpointId = clean(input.output?.checkpoint_id || input.checkpoint_id || '', 300);
+    const reportedValidator = clean(input.output?.validator || input.validator || '', 300).toLowerCase().replace(/[\s-]+/g, '_');
+    if (reportedValidationId && reportedValidationId !== validation.id) {
+      const error = new Error('HOST_VALIDATION_RESULT_ID_MISMATCH');
+      error.status = 409;
+      throw error;
+    }
+    if (reportedCheckpointId && reportedCheckpointId !== validation.checkpoint_id) {
+      const error = new Error('HOST_VALIDATION_RESULT_CHECKPOINT_MISMATCH');
+      error.status = 409;
+      throw error;
+    }
+    if (reportedValidator && reportedValidator !== validation.validator) {
+      const error = new Error('HOST_VALIDATION_RESULT_VALIDATOR_MISMATCH');
+      error.status = 409;
+      throw error;
+    }
+    if (['PASS', 'FAIL'].includes(String(validation.status || '').toUpperCase())) {
+      outcome = {
+        resumed: validation.status === 'PASS',
+        reused: true,
+        no_new_work: true,
+        state: validation.status,
+        roadmap_id: validation.roadmap_id,
+        milestone_id: validation.milestone_id,
+        mission_id: validation.mission_id,
+        checkpoint_id: validation.checkpoint_id,
+        validation_id: validation.id,
+        message: validation.safe_message || 'Host validation result was already applied.'
+      };
+      return;
+    }
+
+    const status = input.success === true ? 'PASS' : 'FAIL';
+    const safeMessage = clean(input.summary || input.output?.safe_message || input.output?.message || (status === 'PASS' ? 'Repository worktree is clean.' : 'Repository worktree remains dirty.'), 1000);
+    const boundedDiagnostics = input.output?.diagnostics && typeof input.output.diagnostics === 'object'
+      ? sanitizeAuditValue(input.output.diagnostics, 0)
+      : null;
+
+    const roadmapRef = db.collection('roadmaps').doc(validation.roadmap_id);
+    const missionRef = db.collection('missions').doc(validation.mission_id);
+    const runRef = validation.run_id ? db.collection('runs').doc(validation.run_id) : null;
+    const executorRef = validation.executor_id ? db.collection('executors').doc(validation.executor_id) : null;
+    const [roadmapSnap, missionSnap, runSnap] = await Promise.all([
+      tx.get(roadmapRef),
+      tx.get(missionRef),
+      runRef ? tx.get(runRef) : Promise.resolve(null)
+    ]);
+    if (!roadmapSnap.exists || roadmapSnap.data().tenant_id !== tenantId) {
+      const error = new Error('ROADMAP_NOT_FOUND');
+      error.status = 404;
+      throw error;
+    }
+    if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+      const error = new Error('MISSION_NOT_FOUND');
+      error.status = 404;
+      throw error;
+    }
+    if (runRef && (!runSnap.exists || runSnap.data().tenant_id !== tenantId || runSnap.data().state !== 'RUNNING')) {
+      const error = new Error('HOST_VALIDATION_RUN_NOT_ACTIVE');
+      error.status = 409;
+      throw error;
+    }
+
+    const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
+    const mission = { id: missionSnap.id, ...missionSnap.data() };
+    const milestone = (roadmap.milestones || []).find((item) => item.id === validation.milestone_id);
+    const checkpoint = milestone?.human_action_checkpoint || milestone?.human_action || null;
+    if (
+      !milestone ||
+      !checkpoint ||
+      checkpoint.checkpoint_id !== validation.checkpoint_id ||
+      checkpoint.roadmap_id !== roadmap.id ||
+      checkpoint.milestone_id !== milestone.id ||
+      checkpoint.mission_id !== mission.id ||
+      mission.roadmap_id !== roadmap.id ||
+      mission.milestone_id !== milestone.id
+    ) {
+      const error = new Error('HOST_VALIDATION_CHECKPOINT_PROVENANCE_INVALID');
+      error.status = 409;
+      throw error;
+    }
+    const checkpointState = checkpointStatus(checkpoint);
+    if (!['WAITING_FOR_HUMAN', 'NEED_HUMAN_ACTION'].includes(checkpointState)) {
+      outcome = {
+        resumed: checkpointState === 'RESOLVED',
+        reused: true,
+        no_new_work: true,
+        state: checkpointState || 'UNKNOWN',
+        roadmap_id: roadmap.id,
+        milestone_id: milestone.id,
+        mission_id: mission.id,
+        checkpoint_id: checkpoint.checkpoint_id,
+        validation_id: validation.id,
+        message: 'Host validation result was replayed after checkpoint state changed.'
+      };
+      return;
+    }
+
+    const now = milestoneTimestamp();
+    tx.set(validationRef, {
+      state: status,
+      status,
+      result_id: resultToken || validation.result_id || null,
+      safe_message: safeMessage,
+      diagnostics: boundedDiagnostics,
+      completed_at: timestamp(),
+      updated_at: timestamp()
+    }, { merge: true });
+
+    if (runRef) {
+      tx.set(runRef, {
+        state: status === 'PASS' ? 'COMPLETED' : 'FAILED',
+        progress_percent: 100,
+        progress_message: safeMessage,
+        error: status === 'PASS' ? null : safeMessage,
+        completed_at: timestamp(),
+        updated_at: timestamp()
+      }, { merge: true });
+    }
+    if (executorRef) {
+      tx.set(executorRef, {
+        state: 'ONLINE',
+        current_run_id: null,
+        last_heartbeat_at: timestamp(),
+        updated_at: timestamp()
+      }, { merge: true });
+    }
+
+    if (status === 'PASS') {
+      const updatedCheckpoint = resolvedCheckpoint(checkpoint, { ok: true, message: safeMessage }, now);
+      const brainRunId = checkpoint.brain_run_id || milestone.brain_run_id || mission.brain_run_id || null;
+      tx.set(roadmapRef, {
+        milestones: milestoneWithState(roadmap, milestone.id, 'NEED_HUMAN_ACTION', {
+          mission_id: mission.id,
+          brain_run_id: milestone.brain_run_id || mission.brain_run_id || null,
+          verification_brain_run_id: milestone.verification_brain_run_id || mission.verification_brain_run_id || null,
+          human_action_required: false,
+          human_action_checkpoint: updatedCheckpoint,
+          waiting_status: 'RESOLVED',
+          blocked_reason: null
+        }),
+        updated_at: timestamp()
+      }, { merge: true });
+      tx.set(missionRef, {
+        state: 'NEED_HUMAN_ACTION',
+        autopilot_phase: 'NEED_HUMAN_ACTION',
+        human_action_required: false,
+        human_action_checkpoint: updatedCheckpoint,
+        updated_at: timestamp()
+      }, { merge: true });
+      outcome = {
+        resumed: false,
+        state: 'RESOLVED',
+        roadmap_id: roadmap.id,
+        milestone_id: milestone.id,
+        mission_id: mission.id,
+        brain_run_id: brainRunId,
+        checkpoint_id: checkpoint.checkpoint_id,
+        validation_id: validation.id,
+        resume_phase: clean(checkpoint.paused_from_phase || checkpoint.resume_phase || mission.paused_from_phase || 'PROGRAM', 120).toUpperCase() || 'PROGRAM',
+        message: safeMessage
+      };
+      return;
+    }
+
+    const updatedCheckpoint = unresolvedValidatedCheckpoint(checkpoint, { ok: false, message: safeMessage }, now);
+    tx.set(roadmapRef, {
+      milestones: milestoneWithHumanAction(roadmap, milestone.id, updatedCheckpoint),
+      updated_at: timestamp()
+    }, { merge: true });
+    tx.set(missionRef, {
+      state: 'NEED_HUMAN_ACTION',
+      autopilot_phase: 'NEED_HUMAN_ACTION',
+      human_action_required: true,
+      human_action_checkpoint: updatedCheckpoint,
+      blocker_code: updatedCheckpoint.blocker_code,
+      blocker_message: updatedCheckpoint.human_action_request,
+      updated_at: timestamp()
+    }, { merge: true });
+    outcome = {
+      resumed: false,
+      state: 'NEED_HUMAN_ACTION',
+      roadmap_id: roadmap.id,
+      milestone_id: milestone.id,
+      mission_id: mission.id,
+      checkpoint_id: checkpoint.checkpoint_id,
+      validation_id: validation.id,
+      message: safeMessage
+    };
+  });
+
+  if (outcome?.state === 'RESOLVED' && outcome?.brain_run_id && outcome?.resume_phase === 'PROGRAM') {
+    const { resumeAutopilotProgramAfterHumanAction } = require('./orchestration');
+    return resumeAutopilotProgramAfterHumanAction(db, tenantId, {
+      mission_id: outcome.mission_id,
+      roadmap_id: outcome.roadmap_id,
+      milestone_id: outcome.milestone_id,
+      brain_run_id: outcome.brain_run_id,
+      checkpoint_id: outcome.checkpoint_id
+    });
+  }
+  return outcome;
 }
 
 function validateHumanActionCheckpoint(checkpoint, { project = {}, mission = {} } = {}) {
@@ -1967,8 +2273,25 @@ async function confirmHumanActionReady(db, tenantId, roadmapId, checkpointId, in
       throw error;
     }
 
-    const validation = validateHumanActionCheckpoint(checkpoint, { project, mission });
     const now = milestoneTimestamp();
+    if (hostLocalValidator(checkpoint)) {
+      const validation = await createOrReuseHostValidation(tx, db, tenantId, { roadmap, milestone, mission, checkpoint, project });
+      outcome = {
+        resumed: false,
+        state: 'HOST_VALIDATION_PENDING',
+        roadmap_id: roadmap.id,
+        milestone_id: milestone.id,
+        mission_id: mission.id,
+        checkpoint_id: checkpointId,
+        validation_id: validation.id,
+        host_validation_id: validation.id,
+        reused: validation.reused === true,
+        message: validation.safe_message
+      };
+      return;
+    }
+
+    const validation = validateHumanActionCheckpoint(checkpoint, { project, mission });
     if (!validation.ok) {
       const updatedCheckpoint = unresolvedValidatedCheckpoint(checkpoint, validation, now);
       tx.set(roadmapRef, {
@@ -2060,6 +2383,8 @@ module.exports = {
   normalizeHumanActionCheckpoint,
   unresolvedHumanActionCheckpoint,
   validateHumanActionCheckpoint,
+  repositoryCleanValidator,
+  applyHostValidationResult,
   confirmHumanActionReady,
   milestoneWithHumanAction,
   failClosedHumanActionReason,

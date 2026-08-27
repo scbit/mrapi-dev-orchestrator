@@ -184,8 +184,8 @@ test('explicit external, manual, and manual deploy prerequisites persist structu
   }
 });
 
-test('repository-clean Human Action preflight persists validator shape consumed by LISTO', async () => {
-  const db = new DB(); seedProgram(db, { project: { local_path: 'C:/repo' } });
+test('repository-clean Human Action preflight persists trusted host validation metadata', async () => {
+  const db = new DB(); seedProgram(db, { project: { local_path: 'C:/trusted/repo', repository_full_name: 'org/repo' } });
   const out = await completeBrainRun(db, 'tenant_a', 'brain_a', {
     output_text: programOutput({
       preflight: [{
@@ -194,16 +194,18 @@ test('repository-clean Human Action preflight persists validator shape consumed 
         human_action_request: 'Clean the repository worktree before continuing.',
         user_action: 'Remove or commit local changes, then press LISTO.',
         action_location: 'project.runtime_context.repository_path',
-        validation_method: 'repository_clean',
-        validation_metadata: { repository_path: 'C:/repo' }
+        validation_method: 'git_worktree_clean',
+        validation_metadata: { repository_path: 'C:/untrusted/request-path', repository_full_name: 'untrusted/repo' }
       }]
     })
   });
   assert.equal(out.action, 'NEED_HUMAN_ACTION');
   assert.equal(values(db, 'tasks').length, 0);
   assert.equal(checkpoint(db).requirement_type, 'MANUAL_HUMAN');
-  assert.equal(checkpoint(db).validation_method, 'repository_clean');
-  assert.equal(checkpoint(db).validation_metadata.repository_path, 'C:/repo');
+  assert.equal(checkpoint(db).validation_method, 'git_worktree_clean');
+  assert.equal(checkpoint(db).validation_metadata.repository_path, 'C:/trusted/repo');
+  assert.equal(checkpoint(db).validation_metadata.repository_identity, 'org/repo');
+  assert.equal(JSON.stringify(checkpoint(db)).includes('C:/untrusted/request-path'), false);
 });
 
 test('repeat unresolved preflight reuses checkpoint and creates no duplicate work', async () => {

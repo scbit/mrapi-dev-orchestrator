@@ -11,7 +11,8 @@ const {
   queueVerificationBrainRun,
   completeVerificationBrainRun,
   normalizeHumanActionCheckpoint,
-  unresolvedHumanActionCheckpoint
+  unresolvedHumanActionCheckpoint,
+  applyHostValidationResult
 } = require('./autopilot');
 
 function getEvidenceBucket() {
@@ -534,6 +535,133 @@ function isClaimCandidateError(error) {
     ].includes(error?.message);
 }
 
+function comparableLocalPath(value) {
+  return String(value || '').trim().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+async function claimHostValidationWork(db, tenantId, executorId, executor, allowedWorkerIds, options = {}) {
+  const validationsSnap = await db.collection('host_validations')
+    .where('tenant_id', '==', tenantId)
+    .limit(200)
+    .get();
+  const runnerPath = comparableLocalPath(options.repository_path || options.repositoryPath || process.env.MRAPI_REPO_PATH || '');
+  const candidates = validationsSnap.docs
+    .map((doc) => ({ id: doc.id, ...doc.data() }))
+    .filter((item) => ['PENDING'].includes(String(item.state || '').toUpperCase()))
+    .filter((item) => String(item.validator_type || '').toUpperCase() === 'HOST_LOCAL')
+    .filter((item) => allowedWorkerIds.length === 0 || allowedWorkerIds.includes(item.worker_id))
+    .filter((item) => runnerPath && comparableLocalPath(item.repository_path) === runnerPath)
+    .sort((a, b) => (a.created_at?.toMillis?.() || 0) - (b.created_at?.toMillis?.() || 0));
+
+  for (const candidate of candidates) {
+    const validationRef = db.collection('host_validations').doc(candidate.id);
+    const runRef = db.collection('runs').doc();
+    let claimed = null;
+
+    try {
+      await db.runTransaction(async (tx) => {
+        const validationSnap = await tx.get(validationRef);
+        if (!validationSnap.exists || validationSnap.data().tenant_id !== tenantId) {
+          const error = new Error('HOST_VALIDATION_NOT_FOUND');
+          error.retryCandidate = true;
+          throw error;
+        }
+        const validation = validationSnap.data();
+        if (String(validation.state || '').toUpperCase() !== 'PENDING') {
+          const error = new Error('HOST_VALIDATION_ALREADY_CLAIMED');
+          error.retryCandidate = true;
+          throw error;
+        }
+        if (!runnerPath || comparableLocalPath(validation.repository_path) !== runnerPath) {
+          const error = new Error('HOST_VALIDATION_REPOSITORY_UNAUTHORIZED');
+          error.retryCandidate = true;
+          throw error;
+        }
+
+        tx.set(validationRef, {
+          state: 'RUNNING',
+          status: 'RUNNING',
+          executor_id: executorId,
+          run_id: runRef.id,
+          claimed_at: timestamp(),
+          updated_at: timestamp()
+        }, { merge: true });
+
+        tx.set(runRef, {
+          id: runRef.id,
+          tenant_id: tenantId,
+          run_type: 'HOST_VALIDATION_RUN',
+          host_validation_id: candidate.id,
+          mission_id: validation.mission_id || null,
+          task_id: null,
+          workspace_id: validation.workspace_id || null,
+          project_id: validation.project_id || null,
+          worker_id: validation.worker_id || null,
+          executor_id: executorId,
+          host_name: executor.host_name || null,
+          roadmap_id: validation.roadmap_id || null,
+          milestone_id: validation.milestone_id || null,
+          checkpoint_id: validation.checkpoint_id || null,
+          validator: validation.validator || null,
+          repository_path: validation.repository_path || null,
+          state: 'RUNNING',
+          progress_percent: 0,
+          progress_message: 'Host-local validation claimed by Shadow',
+          started_at: timestamp(),
+          created_at: timestamp(),
+          updated_at: timestamp()
+        });
+
+        tx.set(db.collection('executors').doc(executorId), {
+          state: 'ONLINE',
+          current_run_id: runRef.id,
+          last_heartbeat_at: timestamp(),
+          updated_at: timestamp()
+        }, { merge: true });
+
+        claimed = {
+          work_type: 'HOST_VALIDATION',
+          host_validation: {
+            ...candidate,
+            state: 'RUNNING',
+            status: 'RUNNING',
+            executor_id: executorId,
+            run_id: runRef.id
+          },
+          validation: {
+            ...candidate,
+            state: 'RUNNING',
+            status: 'RUNNING',
+            executor_id: executorId,
+            run_id: runRef.id
+          },
+          run: {
+            id: runRef.id,
+            run_type: 'HOST_VALIDATION_RUN',
+            state: 'RUNNING',
+            host_validation_id: candidate.id
+          }
+        };
+      });
+    } catch (error) {
+      if (isClaimCandidateError(error)) continue;
+      throw error;
+    }
+
+    if (claimed) {
+      await emitEvent(db, tenantId, 'HOST_VALIDATION_CLAIMED', {
+        host_validation_id: candidate.id,
+        checkpoint_id: candidate.checkpoint_id || null,
+        executor_id: executorId,
+        run_id: claimed.run.id
+      }, 'OPERATIVE');
+      return claimed;
+    }
+  }
+
+  return null;
+}
+
 async function claimNextTask(db, tenantId, executorId, options = {}) {
   const executorRef = db.collection('executors').doc(executorId);
   const executorSnap = await executorRef.get();
@@ -546,6 +674,9 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
 
   const executor = executorSnap.data();
   const allowedWorkerIds = normalizeWorkerIds(executor.worker_ids);
+  const hostValidation = await claimHostValidationWork(db, tenantId, executorId, executor, allowedWorkerIds, options);
+  if (hostValidation) return hostValidation;
+
   const taskSnap = await db.collection('tasks')
     .where('tenant_id', '==', tenantId)
     .limit(200)
@@ -1090,6 +1221,14 @@ function localPathFromProject(project = {}) {
   return String(runtime.repository_path || runtime.local_path || project.repository_path || project.local_path || '').trim();
 }
 
+function normalizedValidationMethod(value) {
+  return String(value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function isRepositoryCleanValidation(value) {
+  return ['repository_clean', 'repository_worktree_clean', 'worktree_clean', 'git_worktree_clean'].includes(normalizedValidationMethod(value));
+}
+
 function structuredPreflightSources({ brainOutput, mission, milestone, project }) {
   const taskSpec = brainOutput?.task_spec && typeof brainOutput.task_spec === 'object' ? brainOutput.task_spec : {};
   return {
@@ -1218,6 +1357,14 @@ function deterministicProgramPreflight({ tenantId, brainOutput, mission, run, ro
       });
     }
     if (['EXTERNAL_ACCESS', 'MANUAL_HUMAN', 'MANUAL_DEPLOY'].includes(type)) {
+      const validationMethod = cleanPreflightText(prerequisite.validation_method || 'manual_confirmation');
+      const validationMetadata = isRepositoryCleanValidation(validationMethod)
+        ? {
+            ...sanitizePreflightMetadata(prerequisite.validation_metadata || {}),
+            repository_path: localPathFromProject(project) || null,
+            repository_identity: project?.repository_full_name || project?.repository_url || project?.id || null
+          }
+        : sanitizePreflightMetadata(prerequisite.validation_metadata || { name: prerequisite.name || null });
       return checkpointForMissingPreflight({
         tenantId, mission, run, roadmap, milestone, project,
         blocker: {
@@ -1226,8 +1373,8 @@ function deterministicProgramPreflight({ tenantId, brainOutput, mission, run, ro
           human_action_request: cleanPreflightText(prerequisite.human_action_request || prerequisite.request || `${type} prerequisite must be completed by a human.`),
           user_action: cleanPreflightText(prerequisite.user_action || 'Complete the declared prerequisite, then retry this milestone.'),
           action_location: cleanPreflightText(prerequisite.action_location || prerequisite.location || 'external'),
-          validation_method: cleanPreflightText(prerequisite.validation_method || 'manual_confirmation'),
-          validation_metadata: sanitizePreflightMetadata(prerequisite.validation_metadata || { name: prerequisite.name || null }),
+          validation_method: validationMethod,
+          validation_metadata: validationMetadata,
           reason: cleanPreflightText(prerequisite.reason || `${type} prerequisite is required.`),
           requirement_key: `${type}:${prerequisite.name || prerequisite.action_location || prerequisite.human_action_request || ''}`
         }
@@ -3014,6 +3161,14 @@ async function markTaskWaiting(db, tenantId, taskId, message, handoff = null) {
 
 async function completeRun(db, tenantId, runId, input) {
   const runRef = db.collection('runs').doc(runId);
+  const existingRunSnap = await runRef.get();
+  if (existingRunSnap.exists && existingRunSnap.data().tenant_id === tenantId && existingRunSnap.data().run_type === 'HOST_VALIDATION_RUN') {
+    const run = existingRunSnap.data();
+    return applyHostValidationResult(db, tenantId, run.host_validation_id, {
+      ...input,
+      result_id: input?.output?.validation_result_id || input?.output?.result_id || runId
+    });
+  }
 
   let result;
 
@@ -3551,6 +3706,7 @@ module.exports = {
   registerExecutor,
   heartbeatExecutor,
   claimNextTask,
+  claimHostValidationWork,
   updateRunProgress,
   completeBrainRun,
   startExecutionRun,
