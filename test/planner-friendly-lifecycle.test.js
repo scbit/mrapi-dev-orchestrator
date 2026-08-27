@@ -2,6 +2,103 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const Module = require('node:module');
+const {
+  createPlannerRequest,
+  completePlannerBrainRun,
+  getPlannerProposal,
+  listRecentPlannerRequests
+} = require('../src/services/planner');
+
+class Snap {
+  constructor(id, data, ref = null) {
+    this.id = id;
+    this._data = data;
+    this.ref = ref;
+    this.exists = Boolean(data);
+  }
+  data() { return this._data ? { ...this._data } : undefined; }
+}
+
+class QuerySnap {
+  constructor(docs) {
+    this.docs = docs;
+    this.empty = docs.length === 0;
+  }
+}
+
+class Doc {
+  constructor(db, c, id) {
+    this.db = db;
+    this.c = c;
+    this.collectionName = c;
+    this.id = id || db.next(c);
+  }
+  async get() { return new Snap(this.id, this.db.get(this.c, this.id), this); }
+}
+
+class Query {
+  constructor(db, c, filters = [], max = null) {
+    this.db = db;
+    this.c = c;
+    this.collectionName = c;
+    this.filters = filters;
+    this.max = max;
+  }
+  where(field, op, value) {
+    assert.equal(op, '==');
+    return new Query(this.db, this.c, [...this.filters, { field, value }], this.max);
+  }
+  limit(max) { return new Query(this.db, this.c, this.filters, max); }
+  orderBy() { return this; }
+  async get() {
+    let docs = Object.entries(this.db.collections[this.c] || {})
+      .filter(([, d]) => this.filters.every((f) => d[f.field] === f.value))
+      .map(([id, d]) => new Snap(id, d, new Doc(this.db, this.c, id)));
+    if (this.max !== null) docs = docs.slice(0, this.max);
+    return new QuerySnap(docs);
+  }
+}
+
+class Coll extends Query {
+  doc(id) { return new Doc(this.db, this.c, id); }
+}
+
+class Tx {
+  constructor() { this.hasWritten = false; }
+  async get(x) {
+    if (this.hasWritten) throw new Error('FIRESTORE_READ_AFTER_WRITE');
+    return x.get();
+  }
+  set(ref, d, o) {
+    this.hasWritten = true;
+    ref.db.set(ref.c || ref.collectionName, ref.id, d, o);
+  }
+}
+
+class DB {
+  constructor() {
+    this.collections = {};
+    this.n = {};
+  }
+  collection(c) {
+    if (!this.collections[c]) this.collections[c] = {};
+    return new Coll(this, c);
+  }
+  next(c) {
+    this.n[c] = (this.n[c] || 0) + 1;
+    return `${c}_${this.n[c]}`;
+  }
+  get(c, id) { return this.collections[c]?.[id] || null; }
+  set(c, id, d, o = {}) {
+    if (!this.collections[c]) this.collections[c] = {};
+    this.collections[c][id] = o.merge ? { ...(this.collections[c][id] || {}), ...d } : { ...d };
+  }
+  async runTransaction(fn) { return fn(new Tx()); }
+}
+
+function values(db, c) {
+  return Object.values(db.collections[c] || {});
+}
 
 function createMiniExpress() {
   function Router() {
@@ -162,6 +259,48 @@ function proposal(overrides = {}) {
   };
 }
 
+function serviceProposal(overrides = {}) {
+  return {
+    title: 'SCB Friendly Lifecycle',
+    objective: 'Read canonical metadata for display.',
+    summary: 'Structured metadata is available without lifecycle side effects.',
+    risks: [],
+    dependencies: [],
+    assumptions: [],
+    auto_advance: true,
+    expected_human_actions: [{
+      milestone_id: 'm2',
+      human_action_request: 'Confirm SCB readiness.',
+      user_action: 'Confirm readiness.',
+      action_location: 'Planner review',
+      validation_method: 'manual_confirmation'
+    }],
+    milestones: [
+      {
+        id: 'm1',
+        title: 'Plan',
+        objective: 'Plan safely.',
+        description: 'Plain text.',
+        executor_required: false,
+        dependencies: [],
+        risks: [],
+        success_criteria: ['Plan exists.']
+      },
+      {
+        id: 'm2',
+        title: 'Confirm',
+        objective: 'Confirm safely.',
+        description: 'Plain text.',
+        executor_required: false,
+        dependencies: ['m1'],
+        risks: [],
+        success_criteria: ['Confirmation is represented.']
+      }
+    ],
+    ...overrides
+  };
+}
+
 function visibleActions(planner) {
   return {
     approve: !planner.els.approve.classList.contains('hidden'),
@@ -204,6 +343,40 @@ test('primary roadmap lifecycle labels are deterministic and preserve action gat
     planner.renderProposal(proposal({ state, approval_status: state === 'BLOCKED' ? 'PENDING' : 'APPROVED' }));
     assert.deepEqual(visibleActions(planner), { approve: false, requestChanges: false, start: false }, state);
   }
+});
+
+test('canonical Planner read-back resolves SCB scope while remaining proposed and non-executing', async () => {
+  const db = new DB();
+  db.set('workspaces', 'workspace_scb', { id: 'workspace_scb', tenant_id: 'tenant_facundo_group', name: 'SCB' });
+  db.set('projects', 'project_scb_development', {
+    id: 'project_scb_development',
+    tenant_id: 'tenant_facundo_group',
+    workspace_id: 'workspace_scb',
+    name: 'SCB Development'
+  });
+
+  const request = await createPlannerRequest(db, 'tenant_facundo_group', {
+    workspace_id: 'workspace_scb',
+    project_id: 'project_scb_development',
+    request: 'Create SCB proposal.',
+    auto_advance: true
+  });
+  const created = await completePlannerBrainRun(db, 'tenant_facundo_group', request.brain_run_id, {
+    proposal: serviceProposal()
+  });
+  const readBack = await getPlannerProposal(db, 'tenant_facundo_group', created.roadmap_id);
+  const history = await listRecentPlannerRequests(db, 'tenant_facundo_group', { limit: 10 });
+
+  assert.equal(readBack.workspace_id, 'workspace_scb');
+  assert.equal(readBack.project_id, 'project_scb_development');
+  assert.equal(history.items[0].workspace_name, 'SCB');
+  assert.equal(history.items[0].project_name, 'SCB Development');
+  assert.equal(readBack.auto_advance, true);
+  assert.equal(readBack.expected_human_actions.length, 1);
+  assert.equal(readBack.state, 'PROPOSED');
+  assert.equal(readBack.approval_status, 'PENDING');
+  assert.equal(values(db, 'tasks').length, 0);
+  assert.equal(values(db, 'runs').filter((run) => run.run_type === 'EXECUTION_RUN').length, 0);
 });
 
 test('milestone labels use explicit evidence without inferring human action from executor_required false', async () => {

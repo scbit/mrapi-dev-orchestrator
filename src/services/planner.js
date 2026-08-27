@@ -45,6 +45,66 @@ function stringArray(value, fieldName) {
   });
 }
 
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object || {}, key);
+}
+
+function explicitBoolean(object, key) {
+  return hasOwn(object, key) && typeof object[key] === 'boolean' ? object[key] : undefined;
+}
+
+function normalizeExpectedHumanActions(value, milestoneIds) {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    const error = new Error('PLANNER_PROPOSAL_EXPECTED_HUMAN_ACTIONS_MUST_BE_ARRAY');
+    error.status = 400;
+    throw error;
+  }
+
+  const seen = new Set();
+  const actions = [];
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      const error = new Error('PLANNER_PROPOSAL_EXPECTED_HUMAN_ACTION_OBJECT_REQUIRED');
+      error.status = 400;
+      throw error;
+    }
+    const milestoneId = requiredText(item.milestone_id, 'PLANNER_PROPOSAL_EXPECTED_HUMAN_ACTION_MILESTONE_ID', 160);
+    if (!milestoneIds.has(milestoneId)) {
+      const error = new Error('PLANNER_PROPOSAL_EXPECTED_HUMAN_ACTION_UNKNOWN_MILESTONE');
+      error.status = 400;
+      throw error;
+    }
+    const action = {
+      milestone_id: milestoneId,
+      human_action_required: true
+    };
+    const humanActionRequest = cleanText(item.human_action_request, 2000);
+    const userAction = cleanText(item.user_action, 2000);
+    const actionLocation = cleanText(item.action_location, 1000);
+    const validationMethod = cleanText(item.validation_method, 1000);
+    const requirementType = cleanText(item.requirement_type, 160);
+    if (humanActionRequest) action.human_action_request = humanActionRequest;
+    if (userAction) action.user_action = userAction;
+    if (actionLocation) action.action_location = actionLocation;
+    if (validationMethod) action.validation_method = validationMethod;
+    if (requirementType) action.requirement_type = requirementType;
+
+    const key = [
+      action.milestone_id,
+      action.human_action_request || '',
+      action.user_action || '',
+      action.action_location || '',
+      action.validation_method || '',
+      action.requirement_type || ''
+    ].join('\u0000');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    actions.push(action);
+  }
+  return actions;
+}
+
 function findFirstJsonObject(source) {
   const text = String(source || '');
   const start = text.indexOf('{');
@@ -188,7 +248,7 @@ function validateStoredPlannerRoadmap(roadmap) {
   validateAcyclic(milestones);
 }
 
-function validateProposal(rawProposal) {
+function validateProposal(rawProposal, options = {}) {
   if (!rawProposal || typeof rawProposal !== 'object' || Array.isArray(rawProposal)) {
     const error = new Error('PLANNER_PROPOSAL_OBJECT_REQUIRED');
     error.status = 400;
@@ -267,7 +327,7 @@ function validateProposal(rawProposal) {
   }
   validateAcyclic(milestones);
 
-  return {
+  const normalized = {
     title,
     objective,
     summary,
@@ -277,9 +337,18 @@ function validateProposal(rawProposal) {
     state: 'PROPOSED',
     approval_status: 'PENDING',
     approved_at: null,
-    auto_advance: false,
     milestones
   };
+  const trustedAutoAdvance = explicitBoolean(options, 'auto_advance');
+  const proposalAutoAdvance = explicitBoolean(proposal, 'auto_advance');
+  if (trustedAutoAdvance !== undefined) {
+    normalized.auto_advance = trustedAutoAdvance;
+  } else if (proposalAutoAdvance !== undefined) {
+    normalized.auto_advance = proposalAutoAdvance;
+  }
+  const expectedHumanActions = normalizeExpectedHumanActions(proposal.expected_human_actions, seen);
+  if (expectedHumanActions !== undefined) normalized.expected_human_actions = expectedHumanActions;
+  return normalized;
 }
 
 function trustedProjectContext(project) {
@@ -328,6 +397,12 @@ function proposalHistorySnapshot(roadmap) {
   return {
     roadmap_id: roadmap.id || null,
     revision_number: Number(roadmap.revision_number || 1),
+    tenant_id: roadmap.tenant_id || null,
+    workspace_id: roadmap.workspace_id || null,
+    project_id: roadmap.project_id || null,
+    proposal_type: roadmap.proposal_type || null,
+    auto_advance: roadmap.auto_advance === true,
+    expected_human_actions: Array.isArray(roadmap.expected_human_actions) ? roadmap.expected_human_actions : [],
     title: roadmap.title,
     objective: roadmap.objective,
     summary: roadmap.summary || '',
@@ -375,6 +450,10 @@ function responseShape(roadmap) {
   return {
     roadmap_id: roadmap.id,
     proposal_id: roadmap.id,
+    tenant_id: roadmap.tenant_id || null,
+    workspace_id: roadmap.workspace_id || null,
+    project_id: roadmap.project_id || null,
+    proposal_type: roadmap.proposal_type || null,
     state: roadmap.state,
     approval_status: roadmap.approval_status || null,
     approved_at: roadmap.approved_at || null,
@@ -387,6 +466,7 @@ function responseShape(roadmap) {
     risks: roadmap.risks || [],
     dependencies: roadmap.dependencies || [],
     assumptions: roadmap.assumptions || [],
+    expected_human_actions: Array.isArray(roadmap.expected_human_actions) ? roadmap.expected_human_actions : [],
     request_id: roadmap.planner_request_id || null,
     planner_request_id: roadmap.planner_request_id || null,
     mission_id: roadmap.source_planner_mission_id || null,
@@ -548,6 +628,8 @@ async function createPlannerRequest(db, tenantId, input = {}) {
     const workspace = { id: workspaceSnap.id, ...workspaceSnap.data() };
     const project = { id: projectSnap.id, ...projectSnap.data() };
     const brainContext = plannerBrainContext({ tenantId, workspace, project, request });
+    const requestedAutoAdvance = explicitBoolean(input, 'auto_advance');
+    if (requestedAutoAdvance !== undefined) brainContext.auto_advance = requestedAutoAdvance;
     const workerId = (project.primary_worker_ids || [])[0] || project.default_worker_id || 'W01';
     const objective = [
       'PLANNER ROADMAP REQUEST',
@@ -579,6 +661,7 @@ async function createPlannerRequest(db, tenantId, input = {}) {
       created_at: timestamp(),
       updated_at: timestamp()
     };
+    if (requestedAutoAdvance !== undefined) mission.auto_advance = requestedAutoAdvance;
 
     const run = {
       id: runRef.id,
@@ -604,6 +687,7 @@ async function createPlannerRequest(db, tenantId, input = {}) {
       created_at: timestamp(),
       updated_at: timestamp()
     };
+    if (requestedAutoAdvance !== undefined) run.auto_advance = requestedAutoAdvance;
 
     tx.set(missionRef, mission);
     tx.set(runRef, run);
@@ -918,7 +1002,9 @@ async function completePlannerBrainRun(db, tenantId, runId, input = {}) {
 
   let parsedProposal;
   try {
-    parsedProposal = validateProposal(parseProposal(input));
+    parsedProposal = validateProposal(parseProposal(input), {
+      auto_advance: explicitBoolean(runData, 'auto_advance')
+    });
   } catch (error) {
     await db.runTransaction(async (tx) => {
       const runSnap = await tx.get(runRef);

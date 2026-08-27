@@ -4,8 +4,122 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const Module = require('node:module');
+const {
+  createPlannerRequest,
+  completePlannerBrainRun,
+  getPlannerProposal,
+  requestPlannerRoadmapChanges
+} = require('../src/services/planner');
 
 const root = path.join(__dirname, '..');
+
+class Snap {
+  constructor(id, data, ref = null) {
+    this.id = id;
+    this._data = data;
+    this.ref = ref;
+    this.exists = Boolean(data);
+  }
+  data() { return this._data ? { ...this._data } : undefined; }
+}
+
+class QuerySnap {
+  constructor(docs) {
+    this.docs = docs;
+    this.empty = docs.length === 0;
+  }
+}
+
+class Doc {
+  constructor(db, c, id) {
+    this.db = db;
+    this.c = c;
+    this.collectionName = c;
+    this.id = id || db.next(c);
+  }
+  async get() { return new Snap(this.id, this.db.get(this.c, this.id), this); }
+  async set(d, o = {}) { this.db.set(this.c, this.id, d, o); }
+  async update(d) { this.db.update(this.c, this.id, d); }
+}
+
+class Query {
+  constructor(db, c, filters = [], max = null) {
+    this.db = db;
+    this.c = c;
+    this.collectionName = c;
+    this.filters = filters;
+    this.max = max;
+  }
+  where(field, op, value) {
+    assert.equal(op, '==');
+    return new Query(this.db, this.c, [...this.filters, { field, value }], this.max);
+  }
+  limit(max) { return new Query(this.db, this.c, this.filters, max); }
+  async get() {
+    let docs = Object.entries(this.db.collections[this.c] || {})
+      .filter(([, d]) => this.filters.every((f) => d[f.field] === f.value))
+      .map(([id, d]) => new Snap(id, d, new Doc(this.db, this.c, id)));
+    if (this.max !== null) docs = docs.slice(0, this.max);
+    return new QuerySnap(docs);
+  }
+}
+
+class Coll extends Query {
+  doc(id) { return new Doc(this.db, this.c, id); }
+}
+
+class Tx {
+  constructor() { this.hasWritten = false; }
+  async get(x) {
+    if (this.hasWritten) throw new Error('FIRESTORE_READ_AFTER_WRITE');
+    return x.get();
+  }
+  set(ref, d, o) {
+    this.hasWritten = true;
+    ref.db.set(ref.c || ref.collectionName, ref.id, d, o);
+  }
+  update(ref, d) {
+    this.hasWritten = true;
+    ref.db.update(ref.c || ref.collectionName, ref.id, d);
+  }
+}
+
+class DB {
+  constructor() {
+    this.collections = {};
+    this.n = {};
+  }
+  collection(c) {
+    if (!this.collections[c]) this.collections[c] = {};
+    return new Coll(this, c);
+  }
+  next(c) {
+    this.n[c] = (this.n[c] || 0) + 1;
+    return `${c}_${this.n[c]}`;
+  }
+  get(c, id) { return this.collections[c]?.[id] || null; }
+  set(c, id, d, o = {}) {
+    if (!this.collections[c]) this.collections[c] = {};
+    this.collections[c][id] = o.merge ? { ...(this.collections[c][id] || {}), ...d } : { ...d };
+  }
+  update(c, id, d) {
+    if (!this.collections[c]?.[id]) throw new Error('NOT_FOUND');
+    this.collections[c][id] = { ...this.collections[c][id], ...d };
+  }
+  async runTransaction(fn) { return fn(new Tx()); }
+}
+
+function seedScb(db) {
+  db.set('workspaces', 'workspace_scb', { id: 'workspace_scb', tenant_id: 'tenant_facundo_group', name: 'SCB' });
+  db.set('projects', 'project_scb_development', {
+    id: 'project_scb_development',
+    tenant_id: 'tenant_facundo_group',
+    workspace_id: 'workspace_scb',
+    name: 'SCB Development',
+    default_worker_id: 'W01',
+    primary_worker_ids: ['W01']
+  });
+}
 
 function createMiniExpress() {
   function Router() {
@@ -177,11 +291,128 @@ function historicalProposal(overrides = {}) {
   };
 }
 
+function structuredPlannerProposal(overrides = {}) {
+  return {
+    title: 'SCB Structured Proposal',
+    objective: 'Persist canonical structured metadata without prose inference.',
+    summary: 'Plain proposal text with no metadata keywords.',
+    risks: [],
+    dependencies: [],
+    assumptions: [],
+    auto_advance: true,
+    expected_human_actions: [{
+      milestone_id: 'm2',
+      human_action_request: 'Confirm the integration boundary.',
+      user_action: 'Review and confirm the boundary.',
+      action_location: 'Planner review',
+      validation_method: 'manual_confirmation',
+      checkpoint_id: 'runtime_checkpoint_must_not_persist',
+      validator_result: 'secret result'
+    }],
+    milestones: [
+      {
+        id: 'm1',
+        title: 'Prepare',
+        objective: 'Prepare the proposal.',
+        description: 'Plain setup text.',
+        executor_required: false,
+        dependencies: [],
+        risks: [],
+        success_criteria: ['Preparation is described.']
+      },
+      {
+        id: 'm2',
+        title: 'Review',
+        objective: 'Review the proposal.',
+        description: 'Plain review text.',
+        executor_required: false,
+        dependencies: ['m1'],
+        risks: [],
+        success_criteria: ['Review is described.']
+      }
+    ],
+    ...overrides
+  };
+}
+
+async function persistedStructuredProposal(db, proposalBody = structuredPlannerProposal(), requestOverrides = {}) {
+  seedScb(db);
+  const request = await createPlannerRequest(db, 'tenant_facundo_group', {
+    workspace_id: 'workspace_scb',
+    project_id: 'project_scb_development',
+    request: 'Create a plain proposal.',
+    ...requestOverrides
+  });
+  const created = await completePlannerBrainRun(db, 'tenant_facundo_group', request.brain_run_id, { proposal: proposalBody });
+  const readBack = await getPlannerProposal(db, 'tenant_facundo_group', created.roadmap_id);
+  return { request, created, readBack };
+}
+
 test('/planner contains a clearly labeled Roadmap Proposal review section', async () => {
   const html = await renderPlannerPage();
   assert.match(html, /id="proposalView"/);
   assert.match(html, /ROADMAP PROPOSAL/);
   assert.match(html, /Roadmap Proposal|ROADMAP PROPOSAL/);
+});
+
+test('Planner service persists trusted scope, boolean auto advance, and expected Human Actions canonically', async () => {
+  const db = new DB();
+  const { readBack } = await persistedStructuredProposal(db, structuredPlannerProposal({
+    title: 'No prose metadata',
+    objective: 'Keep structured fields from the contract.',
+    summary: 'This description intentionally omits operational metadata words.'
+  }), { auto_advance: true });
+
+  assert.equal(readBack.tenant_id, 'tenant_facundo_group');
+  assert.equal(readBack.workspace_id, 'workspace_scb');
+  assert.equal(readBack.project_id, 'project_scb_development');
+  assert.equal(readBack.proposal_type, 'PLANNER_ROADMAP');
+  assert.equal(readBack.auto_advance, true);
+  assert.equal(typeof readBack.auto_advance, 'boolean');
+  assert.equal(readBack.expected_human_actions.length, 1);
+  assert.equal(readBack.expected_human_actions[0].milestone_id, 'm2');
+  assert.equal(readBack.expected_human_actions[0].human_action_required, true);
+  assert.equal(readBack.expected_human_actions[0].checkpoint_id, undefined);
+  assert.equal(readBack.expected_human_actions[0].validator_result, undefined);
+});
+
+test('conflicting Brain proposal scope cannot override trusted Planner scope', async () => {
+  const db = new DB();
+  const { readBack } = await persistedStructuredProposal(db, structuredPlannerProposal({
+    tenant_id: 'tenant_evil',
+    workspace_id: 'workspace_evil',
+    project_id: 'project_evil'
+  }), { auto_advance: true });
+
+  assert.equal(readBack.tenant_id, 'tenant_facundo_group');
+  assert.equal(readBack.workspace_id, 'workspace_scb');
+  assert.equal(readBack.project_id, 'project_scb_development');
+});
+
+test('Planner roadmap revision preserves structured metadata when replacing proposal text', async () => {
+  const db = new DB();
+  const { readBack } = await persistedStructuredProposal(db, structuredPlannerProposal(), { auto_advance: true });
+  const revision = await requestPlannerRoadmapChanges(db, 'tenant_facundo_group', readBack.roadmap_id, {
+    feedback: 'Replace the prose while preserving structured metadata.'
+  });
+  const replacement = structuredPlannerProposal({
+    title: 'Replacement prose only',
+    objective: 'The revision replaces ordinary proposal content.',
+    summary: 'No structured metadata is present in this revision body.'
+  });
+  delete replacement.auto_advance;
+  delete replacement.expected_human_actions;
+
+  await completePlannerBrainRun(db, 'tenant_facundo_group', revision.brain_run_id, { proposal: replacement });
+  const revised = await getPlannerProposal(db, 'tenant_facundo_group', readBack.roadmap_id);
+
+  assert.equal(revised.title, 'Replacement prose only');
+  assert.equal(revised.tenant_id, 'tenant_facundo_group');
+  assert.equal(revised.workspace_id, 'workspace_scb');
+  assert.equal(revised.project_id, 'project_scb_development');
+  assert.equal(revised.auto_advance, true);
+  assert.equal(revised.expected_human_actions.length, 1);
+  assert.equal(revised.expected_human_actions[0].milestone_id, 'm2');
 });
 
 test('proposal rendering uses persisted retrieval data and shows complete review fields', async () => {
