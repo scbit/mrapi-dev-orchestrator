@@ -376,6 +376,32 @@ test('Planner service persists trusted scope, boolean auto advance, and expected
   assert.equal(readBack.expected_human_actions[0].validator_result, undefined);
 });
 
+test('Planner service persists explicit Human Action as canonical execution prerequisite', async () => {
+  const db = new DB();
+  const { readBack } = await persistedStructuredProposal(db, structuredPlannerProposal({
+    expected_human_actions: [{
+      milestone_id: 'm2',
+      human_action_request: 'Clean the repository worktree before continuing.',
+      user_action: 'Ensure the repository worktree is clean, then press LISTO.',
+      action_location: 'project repository',
+      validation_method: 'git_worktree_clean',
+      validation_metadata: { repository_path: 'C:/planner/must-not-persist' }
+    }]
+  }));
+
+  const m2 = readBack.milestones.find((milestone) => milestone.id === 'm2');
+  assert.ok(Array.isArray(m2.execution_prerequisites));
+  assert.deepEqual(m2.execution_prerequisites, [{
+    type: 'MANUAL_HUMAN',
+    name: 'repository_clean',
+    human_action_request: 'Clean the repository worktree before continuing.',
+    user_action: 'Ensure the repository worktree is clean, then press LISTO.',
+    action_location: 'project repository',
+    validation_method: 'git_worktree_clean'
+  }]);
+  assert.equal(JSON.stringify(m2.execution_prerequisites).includes('C:/planner/must-not-persist'), false);
+});
+
 test('Planner service does not manufacture expected Human Actions from ordinary prose', async () => {
   const db = new DB();
   const body = structuredPlannerProposal({
@@ -395,6 +421,8 @@ test('Planner service does not manufacture expected Human Actions from ordinary 
 
   assert.ok(Array.isArray(readBack.expected_human_actions));
   assert.equal(readBack.expected_human_actions.length, 0);
+  const m2 = readBack.milestones.find((milestone) => milestone.id === 'm2');
+  assert.equal(m2.execution_prerequisites, undefined);
 });
 
 test('conflicting Brain proposal scope cannot override trusted Planner scope', async () => {

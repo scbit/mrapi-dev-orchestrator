@@ -105,6 +105,62 @@ function normalizeExpectedHumanActions(value, milestoneIds) {
   return actions;
 }
 
+function normalizedPlannerValidationMethod(value) {
+  return cleanText(value, 1000).toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+function canonicalPlannerHumanActionPrerequisite(action) {
+  if (!action || typeof action !== 'object' || Array.isArray(action)) return null;
+  const humanActionRequest = cleanText(action.human_action_request, 2000);
+  const userAction = cleanText(action.user_action, 2000);
+  const actionLocation = cleanText(action.action_location, 1000);
+  const validationMethod = normalizedPlannerValidationMethod(action.validation_method);
+  if (![humanActionRequest, userAction, actionLocation, validationMethod].every(Boolean)) return null;
+
+  const repositoryCleanValidators = new Set([
+    'repository_clean',
+    'repository_worktree_clean',
+    'worktree_clean',
+    'git_worktree_clean'
+  ]);
+  return {
+    type: 'MANUAL_HUMAN',
+    name: repositoryCleanValidators.has(validationMethod) ? 'repository_clean' : 'manual_human',
+    human_action_request: humanActionRequest,
+    user_action: userAction,
+    action_location: actionLocation,
+    validation_method: validationMethod
+  };
+}
+
+function attachExpectedHumanActionPrerequisites(milestones, expectedHumanActions) {
+  if (!Array.isArray(expectedHumanActions) || expectedHumanActions.length === 0) return milestones;
+  const byMilestoneId = new Map();
+  for (const action of expectedHumanActions) {
+    const prerequisite = canonicalPlannerHumanActionPrerequisite(action);
+    if (!prerequisite) continue;
+    const milestoneId = cleanText(action.milestone_id, 160);
+    if (!milestoneId) continue;
+    const list = byMilestoneId.get(milestoneId) || [];
+    const key = JSON.stringify(prerequisite);
+    if (!list.some((item) => JSON.stringify(item) === key)) list.push(prerequisite);
+    byMilestoneId.set(milestoneId, list);
+  }
+  if (byMilestoneId.size === 0) return milestones;
+
+  return milestones.map((milestone) => {
+    const prerequisites = byMilestoneId.get(milestone.id);
+    if (!prerequisites || prerequisites.length === 0) return milestone;
+    return {
+      ...milestone,
+      execution_prerequisites: [
+        ...(Array.isArray(milestone.execution_prerequisites) ? milestone.execution_prerequisites : []),
+        ...prerequisites
+      ]
+    };
+  });
+}
+
 function findFirstJsonObject(source) {
   const text = String(source || '');
   const start = text.indexOf('{');
@@ -347,7 +403,10 @@ function validateProposal(rawProposal, options = {}) {
     normalized.auto_advance = proposalAutoAdvance;
   }
   const expectedHumanActions = normalizeExpectedHumanActions(proposal.expected_human_actions, seen);
-  if (expectedHumanActions !== undefined) normalized.expected_human_actions = expectedHumanActions;
+  if (expectedHumanActions !== undefined) {
+    normalized.expected_human_actions = expectedHumanActions;
+    normalized.milestones = attachExpectedHumanActionPrerequisites(normalized.milestones, expectedHumanActions);
+  }
   return normalized;
 }
 

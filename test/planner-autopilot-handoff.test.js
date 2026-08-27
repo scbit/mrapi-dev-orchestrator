@@ -170,6 +170,21 @@ function proposal() {
   };
 }
 
+function proposalWithRepositoryCleanHumanAction() {
+  return {
+    ...proposal(),
+    auto_advance: true,
+    expected_human_actions: [{
+      milestone_id: 'm2',
+      human_action_request: 'Clean the repository worktree before continuing.',
+      user_action: 'Ensure the repository worktree is clean, then press LISTO.',
+      action_location: 'project repository',
+      validation_method: 'git_worktree_clean',
+      validation_metadata: { repository_path: 'C:/planner/must-not-persist' }
+    }]
+  };
+}
+
 async function createProposed(db) {
   seed(db);
   const request = await createPlannerRequest(db, 'tenant_a', {
@@ -178,6 +193,18 @@ async function createProposed(db) {
     request: 'Original trusted Planner request'
   });
   const roadmap = await completePlannerBrainRun(db, 'tenant_a', request.brain_run_id, { proposal: proposal() });
+  return { request, roadmap };
+}
+
+async function createProposedWith(db, proposalBody, requestOverrides = {}) {
+  seed(db);
+  const request = await createPlannerRequest(db, 'tenant_a', {
+    workspace_id: 'workspace_a',
+    project_id: 'project_a',
+    request: 'Original trusted Planner request',
+    ...requestOverrides
+  });
+  const roadmap = await completePlannerBrainRun(db, 'tenant_a', request.brain_run_id, { proposal: proposalBody });
   return { request, roadmap };
 }
 
@@ -281,6 +308,20 @@ test('Brain-only completion does not force Codex and unlocks only dependency-sat
   assert.equal(next.brain_run.brain_context.completed_predecessors[0].id, 'm1');
   assert.equal(next.brain_run.brain_context.current_milestone.executor_required, true);
   assert.deepEqual(db.get('roadmaps', roadmap.roadmap_id).milestones.map((m) => m.state), ['COMPLETED', 'PLANNING', 'PENDING']);
+});
+
+test('Planner proposal persists m2 Human Action prerequisite for auto-advance preflight', async () => {
+  const db = new DB();
+  const { roadmap } = await createProposedWith(db, proposalWithRepositoryCleanHumanAction(), { auto_advance: true });
+  const persistedM2 = db.get('roadmaps', roadmap.roadmap_id).milestones.find((milestone) => milestone.id === 'm2');
+  assert.deepEqual(persistedM2.execution_prerequisites, [{
+    type: 'MANUAL_HUMAN',
+    name: 'repository_clean',
+    human_action_request: 'Clean the repository worktree before continuing.',
+    user_action: 'Ensure the repository worktree is clean, then press LISTO.',
+    action_location: 'project repository',
+    validation_method: 'git_worktree_clean'
+  }]);
 });
 
 test('executor-required milestone creates no Task before valid Brain planning then uses existing Task path', async () => {

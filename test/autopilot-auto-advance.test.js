@@ -60,6 +60,7 @@ function seed(db, { autoAdvance = true, roadmapState = 'ACTIVE', milestones = nu
     id: 'project_a',
     tenant_id: tenant,
     workspace_id: 'workspace_a',
+    repository_full_name: 'stored/project',
     local_path: localPath,
     default_worker_id: 'W01'
   });
@@ -225,6 +226,52 @@ test('explicit unmet next prerequisite pauses next milestone with no Task or EXE
   assert.equal(runs(db, 'PROGRAM').length, 0);
   assert.equal(tasks(db).length, 0);
   assert.equal(executionRuns(db).length, 0);
+});
+
+test('auto advance consumes persisted Planner Human Action prerequisite before execution work', async () => {
+  const db = new DB();
+  seed(db, {
+    milestones: [
+      { id: 'm1', title: 'One', state: 'VERIFYING', order: 1, depends_on: [], mission_id: 'mission_m1' },
+      {
+        id: 'm2',
+        title: 'Two',
+        state: 'PENDING',
+        order: 2,
+        depends_on: ['m1'],
+        execution_prerequisites: [{
+          type: 'MANUAL_HUMAN',
+          name: 'repository_clean',
+          human_action_request: 'Clean the repository worktree before continuing.',
+          user_action: 'Ensure the repository worktree is clean, then press LISTO.',
+          action_location: 'project repository',
+          validation_method: 'git_worktree_clean'
+        }]
+      }
+    ]
+  });
+  const before = { tasks: tasks(db).length, executionRuns: executionRuns(db).length };
+
+  const out = await complete(db);
+  const m2 = milestone(db, 'm2');
+  const mission = db.get('missions', m2.mission_id);
+
+  assert.equal(out.continuation_state, 'NEED_HUMAN_ACTION');
+  assert.equal(out.next_milestone_id, 'm2');
+  assert.equal(out.next_brain_run_id, null);
+  assert.equal(m2.state, 'NEED_HUMAN_ACTION');
+  assert.equal(mission.state, 'NEED_HUMAN_ACTION');
+  assert.equal(mission.roadmap_id, 'roadmap_a');
+  assert.equal(mission.milestone_id, 'm2');
+  assert.equal(m2.human_action_checkpoint.status, 'WAITING_FOR_HUMAN');
+  assert.equal(m2.human_action_checkpoint.validation_method, 'git_worktree_clean');
+  assert.equal(m2.human_action_checkpoint.roadmap_id, 'roadmap_a');
+  assert.equal(m2.human_action_checkpoint.milestone_id, 'm2');
+  assert.equal(m2.human_action_checkpoint.mission_id, m2.mission_id);
+  assert.equal(m2.human_action_checkpoint.validation_metadata.repository_path, 'C:/repo');
+  assert.equal(m2.human_action_checkpoint.validation_metadata.repository_identity, 'stored/project');
+  assert.equal(tasks(db).length, before.tasks);
+  assert.equal(executionRuns(db).length, before.executionRuns);
 });
 
 test('repeated continuation while next milestone NEED_HUMAN_ACTION reuses checkpoint and Mission', async () => {
