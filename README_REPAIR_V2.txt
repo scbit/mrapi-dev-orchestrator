@@ -1,23 +1,27 @@
-MRAPI DEV — MULTI PROJECT RUNTIME REPAIR V2
+MRAPI DEV — BRAIN PROJECT RUNTIME REPAIR V2
 
-Este ZIP corrige SOLO el instalador de Multi Project Runtime Binding.
-La V1 ya dejó archivos nuevos y aplicó parcialmente app/planner.
+La primera versión ya parcheó src/routes/brain.routes.js.
+Este repair completa de forma tolerante:
+- brain-adapter/brain-adapter.js
+- brain-adapter/lib/prompts.js
 
 PASOS
-1. Descomprimir encima de:
+1. Descomprimir sobre:
    C:\Users\Shadow\Documents\GitHub\mrapi-dev-orchestrator
 
 2. Ejecutar:
-   node tools\apply-multi-project-runtime-repair-v2.js
+   node tools\apply-brain-project-runtime-repair-v2.js
 
-3. Debe terminar:
-   MULTI_PROJECT_RUNTIME_REPAIR_V2_OK
+3. Validar:
+   node -c src\routes\brain.routes.js
+   node -c brain-adapter\brain-adapter.js
+   node -c brain-adapter\lib\prompts.js
 
-4. Validar:
-   node -c src\services\orchestration.js
-   node -c src\routes\planner.routes.js
-   node -c src\routes\runner.routes.js
-   node -c runner\shadow-runner.js
-   node --test test\project-runtime-binding.test.js
+Debe terminar:
+BRAIN_PROJECT_RUNTIME_REPAIR_V2_OK
 
-NO hacer commit antes de que el patcher termine OK.
+Luego commit/push/deploy y REINICIAR el Brain Adapter W01.
+
+En el siguiente claim de Supervisor_SCB debe verse:
+[BRAIN] project project_supervisor_scb_...
+[BRAIN] repo context C:\Users\Shadow\Documents\GitHub\mrapi-scb-supervisor
