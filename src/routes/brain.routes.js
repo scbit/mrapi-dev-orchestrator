@@ -179,7 +179,76 @@ function createBrainRouter({ db }) {
             continue;
           }
 
-          return res.json({ run: claimed });
+         
+          if (claimed.project_id) {
+            const projectRef = db.collection('projects').doc(claimed.project_id);
+            const projectSnap = await projectRef.get();
+
+            if (!projectSnap.exists || projectSnap.data().tenant_id !== req.tenantId) {
+              await candidate.ref.set({
+                brain_adapter_id: null,
+                brain_claimed_at: null,
+                progress_message: 'Brain Run project runtime could not be resolved; released',
+                updated_at: timestamp()
+              }, { merge: true });
+              return res.status(409).json({ error: 'BRAIN_PROJECT_RUNTIME_NOT_FOUND' });
+            }
+
+            const project = projectSnap.data();
+            const runtime = project.runtime_context && typeof project.runtime_context === 'object'
+              ? project.runtime_context
+              : {};
+            const repositoryPath = String(
+              runtime.repository_path ||
+              runtime.local_path ||
+              project.repository_path ||
+              project.local_path ||
+              ''
+            ).trim();
+            const repositoryFullName = String(
+              project.repository_full_name ||
+              runtime.repository_full_name ||
+              ''
+            ).trim();
+            const runtimeState = String(
+              runtime.binding_state ||
+              project.runtime_binding_state ||
+              ''
+            ).trim().toUpperCase();
+
+            if (!repositoryPath || !repositoryFullName || !['READY', 'VALIDATED', 'CONFIGURED'].includes(runtimeState)) {
+              await candidate.ref.set({
+                brain_adapter_id: null,
+                brain_claimed_at: null,
+                progress_message: 'Brain Run project runtime is not READY; released',
+                updated_at: timestamp()
+              }, { merge: true });
+              return res.status(409).json({ error: 'BRAIN_PROJECT_RUNTIME_NOT_READY' });
+            }
+
+            claimed = {
+              ...claimed,
+              repository_path: repositoryPath,
+              repository_full_name: repositoryFullName,
+              project_runtime: {
+                project_id: claimed.project_id,
+                repository_path: repositoryPath,
+                repository_full_name: repositoryFullName,
+                default_branch: project.default_branch || runtime.default_branch || 'main',
+                host_name: runtime.host_name || project.host_name || null,
+                binding_state: runtimeState
+              }
+            };
+
+            await candidate.ref.set({
+              repository_path: repositoryPath,
+              repository_full_name: repositoryFullName,
+              project_runtime: claimed.project_runtime,
+              updated_at: timestamp()
+            }, { merge: true });
+          }
+
+ return res.json({ run: claimed });
         }
       }
 

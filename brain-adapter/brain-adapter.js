@@ -39,6 +39,11 @@ async function processRun(run) {
   currentBrainRunId = run.id;
 
   try {
+    if (run.project_id && !String(run.repository_path || run.project_runtime?.repository_path || '').trim()) {
+      throw new Error('BRAIN_PROJECT_RUNTIME_PATH_REQUIRED');
+    }
+    console.log('[BRAIN] project', run.project_id || '(none)');
+    console.log('[BRAIN] repo context', run.repository_path || run.project_runtime?.repository_path || '(none)');
     const brain = await runChatGPTWeb({
       cfg,
       run,
@@ -103,7 +108,7 @@ async function loop() {
     console.log(`[BRAIN] ${id} chat`, cfg.brainChatUrls[id] || '(missing)');
     console.log(`[BRAIN] ${id} profile`, cfg.chromeUserDataDirForWorker(id));
   }
-  console.log('[BRAIN] repo context', cfg.repoPath);
+  console.log('[BRAIN] repo context resolved per Project/Brain Run');
   await register();
 
   const heartbeatTimer = setInterval(() => {

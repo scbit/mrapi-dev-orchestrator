@@ -2,6 +2,11 @@ const { workerBrainProfile } = require('./worker-profiles');
 
 function brainPrompt(run, cfg) {
   const workerId = String(run.worker_id || 'W01').toUpperCase();
+  const repositoryPath = String(
+    run.repository_path ||
+    run.project_runtime?.repository_path ||
+    ''
+  ).trim();
 
   if (
     run.planning_mode === 'PLANNER_ROADMAP_PROPOSAL' ||
@@ -19,6 +24,10 @@ ${run.planner_request || run.brain_context?.natural_language_request || run.obje
 
 TRUSTED PLANNER CONTEXT
 ${plannerContext}
+
+
+LOCAL REPOSITORY FOR SELECTED PROJECT
+${repositoryPath || 'PROJECT_RUNTIME_REPOSITORY_NOT_AVAILABLE'}
 
 ROLE CONTRACT
 - Think, analyze the request, inspect the supplied trusted project context, and design the roadmap.
@@ -71,7 +80,7 @@ CURRENT AUTOPILOT MILESTONE — SOURCE OF TRUTH
 ${run.objective || ''}
 
 LOCAL REPOSITORY
-${cfg.repoPath}
+${repositoryPath || "PROJECT_RUNTIME_REPOSITORY_NOT_AVAILABLE"}
 
 IMPORTANT CONTEXT ISOLATION
 - Work ONLY on the CURRENT AUTOPILOT MILESTONE above.
@@ -187,7 +196,7 @@ MISSION
 ${run.objective || ''}
 
 LOCAL REPOSITORY
-${cfg.repoPath}
+${repositoryPath || "PROJECT_RUNTIME_REPOSITORY_NOT_AVAILABLE"}
 
 WORKER BRAIN PROFILE
 Mission: ${profile.mission}
