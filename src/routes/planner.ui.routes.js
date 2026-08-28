@@ -105,7 +105,7 @@ function plannerPageHtml() {
   <main class="shell">
     <header class="topbar">
       <div><div class="brand">MRAPI DEV ORCHESTRATOR</div><h1>Roadmap Planner</h1></div>
-      <a href="/">Control Room</a>
+      <div style="display:flex;gap:14px"><a href="/projects/setup">Projects</a><a href="/">Control Room</a></div>
     </header>
 
     <section class="grid">
