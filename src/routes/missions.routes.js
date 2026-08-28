@@ -31,6 +31,35 @@ function createMissionsRouter({ repos }) {
     }
   });
 
+  router.get('/:missionId/recovery', async (req, res, next) => {
+    try {
+      const { getMissionRecoveryStatus } = require('../services/missionRecovery');
+      res.json(serializeFirestore(await getMissionRecoveryStatus(
+        repos.missions.db,
+        req.tenantId,
+        req.params.missionId
+      )));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.post('/:missionId/recover', async (req, res, next) => {
+    try {
+      const { recoverMission } = require('../services/missionRecovery');
+      const result = await recoverMission(
+        repos.missions.db,
+        req.tenantId,
+        req.params.missionId
+      );
+      res.json(serializeFirestore(result));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
   router.get('/:missionId/plan', async (req, res, next) => {
     try {
       const { getMissionPlan } = require('../services/orchestration');
