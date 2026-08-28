@@ -187,6 +187,55 @@ function findFirstJsonObject(source) {
   return null;
 }
 
+function repairJsonWindowsBackslashes(source) {
+  const text = String(source || '');
+  let out = '';
+  let inString = false;
+  let escaped = false;
+
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+
+    if (!inString) {
+      out += ch;
+      if (ch === '"') inString = true;
+      continue;
+    }
+
+    if (escaped) {
+      out += ch;
+      escaped = false;
+      continue;
+    }
+
+    if (ch === '"') {
+      out += ch;
+      inString = false;
+      continue;
+    }
+
+    if (ch !== '\\') {
+      out += ch;
+      continue;
+    }
+
+    const next = text[i + 1] || '';
+
+    // Valid JSON escapes stay untouched.
+    if ('"\\/bfnrtu'.includes(next)) {
+      out += ch;
+      escaped = true;
+      continue;
+    }
+
+    // Raw Windows path separator inside a JSON string.
+    // Convert one backslash to an escaped JSON backslash.
+    out += '\\\\';
+  }
+
+  return out;
+}
+
 function parseProposal(input = {}) {
   if (input.proposal && typeof input.proposal === 'object') return input.proposal;
   if (input.roadmap_proposal && typeof input.roadmap_proposal === 'object') return input.roadmap_proposal;
@@ -202,10 +251,15 @@ function parseProposal(input = {}) {
 
   try {
     return JSON.parse(jsonText);
-  } catch {
-    const error = new Error('PLANNER_PROPOSAL_JSON_INVALID');
-    error.status = 400;
-    throw error;
+  } catch (firstError) {
+    try {
+      return JSON.parse(repairJsonWindowsBackslashes(jsonText));
+    } catch {
+      const error = new Error('PLANNER_PROPOSAL_JSON_INVALID');
+      error.status = 400;
+      error.cause = firstError;
+      throw error;
+    }
   }
 }
 

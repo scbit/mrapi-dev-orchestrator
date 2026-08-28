@@ -45,6 +45,11 @@ ROLE CONTRACT
 - Human/external prerequisites belong in milestone descriptions, dependencies, risks, and success criteria.
 ${isRevision ? '- This is a REVISION. Incorporate human_revision_feedback and return a complete replacement proposal.' : ''}
 
+JSON SAFETY RULE
+- Output MUST be valid JSON parseable by JSON.parse().
+- For Windows paths inside JSON strings, use forward slashes (preferred), for example C:/Users/Shadow/Documents/GitHub/repo, OR escape each backslash as \\.
+- Never emit raw Windows backslashes such as C:\Users inside a JSON string.
+
 HARD OUTPUT CONTRACT
 Return ONLY this block. No markdown fences. No prose before or after it.
 Every listed field is required. Arrays may be empty where appropriate.
