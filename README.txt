@@ -1,11 +1,9 @@
 Descomprimir encima del repo y ejecutar:
 
-node tools\apply-projects-nav-fix.js
-node -c src\public\app.js
-node -c src\routes\planner.ui.routes.js
+node tools\apply-project-setup-name-fix.js
+node -c src\routes\project.ui.routes.js
 
-Debe terminar PROJECTS_NAV_FIX_OK.
+Debe terminar:
+PROJECT_SETUP_NAME_FIX_OK
 
-Cambio:
-- Projects del menú principal abre /projects/setup
-- Planner muestra link Projects arriba.
+Luego commit/push/deploy y volver a Crear Project.
