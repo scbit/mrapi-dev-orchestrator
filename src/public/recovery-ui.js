@@ -1,17 +1,21 @@
 (() => {
-  const decoratedRows = new WeakSet();
-  const recoveryCache = new Map();
+  let currentMissionId = null;
+  let currentRecovery = null;
 
-  async function recoveryStatus(missionId, force = false) {
-    if (!force && recoveryCache.has(missionId)) return recoveryCache.get(missionId);
-    const promise = api(`/api/missions/${encodeURIComponent(missionId)}/recovery`)
-      .catch(() => null);
-    recoveryCache.set(missionId, promise);
-    return promise;
+  async function recoveryStatus(missionId) {
+    try {
+      return await api(`/api/missions/${encodeURIComponent(missionId)}/recovery`);
+    } catch (error) {
+      console.warn('[MRAPI RECOVERY] status unavailable', missionId, error.message);
+      return null;
+    }
   }
 
   async function performRecovery(missionId, button) {
-    const status = await recoveryStatus(missionId, true);
+    const status = currentMissionId === missionId && currentRecovery
+      ? currentRecovery
+      : await recoveryStatus(missionId);
+
     if (!status?.recoverable) {
       showToast('This Mission does not currently need recovery.');
       return;
@@ -21,15 +25,14 @@
 
     button.disabled = true;
     try {
-      const result = await api(`/api/missions/${encodeURIComponent(missionId)}/recover`, {
+      await api(`/api/missions/${encodeURIComponent(missionId)}/recover`, {
         method: 'POST',
         body: '{}'
       });
-      recoveryCache.delete(missionId);
+      currentRecovery = null;
       showToast(`${status.action_label || 'Recovery'} started.`);
       if (typeof closeMissionDetail === 'function') closeMissionDetail();
       if (typeof loadAll === 'function') await loadAll();
-      return result;
     } catch (error) {
       showToast(`Recovery failed: ${error.message}`, true);
     } finally {
@@ -37,73 +40,76 @@
     }
   }
 
-  async function addRecoveryButton(container, missionId) {
-    if (!container || container.querySelector(`.mrapi-recovery-button[data-mission-id="${CSS.escape(missionId)}"]`)) return;
+  function removeLegacyRetry(container) {
+    if (!container) return;
+    for (const button of container.querySelectorAll('.retry-button')) {
+      button.style.display = 'none';
+    }
+  }
 
-    const status = await recoveryStatus(missionId);
-    if (!status?.recoverable) return;
+  async function decorateMissionDetail(missionId) {
+    const modal = document.querySelector('#missionDetailModal');
+    if (!modal || modal.hidden) return;
+
+    const actions = modal.querySelector('.modal-actions > div');
+    if (!actions) return;
+
+    currentMissionId = missionId;
+    currentRecovery = await recoveryStatus(missionId);
+
+    if (currentMissionId !== missionId) return;
+
+    removeLegacyRetry(actions);
+    actions.querySelector('.mrapi-recovery-button')?.remove();
+
+    if (!currentRecovery?.recoverable) return;
 
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'ghost-button mrapi-recovery-button';
     button.dataset.missionId = missionId;
-    button.textContent = status.action_label || 'Recover Mission';
-    button.title = status.reason || '';
+    button.textContent = currentRecovery.action_label || 'Recover Mission';
+    button.title = currentRecovery.reason || '';
     button.addEventListener('click', async (event) => {
       event.preventDefault();
       event.stopPropagation();
       await performRecovery(missionId, button);
     });
 
-    container.prepend(button);
+    actions.prepend(button);
   }
 
-  async function decorateRow(row) {
-    if (!row || decoratedRows.has(row)) return;
-    decoratedRows.add(row);
+  // Important: do NOT call /recovery for every Mission row.
+  // Only resolve recovery for the Mission the operator explicitly opens.
+  document.addEventListener('click', (event) => {
+    const row = event.target.closest?.('[data-open-mission]');
+    if (!row) return;
+
     const missionId = row.dataset.openMission;
     if (!missionId) return;
-    const actions = row.querySelector('.mission-actions');
-    await addRecoveryButton(actions, missionId);
 
-    row.addEventListener('click', () => {
-      setTimeout(async () => {
-        const modal = document.querySelector('#missionDetailModal');
-        if (!modal || modal.hidden) return;
-        const actions = modal.querySelector('.modal-actions > div');
-        await addRecoveryButton(actions, missionId);
-      }, 60);
-    }, true);
-  }
+    currentMissionId = missionId;
+    currentRecovery = null;
 
-  async function scan() {
-    const rows = [...document.querySelectorAll('[data-open-mission]')];
-    await Promise.all(rows.map(decorateRow));
-
-    // Replace legacy generic Retry buttons with the canonical recovery action
-    // only when the Mission is recoverable. Capture phase prevents the old
-    // retry handler from running.
-    for (const button of document.querySelectorAll('.retry-button')) {
-      if (button.dataset.recoveryIntercepted === 'true') continue;
-      const missionId = button.dataset.missionId;
-      if (!missionId) continue;
-      const status = await recoveryStatus(missionId);
-      if (!status?.recoverable) continue;
-
-      button.dataset.recoveryIntercepted = 'true';
-      button.textContent = status.action_label || 'Recover Mission';
-      button.addEventListener('click', async (event) => {
-        event.preventDefault();
-        event.stopImmediatePropagation();
-        await performRecovery(missionId, button);
-      }, true);
-    }
-  }
+    setTimeout(() => {
+      void decorateMissionDetail(missionId);
+    }, 80);
+  }, true);
 
   const observer = new MutationObserver(() => {
-    void scan();
-  });
-  observer.observe(document.body, { childList: true, subtree: true });
+    const modal = document.querySelector('#missionDetailModal');
+    if (!modal || modal.hidden || !currentMissionId) return;
 
-  void scan();
+    const actions = modal.querySelector('.modal-actions > div');
+    if (!actions) return;
+
+    if (
+      currentRecovery?.recoverable &&
+      !actions.querySelector('.mrapi-recovery-button')
+    ) {
+      void decorateMissionDetail(currentMissionId);
+    }
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true });
 })(); 
