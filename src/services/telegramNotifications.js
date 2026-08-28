@@ -1,7 +1,5 @@
 const crypto = require('crypto');
 
-const DEFAULT_TIMEOUT_MS = 8000;
-
 function clean(value, max = 1800) {
   return String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 }
@@ -13,7 +11,7 @@ function envConfig(env = process.env) {
     chatId: clean(env.TELEGRAM_CHAT_ID, 200),
     apiKey: clean(env.TELEGRAM_GATEWAY_API_KEY, 2000),
     uiBaseUrl: clean(env.MRAPI_PUBLIC_BASE_URL || '', 2000).replace(/\/+$/, ''),
-    timeoutMs: Math.max(1000, Number(env.TELEGRAM_NOTIFICATION_TIMEOUT_MS || DEFAULT_TIMEOUT_MS))
+    timeoutMs: Math.max(1000, Number(env.TELEGRAM_NOTIFICATION_TIMEOUT_MS || 8000))
   };
 }
 
@@ -44,7 +42,6 @@ function failureCode(mission = {}) {
     mission.error_code ||
     mission.blocker_code ||
     mission.last_error_code ||
-    mission.progress_code ||
     checkpoint.blocker_code ||
     checkpoint.requirement_type ||
     '',
@@ -54,7 +51,7 @@ function failureCode(mission = {}) {
 
 function fingerprintForMission(mission, kind) {
   const checkpoint = checkpointFromMission(mission) || {};
-  const parts = [
+  return crypto.createHash('sha256').update([
     mission.tenant_id || '',
     mission.id || '',
     kind || '',
@@ -62,19 +59,12 @@ function fingerprintForMission(mission, kind) {
     checkpoint.checkpoint_id || '',
     checkpoint.generation || '',
     failureCode(mission) || ''
-  ];
-  return crypto.createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 40);
-}
-
-function missionUrl(cfg, mission) {
-  if (!cfg.uiBaseUrl || !mission?.id) return null;
-  return `${cfg.uiBaseUrl}/?mission=${encodeURIComponent(mission.id)}`;
+  ].join('|')).digest('hex').slice(0, 40);
 }
 
 function buildMessage(cfg, mission, kind) {
   const checkpoint = checkpointFromMission(mission) || {};
   const code = failureCode(mission);
-  const objective = clean(mission.objective || mission.title || 'Mission', 420);
   const action = clean(
     checkpoint.user_action ||
     checkpoint.human_action_request ||
@@ -97,72 +87,31 @@ function buildMessage(cfg, mission, kind) {
     MISSION_COMPLETED: 'MRAPI Mission completada'
   }[kind] || 'MRAPI';
 
-  const lines = [
+  const url = cfg.uiBaseUrl && mission.id
+    ? `${cfg.uiBaseUrl}/?mission=${encodeURIComponent(mission.id)}`
+    : null;
+
+  return [
     `${icon} ${title}`,
     '',
     `Worker: ${clean(mission.preferred_worker_id || mission.worker_id || '-', 120)}`,
-    `Mission: ${objective}`,
+    `Mission: ${clean(mission.objective || mission.title || 'Mission', 420)}`,
     `State: ${clean(mission.state || '-', 100)}`,
     code ? `Code: ${code}` : null,
-    `Tenant: ${clean(mission.tenant_id || '-', 160)}`,
     `Workspace: ${clean(mission.workspace_id || '-', 160)}`,
     `Project: ${clean(mission.project_id || '-', 160)}`,
     mission.roadmap_id ? `Roadmap: ${clean(mission.roadmap_id, 160)}` : null,
     mission.milestone_id ? `Milestone: ${clean(mission.milestone_id, 160)}` : null,
     action ? '' : null,
     action ? `Acción: ${action}` : null,
-    missionUrl(cfg, mission) ? '' : null,
-    missionUrl(cfg, mission) ? `Abrir MRAPI: ${missionUrl(cfg, mission)}` : null
-  ].filter((line) => line !== null);
-
-  return lines.join('\n').slice(0, 3900);
-}
-
-function millis(value) {
-  if (!value) return 0;
-  if (typeof value.toMillis === 'function') return value.toMillis();
-  if (value instanceof Date) return value.getTime();
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-async function reserveDelivery(db, fingerprint, mission, kind) {
-  const ref = db.collection('notification_deliveries').doc(fingerprint);
-  const snap = await ref.get();
-
-  if (snap.exists) {
-    const existing = snap.data() || {};
-    if (existing.status === 'SENT') return { send: false, reason: 'ALREADY_SENT', ref };
-    if (existing.status === 'PENDING' && Date.now() - millis(existing.updated_at) < 120000) {
-      return { send: false, reason: 'ALREADY_PENDING', ref };
-    }
-  }
-
-  await ref.set({
-    id: fingerprint,
-    tenant_id: mission.tenant_id || null,
-    workspace_id: mission.workspace_id || null,
-    project_id: mission.project_id || null,
-    mission_id: mission.id,
-    roadmap_id: mission.roadmap_id || null,
-    milestone_id: mission.milestone_id || null,
-    channel: 'TELEGRAM',
-    notification_kind: kind,
-    status: 'PENDING',
-    attempt_count: Number(snap.exists ? snap.data()?.attempt_count || 0 : 0) + 1,
-    updated_at: new Date(),
-    created_at: snap.exists ? (snap.data()?.created_at || new Date()) : new Date()
-  }, { merge: true });
-
-  return { send: true, ref };
+    url ? '' : null,
+    url ? `Abrir MRAPI: ${url}` : null
+  ].filter((x) => x !== null).join('\n').slice(0, 3900);
 }
 
 async function sendTelegram(cfg, text, fetchImpl = globalThis.fetch) {
-  if (typeof fetchImpl !== 'function') throw new Error('FETCH_NOT_AVAILABLE');
-
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), cfg.timeoutMs);
-
+  const timer = setTimeout(() => controller.abort(), cfg.timeoutMs);
   try {
     const headers = { 'content-type': 'application/json' };
     if (cfg.apiKey) headers['x-api-key'] = cfg.apiKey;
@@ -176,118 +125,102 @@ async function sendTelegram(cfg, text, fetchImpl = globalThis.fetch) {
         signal: controller.signal
       }
     );
-
-    const bodyText = await response.text().catch(() => '');
-    if (!response.ok) {
-      throw new Error(`TELEGRAM_GATEWAY_${response.status}: ${bodyText.slice(0, 500)}`);
-    }
-
-    return bodyText ? JSON.parse(bodyText) : { ok: true };
+    const body = await response.text().catch(() => '');
+    if (!response.ok) throw new Error(`TELEGRAM_GATEWAY_${response.status}: ${body.slice(0, 500)}`);
+    return body ? JSON.parse(body) : { ok: true };
   } finally {
-    clearTimeout(timeout);
+    clearTimeout(timer);
   }
 }
 
 async function notifyMission({ db, mission, env = process.env, fetchImpl = globalThis.fetch }) {
+  const cfg = envConfig(env);
+  if (!configured(cfg)) return { sent: false, skipped: true, reason: 'NOT_CONFIGURED' };
+
+  const kind = notificationKind(mission);
+  if (!kind) return { sent: false, skipped: true, reason: 'NOT_NOTIFIABLE' };
+
+  const fingerprint = fingerprintForMission(mission, kind);
+  const ref = db.collection('notification_deliveries').doc(fingerprint);
+  const snap = await ref.get();
+  if (snap.exists && snap.data()?.status === 'SENT') {
+    return { sent: false, skipped: true, reason: 'ALREADY_SENT' };
+  }
+
+  await ref.set({
+    id: fingerprint,
+    tenant_id: mission.tenant_id || null,
+    workspace_id: mission.workspace_id || null,
+    project_id: mission.project_id || null,
+    mission_id: mission.id,
+    roadmap_id: mission.roadmap_id || null,
+    milestone_id: mission.milestone_id || null,
+    channel: 'TELEGRAM',
+    notification_kind: kind,
+    status: 'PENDING',
+    updated_at: new Date(),
+    created_at: snap.exists ? (snap.data()?.created_at || new Date()) : new Date()
+  }, { merge: true });
+
   try {
-    const cfg = envConfig(env);
-    if (!configured(cfg)) return { sent: false, skipped: true, reason: 'NOT_CONFIGURED' };
-
-    const kind = notificationKind(mission);
-    if (!kind) return { sent: false, skipped: true, reason: 'NOT_NOTIFIABLE' };
-
-    const fingerprint = fingerprintForMission(mission, kind);
-    const reservation = await reserveDelivery(db, fingerprint, mission, kind);
-    if (!reservation.send) {
-      return { sent: false, skipped: true, reason: reservation.reason, fingerprint };
-    }
-
-    const text = buildMessage(cfg, mission, kind);
-
-    try {
-      const telegramResult = await sendTelegram(cfg, text, fetchImpl);
-      await reservation.ref.set({
-        status: 'SENT',
-        sent_at: new Date(),
-        last_error: null,
-        telegram_result: telegramResult && typeof telegramResult === 'object'
-          ? JSON.parse(JSON.stringify(telegramResult).slice(0, 4000))
-          : null,
-        updated_at: new Date()
-      }, { merge: true });
-
-      return { sent: true, kind, fingerprint };
-    } catch (error) {
-      await reservation.ref.set({
-        status: 'FAILED',
-        last_error: clean(error?.message || error, 1000),
-        failed_at: new Date(),
-        updated_at: new Date()
-      }, { merge: true });
-
-      console.error('[MRAPI TELEGRAM]', clean(error?.message || error, 1000));
-      return {
-        sent: false,
-        failed: true,
-        kind,
-        fingerprint,
-        error: clean(error?.message || error, 1000)
-      };
-    }
+    const result = await sendTelegram(cfg, buildMessage(cfg, mission, kind), fetchImpl);
+    await ref.set({ status: 'SENT', sent_at: new Date(), last_error: null, updated_at: new Date() }, { merge: true });
+    console.log('[MRAPI TELEGRAM] sent', { missionId: mission.id, kind });
+    return { sent: true, kind, result };
   } catch (error) {
-    // Observability must never break MRAPI lifecycle.
-    console.error('[MRAPI TELEGRAM NOTIFICATION ERROR]', clean(error?.message || error, 1000));
+    await ref.set({
+      status: 'FAILED',
+      last_error: clean(error?.message || error, 1000),
+      failed_at: new Date(),
+      updated_at: new Date()
+    }, { merge: true });
+    console.error('[MRAPI TELEGRAM]', clean(error?.message || error, 1000));
     return { sent: false, failed: true, error: clean(error?.message || error, 1000) };
   }
 }
 
-function startMissionTelegramWatcher(db, options = {}) {
-  const env = options.env || process.env;
-  const cfg = envConfig(env);
+function timestampMs(value) {
+  if (!value) return 0;
+  if (typeof value.toMillis === 'function') return value.toMillis();
+  if (value instanceof Date) return value.getTime();
+  const n = Date.parse(value);
+  return Number.isFinite(n) ? n : 0;
+}
 
-  if (!configured(cfg)) {
-    console.log('[MRAPI TELEGRAM] disabled: gateway/business/chat not fully configured');
-    return () => {};
-  }
+function createMissionNotificationSweep(db, options = {}) {
+  const startedAt = Date.now();
+  let running = false;
+  let lastRun = 0;
+  const minIntervalMs = Number(options.minIntervalMs || 1200);
 
-  const startedAt = new Date();
-  let initialized = false;
+  return async function sweep() {
+    if (running) return { skipped: true, reason: 'RUNNING' };
+    if (Date.now() - lastRun < minIntervalMs) return { skipped: true, reason: 'THROTTLED' };
 
-  console.log('[MRAPI TELEGRAM] mission watcher enabled', {
-    businessId: cfg.businessId,
-    gatewayUrl: cfg.gatewayUrl,
-    startedAt: startedAt.toISOString()
-  });
+    running = true;
+    lastRun = Date.now();
 
-  // Listen to Mission changes directly. This avoids changing Planner/Autopilot/
-  // orchestration semantics and keeps Telegram as an observability sidecar.
-  const unsubscribe = db.collection('missions').onSnapshot(
-    (snapshot) => {
-      const changes = snapshot.docChanges();
+    try {
+      const snap = await db.collection('missions').limit(200).get();
+      const candidates = snap.docs
+        .map((doc) => ({ id: doc.id, ...doc.data() }))
+        .filter((mission) => notificationKind(mission))
+        // Only notify state changes made since this Cloud Run instance started.
+        // This prevents historical alerts on deploy/cold start.
+        .filter((mission) => timestampMs(mission.updated_at || mission.created_at) >= startedAt - 5000);
 
-      // Firestore's first snapshot contains existing documents as "added".
-      // Ignore it to avoid sending historical alerts on each Cloud Run start.
-      if (!initialized) {
-        initialized = true;
-        return;
+      for (const mission of candidates) {
+        await notifyMission({ db, mission });
       }
 
-      for (const change of changes) {
-        if (!['added', 'modified'].includes(change.type)) continue;
-        const mission = { id: change.doc.id, ...change.doc.data() };
-        if (!notificationKind(mission)) continue;
-
-        void notifyMission({ db, mission, env }).catch((error) => {
-          console.error('[MRAPI TELEGRAM WATCHER ERROR]', clean(error?.message || error, 1000));
-        });
-      }
-    },
-    (error) => {
-      console.error('[MRAPI TELEGRAM WATCHER SNAPSHOT ERROR]', clean(error?.message || error, 1000));
+      return { scanned: snap.size, candidates: candidates.length };
+    } catch (error) {
+      console.error('[MRAPI TELEGRAM SWEEP ERROR]', clean(error?.message || error, 1000));
+      return { failed: true, error: clean(error?.message || error, 1000) };
+    } finally {
+      running = false;
     }
-  );
-
-  return typeof unsubscribe === 'function' ? unsubscribe : () => {};
+  };
 }
 
 module.exports = {
@@ -299,5 +232,5 @@ module.exports = {
   buildMessage,
   sendTelegram,
   notifyMission,
-  startMissionTelegramWatcher
+  createMissionNotificationSweep
 };

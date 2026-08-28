@@ -19,16 +19,30 @@ const { createResultsRouter } = require('./routes/results.routes');
 const { createEvidenceRouter } = require('./routes/evidence.routes');
 const { createPlannerRouter } = require('./routes/planner.routes');
 const { createPlannerUiRouter } = require('./routes/planner.ui.routes');
+const { createMissionNotificationSweep } = require('./services/telegramNotifications');
 
 function createApp(options = {}) {
   const app = express();
   const db = options.db || getFirestore();
   const repos = options.repos || createRepositories(db);
+  const notificationSweep = createMissionNotificationSweep(db);
 
   app.disable('x-powered-by');
   app.use(express.json({ limit: '14mb' }));
   app.use(express.urlencoded({ extended: false }));
   app.use(tenantMiddleware);
+
+  // Cloud Run-safe Telegram notifications:
+  // run after request completion instead of using a resident Firestore listener.
+  app.use((req, res, next) => {
+    res.on('finish', () => {
+      if (req.method === 'OPTIONS') return;
+      void notificationSweep().catch((error) => {
+        console.error('[MRAPI TELEGRAM SWEEP ERROR]', String(error?.message || error).slice(0, 1000));
+      });
+    });
+    next();
+  });
 
   app.use('/health', createHealthRouter({ db }));
   app.use('/api/dashboard', createDashboardRouter({ db, repos }));

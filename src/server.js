@@ -1,7 +1,6 @@
 const { config } = require('./config');
 const { getFirestore } = require('./services/firestore');
 const { bootstrapInitialData } = require('./services/bootstrap');
-const { startMissionTelegramWatcher } = require('./services/telegramNotifications');
 const { createApp } = require('./app');
 
 async function runBootstrap(db) {
@@ -16,10 +15,6 @@ async function runBootstrap(db) {
     });
     console.log('[MRAPI BOOTSTRAP]', JSON.stringify(summary));
   } catch (error) {
-    // IMPORTANT:
-    // Cloud Run must stay alive even if an external dependency is temporarily
-    // unavailable. /health will expose dependency failure while logs retain
-    // the exact bootstrap error for diagnosis.
     console.error('[MRAPI BOOTSTRAP ERROR]', {
       message: error.message,
       code: error.code || null,
@@ -40,14 +35,7 @@ function start() {
       `firestore=${config.firestoreDatabase}, bucket=${config.evidenceBucket})`
     );
 
-    // Bootstrap AFTER the HTTP listener is ready.
-    // This prevents Firestore/IAM/configuration errors from being reported
-    // misleadingly by Cloud Run as a PORT startup failure.
     void runBootstrap(db);
-
-    // Telegram is observability only. It watches persisted Mission state
-    // changes and never participates in lifecycle decisions.
-    startMissionTelegramWatcher(db);
   });
 
   server.on('error', (error) => {
