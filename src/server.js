@@ -1,6 +1,7 @@
 const { config } = require('./config');
 const { getFirestore } = require('./services/firestore');
 const { bootstrapInitialData } = require('./services/bootstrap');
+const { startMissionTelegramWatcher } = require('./services/telegramNotifications');
 const { createApp } = require('./app');
 
 async function runBootstrap(db) {
@@ -43,6 +44,10 @@ function start() {
     // This prevents Firestore/IAM/configuration errors from being reported
     // misleadingly by Cloud Run as a PORT startup failure.
     void runBootstrap(db);
+
+    // Telegram is observability only. It watches persisted Mission state
+    // changes and never participates in lifecycle decisions.
+    startMissionTelegramWatcher(db);
   });
 
   server.on('error', (error) => {
