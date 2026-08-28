@@ -244,6 +244,28 @@ async function correctiveBrainRecovery(db, tenantId, missionId, input = {}) {
       retry_of_run_id: latestBrain?.id || null,
       objective: correctiveObjective(freshMission.objective, recoveryContext),
       brain_context: recoveryContext,
+
+      // Preserve original Brain contract across corrective recovery.
+      // Planner replay must remain a Planner Brain Run.
+      planning_mode: latestBrain?.planning_mode || freshMission.planning_mode || null,
+      planner_request_id:
+        latestBrain?.planner_request_id ||
+        freshMission.planner_request_id ||
+        (latestBrain?.planning_mode === 'PLANNER_ROADMAP_PROPOSAL' ? missionId : null),
+      planner_request:
+        latestBrain?.planner_request ||
+        freshMission.planner_request ||
+        freshMission.original_prompt ||
+        null,
+      non_executable:
+        latestBrain?.non_executable === true ||
+        freshMission.non_executable === true ||
+        latestBrain?.planning_mode === 'PLANNER_ROADMAP_PROPOSAL',
+      revision_target_roadmap_id: latestBrain?.revision_target_roadmap_id || null,
+      revision_number: latestBrain?.revision_number || null,
+      revision_feedback: latestBrain?.revision_feedback || null,
+      prior_planner_brain_run_id: latestBrain?.prior_planner_brain_run_id || null,
+
       autopilot_mode: freshMission.autopilot_mode === true,
       autopilot_phase: phase,
       roadmap_id: freshMission.roadmap_id || null,
