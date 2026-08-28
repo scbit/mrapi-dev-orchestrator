@@ -21,6 +21,9 @@ const {
 const {
   recoverRepeatedResolvedRepositoryPreflight
 } = require('../services/resolvedPreflightReuse');
+const {
+  recoverTrustedVerificationCompletion
+} = require('../services/trustedVerificationRecovery');
 
 function createRunnerRouter({ db }) {
   const router = express.Router();
@@ -51,6 +54,12 @@ function createRunnerRouter({ db }) {
     try {
       const executorId = String(req.body.executor_id || '').trim();
       if (!executorId) return res.status(400).json({ error: 'EXECUTOR_ID_REQUIRED' });
+
+      // VERIFY_EXECUTION must not ask the operator to manually re-confirm
+      // runtime continuity when persisted trusted evidence already proves it:
+      // Host Validation PASS + one continuation Task + one successful
+      // EXECUTION_RUN + required tests passed.
+      await recoverTrustedVerificationCompletion(db, req.tenantId);
 
       // If PROGRAM repeated an already-PASSed repository-clean prerequisite,
       // canonicalize it back to the original RESOLVED checkpoint and let the
