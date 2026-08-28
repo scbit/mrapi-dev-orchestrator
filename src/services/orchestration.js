@@ -547,12 +547,19 @@ async function claimHostValidationWork(db, tenantId, executorId, executor, allow
     .limit(200)
     .get();
   const runnerPath = comparableLocalPath(options.repository_path || options.repositoryPath || process.env.MRAPI_REPO_PATH || '');
+  const runnerRoot = comparableLocalPath(options.repository_root || options.repositoryRoot || '');
+  const runnerCanAccess = (candidatePath) => {
+    const target = comparableLocalPath(candidatePath);
+    if (!target) return false;
+    if (runnerRoot && (target === runnerRoot || target.startsWith(runnerRoot + '/'))) return true;
+    return Boolean(runnerPath && target === runnerPath);
+  };
   const candidates = validationsSnap.docs
     .map((doc) => ({ id: doc.id, ...doc.data() }))
     .filter((item) => ['PENDING'].includes(String(item.state || '').toUpperCase()))
     .filter((item) => String(item.validator_type || '').toUpperCase() === 'HOST_LOCAL')
     .filter((item) => allowedWorkerIds.length === 0 || allowedWorkerIds.includes(item.worker_id))
-    .filter((item) => runnerPath && comparableLocalPath(item.repository_path) === runnerPath)
+    .filter((item) => runnerCanAccess(item.repository_path))
     .sort((a, b) => (a.created_at?.toMillis?.() || 0) - (b.created_at?.toMillis?.() || 0));
 
   for (const candidate of candidates) {
@@ -574,7 +581,7 @@ async function claimHostValidationWork(db, tenantId, executorId, executor, allow
           error.retryCandidate = true;
           throw error;
         }
-        if (!runnerPath || comparableLocalPath(validation.repository_path) !== runnerPath) {
+        if (!runnerCanAccess(validation.repository_path)) {
           const error = new Error('HOST_VALIDATION_REPOSITORY_UNAUTHORIZED');
           error.retryCandidate = true;
           throw error;
@@ -781,6 +788,42 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
         }
         const brainRun = brainRunSnap?.exists ? { id: brainRunSnap.id, ...brainRunSnap.data() } : null;
         const taskBrainRunId = nullIfUndefined(task.brain_run_id);
+        if (!task.project_id || task.project_id !== mission.project_id) {
+          const error = new Error('PROJECT_RUNTIME_MISMATCH');
+          error.retryCandidate = true;
+          throw error;
+        }
+
+        const projectSnap = await tx.get(db.collection('projects').doc(task.project_id));
+        if (!projectSnap.exists || projectSnap.data().tenant_id !== tenantId) {
+          const error = new Error('PROJECT_RUNTIME_MISMATCH');
+          error.retryCandidate = true;
+          throw error;
+        }
+
+        const project = projectSnap.data();
+        const runtime = project.runtime_context && typeof project.runtime_context === 'object'
+          ? project.runtime_context
+          : {};
+        const projectRepositoryPath = String(
+          runtime.repository_path ||
+          runtime.local_path ||
+          project.repository_path ||
+          project.local_path ||
+          ''
+        ).trim();
+        const runtimeState = String(
+          runtime.binding_state ||
+          project.runtime_binding_state ||
+          ''
+        ).toUpperCase();
+
+        if (!projectRepositoryPath || !['READY', 'VALIDATED', 'CONFIGURED'].includes(runtimeState)) {
+          const error = new Error('PROJECT_RUNTIME_BINDING_NOT_READY');
+          error.retryCandidate = true;
+          throw error;
+        }
+
         const codexHandoff = buildCodexHandoff({
           tenantId,
           task: { id: taskSnap.id, ...task },
@@ -789,10 +832,7 @@ async function claimNextTask(db, tenantId, executorId, options = {}) {
           workerProfile,
           executor: { id: executorId, ...executor },
           executionRunId: runRef.id,
-          repositoryPath: options.repository_path ||
-            options.repositoryPath ||
-            process.env.MRAPI_REPO_PATH ||
-            'LOCAL_REPOSITORY_NOT_PROVIDED'
+          repositoryPath: projectRepositoryPath
         });
 
         tx.update(taskRef, {

@@ -73,7 +73,8 @@ function createRunnerRouter({ db }) {
       await recoverResolvedPreBrainProgramContinuation(db, req.tenantId);
 
       const claimed = await claimNextTask(db, req.tenantId, executorId, {
-        repository_path: req.body?.repository_path || null
+        repository_path: req.body?.repository_path || null,
+        repository_root: req.body?.repository_root || null
       });
       if (!claimed) return res.status(204).end();
       res.json(serializeFirestore(claimed));

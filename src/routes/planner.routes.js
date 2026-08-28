@@ -10,6 +10,7 @@ const {
   startPlannerRoadmap
 } = require('../services/planner');
 const { confirmHumanActionReady } = require('../services/autopilot');
+const { assertProjectRuntimeReady } = require('../services/projectRuntime');
 
 function normalizeHumanActionStatus(checkpoint = {}) {
   return String(checkpoint.status || checkpoint.waiting_status || checkpoint.checkpoint_status || '').trim().toUpperCase();
@@ -66,6 +67,7 @@ function createPlannerRouter({ db }) {
 
   router.post('/requests', async (req, res, next) => {
     try {
+      await assertProjectRuntimeReady(db, req.tenantId, req.body?.project_id, req.body?.workspace_id || null);
       const created = await createPlannerRequest(db, req.tenantId, req.body || {});
       if (req.body?.proposal || req.body?.roadmap_proposal || req.body?.output_text) {
         const proposal = await completePlannerBrainRun(db, req.tenantId, created.brain_run_id, req.body || {});
@@ -146,6 +148,9 @@ function createPlannerRouter({ db }) {
   router.post('/roadmaps/:roadmapId/start', async (req, res, next) => {
     try {
       const roadmapId = req.params.roadmapId;
+      const roadmapSnap = await db.collection('roadmaps').doc(roadmapId).get();
+      if (!roadmapSnap.exists || roadmapSnap.data().tenant_id !== req.tenantId) return res.status(404).json({ error: 'PLANNER_ROADMAP_NOT_FOUND' });
+      await assertProjectRuntimeReady(db, req.tenantId, roadmapSnap.data().project_id, roadmapSnap.data().workspace_id || null);
       const started = await startPlannerRoadmap(db, req.tenantId, roadmapId, req.body || {});
       const current = await getPlannerProposal(db, req.tenantId, roadmapId);
       const activeStates = new Set(['PLANNING', 'RUNNING', 'VERIFYING']);

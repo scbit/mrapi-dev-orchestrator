@@ -20,6 +20,7 @@ const { createResultsRouter } = require('./routes/results.routes');
 const { createEvidenceRouter } = require('./routes/evidence.routes');
 const { createPlannerRouter } = require('./routes/planner.routes');
 const { createPlannerUiRouter } = require('./routes/planner.ui.routes');
+const { createProjectUiRouter } = require('./routes/project.ui.routes');
 const { createMissionNotificationSweep } = require('./services/telegramNotifications');
 
 function createApp(options = {}) {
@@ -63,6 +64,7 @@ function createApp(options = {}) {
   app.use('/api/runner', createRunnerRouter({ db }));
   app.use('/api/brain', createBrainRouter({ db }));
   app.use(createPlannerUiRouter());
+  app.use(createProjectUiRouter());
 
   app.use(express.static(path.join(__dirname, 'public')));
 

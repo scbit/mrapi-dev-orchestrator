@@ -394,7 +394,15 @@ function comparableLocalPath(value) {
 function runGitWorktreeCleanHostValidation(validation, options = {}) {
   const repositoryPath = String(validation?.repository_path || '').trim();
   const runnerRepositoryPath = String(options.repositoryPath || cfg.repoPath || '').trim();
-  if (!repositoryPath || !runnerRepositoryPath || comparableLocalPath(repositoryPath) !== comparableLocalPath(runnerRepositoryPath)) {
+  const runnerRoot = String(options.repositoryRoot || cfg.repoRoot || '').trim();
+  const target = comparableLocalPath(repositoryPath);
+  const exact = comparableLocalPath(runnerRepositoryPath);
+  const root = comparableLocalPath(runnerRoot);
+  const authorized = Boolean(
+    target &&
+    ((root && (target === root || target.startsWith(root + '/'))) || (exact && target === exact))
+  );
+  if (!authorized) {
     return {
       success: false,
       safe_message: 'Host validation repository path is not authorized for this Shadow runner.',
@@ -459,7 +467,7 @@ async function executeHostValidationClaim(claim) {
     await progress(run.id, 25, 'Running host-local validation');
     const validator = String(validation.validator || validation.validation_method || '').toLowerCase();
     const result = validator === 'git_worktree_clean' || validator === 'repository_clean' || validator === 'repository_worktree_clean' || validator === 'worktree_clean'
-      ? runGitWorktreeCleanHostValidation(validation, { repositoryPath: cfg.repoPath })
+      ? runGitWorktreeCleanHostValidation(validation, { repositoryPath: cfg.repoPath, repositoryRoot: cfg.repoRoot })
       : {
           success: false,
           safe_message: 'Host-local validator is not supported by this Shadow runner.',
@@ -919,7 +927,8 @@ async function loop() {
 
         const claim = await request('/api/runner/next-task', {
           executor_id: cfg.executorId,
-          repository_path: cfg.repoPath
+          repository_path: cfg.repoPath,
+          repository_root: cfg.repoRoot
         });
 
         pollFailures = 0;

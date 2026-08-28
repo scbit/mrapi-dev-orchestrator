@@ -18,7 +18,8 @@ const cfg = {
   executorName: process.env.MRAPI_EXECUTOR_NAME || 'Codex',
   secret: process.env.MRAPI_RUNNER_SECRET || '',
   workerIds: csv(process.env.MRAPI_WORKER_IDS, 'W01,W02,W03,W04,W05'),
-  pollMs: Math.max(5000, Number(process.env.MRAPI_POLL_SECONDS || 10) * 1000),
+  pollMs: Math.max(5000, Number(process.env.MRAPI_POLL_SECONDS || 10) * 1000),  repoRoot: process.env.MRAPI_REPO_ROOT || path.join(os.homedir(), 'Documents', 'GitHub'),
+
   repoPath: process.env.MRAPI_REPO_PATH || path.join(
     os.homedir(), 'Documents', 'GitHub', 'mrapi-dev-orchestrator'
   ),
