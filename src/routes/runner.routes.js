@@ -18,6 +18,9 @@ const { completeGitStageExecutionRun } = require('../services/autopilot');
 const {
   recoverResolvedPreBrainProgramContinuation
 } = require('../services/preBrainHumanActionResume');
+const {
+  recoverRepeatedResolvedRepositoryPreflight
+} = require('../services/resolvedPreflightReuse');
 
 function createRunnerRouter({ db }) {
   const router = express.Router();
@@ -48,6 +51,11 @@ function createRunnerRouter({ db }) {
     try {
       const executorId = String(req.body.executor_id || '').trim();
       if (!executorId) return res.status(400).json({ error: 'EXECUTOR_ID_REQUIRED' });
+
+      // If PROGRAM repeated an already-PASSed repository-clean prerequisite,
+      // canonicalize it back to the original RESOLVED checkpoint and let the
+      // existing post-Brain continuation create/reuse the Task.
+      await recoverRepeatedResolvedRepositoryPreflight(db, req.tenantId);
 
       // Crash-safe pre-Brain Human Action recovery:
       // If a PROGRAM prerequisite was resolved before any PROGRAM Brain Run existed,
