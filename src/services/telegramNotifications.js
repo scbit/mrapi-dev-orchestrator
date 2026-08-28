@@ -133,6 +133,47 @@ async function sendTelegram(cfg, text, fetchImpl = globalThis.fetch) {
   }
 }
 
+async function reserveDeliveryAtomic(db, fingerprint, mission, kind) {
+  const ref = db.collection('notification_deliveries').doc(fingerprint);
+  let reserved = false;
+  let reason = null;
+
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const existing = snap.exists ? (snap.data() || {}) : null;
+
+    if (existing?.status === 'SENT') {
+      reason = 'ALREADY_SENT';
+      return;
+    }
+
+    if (existing?.status === 'PENDING') {
+      reason = 'ALREADY_PENDING';
+      return;
+    }
+
+    tx.set(ref, {
+      id: fingerprint,
+      tenant_id: mission.tenant_id || null,
+      workspace_id: mission.workspace_id || null,
+      project_id: mission.project_id || null,
+      mission_id: mission.id,
+      roadmap_id: mission.roadmap_id || null,
+      milestone_id: mission.milestone_id || null,
+      channel: 'TELEGRAM',
+      notification_kind: kind,
+      status: 'PENDING',
+      attempt_count: Number(existing?.attempt_count || 0) + 1,
+      updated_at: new Date(),
+      created_at: existing?.created_at || new Date()
+    }, { merge: true });
+
+    reserved = true;
+  });
+
+  return { reserved, reason, ref };
+}
+
 async function notifyMission({ db, mission, env = process.env, fetchImpl = globalThis.fetch }) {
   const cfg = envConfig(env);
   if (!configured(cfg)) return { sent: false, skipped: true, reason: 'NOT_CONFIGURED' };
@@ -141,39 +182,31 @@ async function notifyMission({ db, mission, env = process.env, fetchImpl = globa
   if (!kind) return { sent: false, skipped: true, reason: 'NOT_NOTIFIABLE' };
 
   const fingerprint = fingerprintForMission(mission, kind);
-  const ref = db.collection('notification_deliveries').doc(fingerprint);
-  const snap = await ref.get();
-  if (snap.exists && snap.data()?.status === 'SENT') {
-    return { sent: false, skipped: true, reason: 'ALREADY_SENT' };
-  }
+  const reservation = await reserveDeliveryAtomic(db, fingerprint, mission, kind);
 
-  await ref.set({
-    id: fingerprint,
-    tenant_id: mission.tenant_id || null,
-    workspace_id: mission.workspace_id || null,
-    project_id: mission.project_id || null,
-    mission_id: mission.id,
-    roadmap_id: mission.roadmap_id || null,
-    milestone_id: mission.milestone_id || null,
-    channel: 'TELEGRAM',
-    notification_kind: kind,
-    status: 'PENDING',
-    updated_at: new Date(),
-    created_at: snap.exists ? (snap.data()?.created_at || new Date()) : new Date()
-  }, { merge: true });
+  if (!reservation.reserved) {
+    return { sent: false, skipped: true, reason: reservation.reason };
+  }
 
   try {
     const result = await sendTelegram(cfg, buildMessage(cfg, mission, kind), fetchImpl);
-    await ref.set({ status: 'SENT', sent_at: new Date(), last_error: null, updated_at: new Date() }, { merge: true });
+    await reservation.ref.set({
+      status: 'SENT',
+      sent_at: new Date(),
+      last_error: null,
+      updated_at: new Date()
+    }, { merge: true });
+
     console.log('[MRAPI TELEGRAM] sent', { missionId: mission.id, kind });
     return { sent: true, kind, result };
   } catch (error) {
-    await ref.set({
+    await reservation.ref.set({
       status: 'FAILED',
       last_error: clean(error?.message || error, 1000),
       failed_at: new Date(),
       updated_at: new Date()
     }, { merge: true });
+
     console.error('[MRAPI TELEGRAM]', clean(error?.message || error, 1000));
     return { sent: false, failed: true, error: clean(error?.message || error, 1000) };
   }
@@ -205,8 +238,6 @@ function createMissionNotificationSweep(db, options = {}) {
       const candidates = snap.docs
         .map((doc) => ({ id: doc.id, ...doc.data() }))
         .filter((mission) => notificationKind(mission))
-        // Only notify state changes made since this Cloud Run instance started.
-        // This prevents historical alerts on deploy/cold start.
         .filter((mission) => timestampMs(mission.updated_at || mission.created_at) >= startedAt - 5000);
 
       for (const mission of candidates) {
@@ -231,6 +262,7 @@ module.exports = {
   fingerprintForMission,
   buildMessage,
   sendTelegram,
+  reserveDeliveryAtomic,
   notifyMission,
   createMissionNotificationSweep
 };
