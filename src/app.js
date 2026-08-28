@@ -9,6 +9,7 @@ const { createWorkersRouter } = require('./routes/workers.routes');
 const { createWorkspacesRouter } = require('./routes/workspaces.routes');
 const { createProjectsRouter } = require('./routes/projects.routes');
 const { createRoadmapsRouter } = require('./routes/roadmaps.routes');
+const { createRecoveryRouter } = require('./routes/recovery.routes');
 const { createMissionsRouter } = require('./routes/missions.routes');
 const { createTasksRouter } = require('./routes/tasks.routes');
 const { createRunnerRouter } = require('./routes/runner.routes');
@@ -32,8 +33,6 @@ function createApp(options = {}) {
   app.use(express.urlencoded({ extended: false }));
   app.use(tenantMiddleware);
 
-  // Cloud Run-safe Telegram notifications:
-  // run after request completion instead of using a resident Firestore listener.
   app.use((req, res, next) => {
     res.on('finish', () => {
       if (req.method === 'OPTIONS') return;
@@ -50,7 +49,11 @@ function createApp(options = {}) {
   app.use('/api/workspaces', createWorkspacesRouter({ repos }));
   app.use('/api/projects', createProjectsRouter({ repos }));
   app.use('/api/roadmaps', createRoadmapsRouter({ repos, db }));
+
+  // Recovery router must be mounted before the legacy Missions retry/recover routes.
+  app.use('/api/missions', createRecoveryRouter({ db }));
   app.use('/api/missions', createMissionsRouter({ repos }));
+
   app.use('/api/tasks', createTasksRouter({ repos }));
   app.use('/api/executors', createExecutorsRouter({ repos }));
   app.use('/api/runs', createRunsRouter({ repos }));

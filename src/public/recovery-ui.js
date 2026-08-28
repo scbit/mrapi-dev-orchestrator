@@ -12,7 +12,7 @@
     }
   }
 
-  async function performRecovery(missionId, button) {
+  async function performRecovery(missionId, button, editInstruction = false) {
     const status = currentMissionId === missionId && currentRecovery
       ? currentRecovery
       : await recoveryStatus(missionId);
@@ -22,16 +22,33 @@
       return;
     }
 
-    if (!confirm(`${status.action_label || 'Recover Mission'} for this Mission?`)) return;
+    let recoveryInstruction = '';
+    if (editInstruction && status.mode === 'BRAIN_REPLAY') {
+      const entered = prompt(
+        'Optional correction for the next Brain attempt:',
+        ''
+      );
+      if (entered === null) return;
+      recoveryInstruction = entered.trim();
+    }
+
+    const label = status.mode === 'BRAIN_REPLAY'
+      ? (recoveryInstruction ? 'Edit & Recover' : 'Recover & Correct')
+      : (status.action_label || 'Recover Mission');
+
+    if (!confirm(`${label} for this Mission?`)) return;
 
     button.disabled = true;
     try {
       await api(`/api/missions/${encodeURIComponent(missionId)}/recover`, {
         method: 'POST',
-        body: '{}'
+        body: JSON.stringify({
+          recovery_instruction: recoveryInstruction || null
+        })
       });
+
       currentRecovery = null;
-      showToast(`${status.action_label || 'Recovery'} started.`);
+      showToast(`${label} started.`);
       if (typeof closeMissionDetail === 'function') closeMissionDetail();
       if (typeof loadAll === 'function') await loadAll();
     } catch (error) {
@@ -55,7 +72,7 @@
 
       if (currentMissionId !== missionId || modal.hidden) return;
 
-      actions.querySelector('.mrapi-recovery-button')?.remove();
+      actions.querySelectorAll('.mrapi-recovery-button').forEach((el) => el.remove());
 
       const legacyRetry = actions.querySelector('.retry-button');
 
@@ -66,25 +83,41 @@
 
       if (legacyRetry) legacyRetry.style.display = 'none';
 
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'ghost-button mrapi-recovery-button';
-      button.dataset.missionId = missionId;
-      button.textContent = currentRecovery.action_label || 'Recover Mission';
-      button.title = currentRecovery.reason || '';
-      button.addEventListener('click', async (event) => {
+      const primary = document.createElement('button');
+      primary.type = 'button';
+      primary.className = 'ghost-button mrapi-recovery-button';
+      primary.dataset.missionId = missionId;
+      primary.textContent = currentRecovery.mode === 'BRAIN_REPLAY'
+        ? 'Recover & Correct'
+        : (currentRecovery.action_label || 'Recover Mission');
+      primary.title = currentRecovery.reason || '';
+      primary.addEventListener('click', async (event) => {
         event.preventDefault();
         event.stopPropagation();
-        await performRecovery(missionId, button);
+        await performRecovery(missionId, primary, false);
       });
 
-      actions.prepend(button);
+      actions.prepend(primary);
+
+      if (currentRecovery.mode === 'BRAIN_REPLAY') {
+        const edit = document.createElement('button');
+        edit.type = 'button';
+        edit.className = 'ghost-button mrapi-recovery-button';
+        edit.dataset.missionId = missionId;
+        edit.textContent = 'Edit & Recover';
+        edit.title = 'Add an operator correction before replaying Brain.';
+        edit.addEventListener('click', async (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          await performRecovery(missionId, edit, true);
+        });
+        primary.after(edit);
+      }
     } finally {
       decorating = false;
     }
   }
 
-  // Capture which Mission the user intends to open.
   document.addEventListener('click', (event) => {
     const row = event.target.closest?.('[data-open-mission]');
     if (!row) return;
@@ -94,8 +127,6 @@
     currentRecovery = null;
   }, true);
 
-  // Critical fix: observe the modal's "hidden" attribute.
-  // openMissionDetail fills the modal while hidden, then removes hidden.
   const modal = document.querySelector('#missionDetailModal');
   if (modal) {
     const modalObserver = new MutationObserver(() => {
