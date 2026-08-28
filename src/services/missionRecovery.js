@@ -301,6 +301,16 @@ async function replayAutopilotBrain(db, tenantId, context) {
       }
     }
 
+    // Firestore requires every transaction read to happen before the first write.
+    // Read the Roadmap now, before tx.set(newRunRef) / tx.set(missionRef).
+    let freshRoadmap = null;
+    if (roadmapRef && milestone) {
+      const roadmapSnap = await tx.get(roadmapRef);
+      if (roadmapSnap.exists && roadmapSnap.data().tenant_id === tenantId) {
+        freshRoadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
+      }
+    }
+
     const latestBrain = missionRuns.find((run) => run.run_type === 'BRAIN_RUN') || null;
     const attempt = Math.max(
       Number(freshMission.retry_count || 0),
@@ -360,26 +370,22 @@ async function replayAutopilotBrain(db, tenantId, context) {
       updated_at: timestamp()
     }, { merge: true });
 
-    if (roadmapRef && milestone) {
-      const roadmapSnap = await tx.get(roadmapRef);
-      if (roadmapSnap.exists && roadmapSnap.data().tenant_id === tenantId) {
-        const freshRoadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
-        tx.set(roadmapRef, {
-          state: freshRoadmap.state === 'BLOCKED' ? 'ACTIVE' : freshRoadmap.state,
-          milestones: (freshRoadmap.milestones || []).map((item) => item.id === milestone.id
-            ? {
-                ...item,
-                state: 'PLANNING',
-                mission_id: mission.id,
-                brain_run_id: newRunRef.id,
-                blocked_reason: null,
-                blocker_code: null,
-                updated_at: new Date()
-              }
-            : item),
-          updated_at: timestamp()
-        }, { merge: true });
-      }
+    if (freshRoadmap && milestone) {
+      tx.set(roadmapRef, {
+        state: freshRoadmap.state === 'BLOCKED' ? 'ACTIVE' : freshRoadmap.state,
+        milestones: (freshRoadmap.milestones || []).map((item) => item.id === milestone.id
+          ? {
+              ...item,
+              state: 'PLANNING',
+              mission_id: mission.id,
+              brain_run_id: newRunRef.id,
+              blocked_reason: null,
+              blocker_code: null,
+              updated_at: new Date()
+            }
+          : item),
+        updated_at: timestamp()
+      }, { merge: true });
     }
 
     result = {
