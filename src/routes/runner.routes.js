@@ -15,6 +15,9 @@ const {
   recoverAbandonedBrainRuns
 } = require('../services/orchestration');
 const { completeGitStageExecutionRun } = require('../services/autopilot');
+const {
+  recoverResolvedPreBrainProgramContinuation
+} = require('../services/preBrainHumanActionResume');
 
 function createRunnerRouter({ db }) {
   const router = express.Router();
@@ -45,6 +48,13 @@ function createRunnerRouter({ db }) {
     try {
       const executorId = String(req.body.executor_id || '').trim();
       if (!executorId) return res.status(400).json({ error: 'EXECUTOR_ID_REQUIRED' });
+
+      // Crash-safe pre-Brain Human Action recovery:
+      // If a PROGRAM prerequisite was resolved before any PROGRAM Brain Run existed,
+      // create/reuse that Brain Run on the SAME Mission before looking for Executor work.
+      // Shadow remains hands only; MRAPI server owns this lifecycle decision.
+      await recoverResolvedPreBrainProgramContinuation(db, req.tenantId);
+
       const claimed = await claimNextTask(db, req.tenantId, executorId, {
         repository_path: req.body?.repository_path || null
       });
@@ -176,7 +186,6 @@ function createRunnerRouter({ db }) {
     }
   });
 
-
   router.post('/tasks/:taskId/manual-codex-complete', async (req, res, next) => {
     try {
       res.json(await completeManualCodexHandoff(
@@ -190,7 +199,6 @@ function createRunnerRouter({ db }) {
       next(error);
     }
   });
-
 
   router.post('/recover-abandoned', async (req, res, next) => {
     try {
