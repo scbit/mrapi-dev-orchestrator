@@ -1,6 +1,7 @@
 (() => {
   let currentMissionId = null;
   let currentRecovery = null;
+  let decorating = false;
 
   async function recoveryStatus(missionId) {
     try {
@@ -40,76 +41,73 @@
     }
   }
 
-  function removeLegacyRetry(container) {
-    if (!container) return;
-    for (const button of container.querySelectorAll('.retry-button')) {
-      button.style.display = 'none';
-    }
-  }
-
   async function decorateMissionDetail(missionId) {
     const modal = document.querySelector('#missionDetailModal');
-    if (!modal || modal.hidden) return;
+    if (!modal || modal.hidden || !missionId || decorating) return;
 
     const actions = modal.querySelector('.modal-actions > div');
     if (!actions) return;
 
-    currentMissionId = missionId;
-    currentRecovery = await recoveryStatus(missionId);
+    decorating = true;
+    try {
+      currentMissionId = missionId;
+      currentRecovery = await recoveryStatus(missionId);
 
-    if (currentMissionId !== missionId) return;
+      if (currentMissionId !== missionId || modal.hidden) return;
 
-    removeLegacyRetry(actions);
-    actions.querySelector('.mrapi-recovery-button')?.remove();
+      actions.querySelector('.mrapi-recovery-button')?.remove();
 
-    if (!currentRecovery?.recoverable) return;
+      const legacyRetry = actions.querySelector('.retry-button');
 
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'ghost-button mrapi-recovery-button';
-    button.dataset.missionId = missionId;
-    button.textContent = currentRecovery.action_label || 'Recover Mission';
-    button.title = currentRecovery.reason || '';
-    button.addEventListener('click', async (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      await performRecovery(missionId, button);
-    });
+      if (!currentRecovery?.recoverable) {
+        if (legacyRetry) legacyRetry.style.display = '';
+        return;
+      }
 
-    actions.prepend(button);
+      if (legacyRetry) legacyRetry.style.display = 'none';
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'ghost-button mrapi-recovery-button';
+      button.dataset.missionId = missionId;
+      button.textContent = currentRecovery.action_label || 'Recover Mission';
+      button.title = currentRecovery.reason || '';
+      button.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        await performRecovery(missionId, button);
+      });
+
+      actions.prepend(button);
+    } finally {
+      decorating = false;
+    }
   }
 
-  // Important: do NOT call /recovery for every Mission row.
-  // Only resolve recovery for the Mission the operator explicitly opens.
+  // Capture which Mission the user intends to open.
   document.addEventListener('click', (event) => {
     const row = event.target.closest?.('[data-open-mission]');
     if (!row) return;
-
     const missionId = row.dataset.openMission;
     if (!missionId) return;
-
     currentMissionId = missionId;
     currentRecovery = null;
-
-    setTimeout(() => {
-      void decorateMissionDetail(missionId);
-    }, 80);
   }, true);
 
-  const observer = new MutationObserver(() => {
-    const modal = document.querySelector('#missionDetailModal');
-    if (!modal || modal.hidden || !currentMissionId) return;
-
-    const actions = modal.querySelector('.modal-actions > div');
-    if (!actions) return;
-
-    if (
-      currentRecovery?.recoverable &&
-      !actions.querySelector('.mrapi-recovery-button')
-    ) {
-      void decorateMissionDetail(currentMissionId);
-    }
-  });
-
-  observer.observe(document.body, { childList: true, subtree: true });
-})(); 
+  // Critical fix: observe the modal's "hidden" attribute.
+  // openMissionDetail fills the modal while hidden, then removes hidden.
+  const modal = document.querySelector('#missionDetailModal');
+  if (modal) {
+    const modalObserver = new MutationObserver(() => {
+      if (!modal.hidden && currentMissionId) {
+        void decorateMissionDetail(currentMissionId);
+      }
+    });
+    modalObserver.observe(modal, {
+      attributes: true,
+      attributeFilter: ['hidden'],
+      childList: true,
+      subtree: true
+    });
+  }
+})();
