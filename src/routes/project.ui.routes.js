@@ -44,7 +44,7 @@ async function load(){
 }
 create.onclick=async()=>{try{
   statusEl.textContent='Creando...';
-  const body={workspace_id:workspace.value,name:name.value,repository_full_name:repo.value,default_branch:branch.value,host_name:host.value,repository_path:path.value};
+  const body={workspace_id:document.getElementById('workspace').value,name:document.getElementById('name').value,repository_full_name:document.getElementById('repo').value,default_branch:document.getElementById('branch').value,host_name:document.getElementById('host').value,repository_path:document.getElementById('path').value};
   const d=await j('/api/projects',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   statusEl.innerHTML='<span class="ok">Project creado: '+d.id+'. Ya aparece en el selector del Planner.</span>'; await load();
 }catch(e){statusEl.innerHTML='<span class="err">'+e.message+'</span>'}}
