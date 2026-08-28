@@ -80,6 +80,57 @@ function createPlannerRouter({ db }) {
     }
   });
 
+  router.get('/resolve', async (req, res, next) => {
+    try {
+      const missionId = String(req.query?.mission_id || '').trim();
+      const brainRunId = String(req.query?.brain_run_id || '').trim();
+      if (!missionId && !brainRunId) {
+        return res.status(400).json({ error: 'PLANNER_RESOLVE_ID_REQUIRED' });
+      }
+
+      const snapshot = await db.collection('roadmaps')
+        .where('tenant_id', '==', req.tenantId)
+        .limit(200)
+        .get();
+
+      const matches = snapshot.docs
+        .map((doc) => ({ id: doc.id, ...doc.data() }))
+        .filter((item) => item.proposal_type === 'PLANNER_ROADMAP')
+        .filter((item) => {
+          if (missionId && (
+            item.source_planner_mission_id === missionId ||
+            item.planner_request_id === missionId
+          )) return true;
+          if (brainRunId && (
+            item.source_planner_brain_run_id === brainRunId ||
+            item.source_brain_run_id === brainRunId
+          )) return true;
+          return false;
+        })
+        .sort((a, b) => {
+          const am = a.updated_at?.toMillis?.() || a.created_at?.toMillis?.() || 0;
+          const bm = b.updated_at?.toMillis?.() || b.created_at?.toMillis?.() || 0;
+          return bm - am;
+        });
+
+      if (!matches.length) {
+        return res.status(404).json({ error: 'PLANNER_PROPOSAL_NOT_FOUND' });
+      }
+
+      const roadmap = matches[0];
+      return res.json(serializeFirestore({
+        roadmap_id: roadmap.id,
+        proposal_id: roadmap.id,
+        mission_id: roadmap.source_planner_mission_id || roadmap.planner_request_id || null,
+        brain_run_id: roadmap.source_planner_brain_run_id || roadmap.source_brain_run_id || null,
+        workspace_id: roadmap.workspace_id || null,
+        project_id: roadmap.project_id || null
+      }));
+    } catch (error) {
+      next(error);
+    }
+  });
+
   router.get('/proposals/:proposalId', async (req, res, next) => {
     try {
       const proposal = await getPlannerProposal(db, req.tenantId, req.params.proposalId);

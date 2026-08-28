@@ -1281,14 +1281,43 @@ function plannerPageHtml() {
     }
 
     async function discoverProposalFromMission() {
-      if (!state.requestId) return null;
-      const mission = await fetch('/api/missions/' + encodeURIComponent(state.requestId)).then(parseResponse);
-      const proposalId = mission.planner_roadmap_id || mission.roadmap_id || mission.current_roadmap_id;
-      if (proposalId) {
-        state.proposalId = proposalId;
-        els.proposalId.value = proposalId;
+      const missionIds = [...new Set([state.missionId, state.requestId].map((value) => text(value).trim()).filter(Boolean))];
+
+      for (const missionId of missionIds) {
+        try {
+          const mission = await fetch('/api/missions/' + encodeURIComponent(missionId)).then(parseResponse);
+          const proposalId = mission.planner_roadmap_id || mission.roadmap_id || mission.current_roadmap_id;
+          if (proposalId) {
+            state.proposalId = proposalId;
+            els.proposalId.value = proposalId;
+            persistPlannerState();
+            return proposalId;
+          }
+        } catch {}
       }
-      return proposalId;
+
+      const query = new URLSearchParams();
+      if (state.missionId || state.requestId) query.set('mission_id', state.missionId || state.requestId);
+      if (state.brainRunId) query.set('brain_run_id', state.brainRunId);
+
+      if ([...query.keys()].length) {
+        try {
+          const resolved = await fetch('/api/planner/resolve?' + query.toString()).then(parseResponse);
+          const proposalId = resolved.roadmap_id || resolved.proposal_id;
+          if (proposalId) {
+            state.proposalId = proposalId;
+            if (resolved.mission_id) state.missionId = resolved.mission_id;
+            if (resolved.brain_run_id) state.brainRunId = resolved.brain_run_id;
+            els.proposalId.value = proposalId;
+            persistPlannerState();
+            return proposalId;
+          }
+        } catch (error) {
+          if (!/PLANNER_PROPOSAL_NOT_FOUND/.test(String(error.message || ''))) throw error;
+        }
+      }
+
+      return null;
     }
 
     async function loadProposal() {
