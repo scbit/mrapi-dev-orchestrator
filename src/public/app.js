@@ -243,7 +243,7 @@ async function loadTrustedContext() {
 function runForMission(missionId) {
   return state.runs
     .filter((run) => run.mission_id === missionId)
-    .sort((a, b) => Number(b.progress_percent || 0) - Number(a.progress_percent || 0))[0] || null;
+    .sort((a, b) => timestampMs(b.updated_at || b.completed_at || b.created_at) - timestampMs(a.updated_at || a.completed_at || a.created_at))[0] || null;
 }
 
 function missionProgress(mission) {
@@ -253,13 +253,12 @@ function missionProgress(mission) {
   const exec = runs.find((run) => run.run_type === 'EXECUTION_RUN' && run.state === 'RUNNING');
   if (exec) return { percent: Number(exec.progress_percent || 0), label: exec.progress_message || 'Executing' };
   const brain = runs.find((run) => run.run_type === 'BRAIN_RUN' && run.state === 'RUNNING');
-  if (brain) return { percent: Math.min(45, Math.max(5, Number(brain.progress_percent || 0))), label: brain.progress_message || 'Brain planning' };
-  if (mission.state === 'PLANNING') return { percent: 45, label: 'Planning completed / waiting execution' };
-  if (mission.state === 'RUNNING') return { percent: 55, label: 'Running' };
-  return { percent: 0, label: mission.state || 'Ready' };
+  if (brain && brain.progress_percent != null) return { percent: Number(brain.progress_percent || 0), label: brain.progress_message || 'Brain planning' };
+  return null;
 }
 
 function progressBar(progress) {
+  if (!progress) return '';
   const percent = Math.max(0, Math.min(100, Number(progress.percent || 0)));
   return `
     <div class="progress-wrap" title="${escapeHtml(progress.label)}">
@@ -270,7 +269,9 @@ function progressBar(progress) {
 }
 
 function latestResult(missionId) {
-  const items = state.results.filter((result) => result.mission_id === missionId);
+  const items = state.results
+    .filter((result) => result.mission_id === missionId)
+    .sort((a, b) => timestampMs(a.updated_at || a.completed_at || a.created_at) - timestampMs(b.updated_at || b.completed_at || b.created_at));
   return items[items.length - 1] || null;
 }
 
@@ -522,6 +523,359 @@ function renderPlanSection(mission, planData) {
   `;
 }
 
+function textValue(...values) {
+  for (const value of values) {
+    const text = String(value ?? '').trim();
+    if (text) return text;
+  }
+  return '';
+}
+
+function upperValue(value) {
+  return textValue(value).toUpperCase();
+}
+
+function timestampMs(value) {
+  if (!value) return 0;
+  if (typeof value === 'number') return value;
+  if (typeof value === 'object' && typeof value.toDate === 'function') return value.toDate().getTime();
+  if (typeof value === 'object' && Number.isFinite(value.seconds)) return value.seconds * 1000;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function formatTrustedTime(value) {
+  const ms = timestampMs(value);
+  if (!ms) return 'No trusted activity yet';
+  return new Date(ms).toLocaleString();
+}
+
+function taskTitle(task) {
+  return textValue(task?.title, task?.task_spec?.title, task?.objective, task?.task_spec?.objective);
+}
+
+function missionTasks(missionId) {
+  return state.tasks.filter((task) => task.mission_id === missionId);
+}
+
+function missionRuns(missionId) {
+  return state.runs.filter((run) => run.mission_id === missionId);
+}
+
+function sortedByTrustedTime(items) {
+  return [...items].sort((a, b) => timestampMs(b.updated_at || b.completed_at || b.created_at || b.started_at) - timestampMs(a.updated_at || a.completed_at || a.created_at || a.started_at));
+}
+
+function currentTask(tasks, runs) {
+  const activeRun = sortedByTrustedTime(runs).find((run) => ['QUEUED', 'ASSIGNED', 'WAITING', 'RUNNING', 'TESTING', 'PENDING'].includes(upperValue(run.state)));
+  return tasks.find((task) => task.id === activeRun?.task_id) ||
+    sortedByTrustedTime(tasks).find((task) => ['READY', 'QUEUED', 'ASSIGNED', 'WAITING', 'RUNNING', 'TESTING', 'PENDING'].includes(upperValue(task.state))) ||
+    sortedByTrustedTime(tasks)[0] ||
+    null;
+}
+
+function checkpointStatus(checkpoint) {
+  return upperValue(checkpoint?.status || checkpoint?.waiting_status || checkpoint?.checkpoint_status || checkpoint?.validation_state);
+}
+
+function isResolvedHumanAction(checkpoint) {
+  const status = checkpointStatus(checkpoint);
+  return ['RESOLVED', 'COMPLETED', 'DONE', 'PASS', 'PASSED'].includes(status) || checkpoint?.human_action_required === false || checkpoint?.resolved === true;
+}
+
+function isUnresolvedHumanAction(checkpoint) {
+  if (!checkpoint || checkpoint.stale === true || checkpoint.superseded === true) return false;
+  if (isResolvedHumanAction(checkpoint)) return false;
+  const status = checkpointStatus(checkpoint);
+  return checkpoint.human_action_required === true ||
+    ['WAITING_FOR_HUMAN', 'NEED_HUMAN_ACTION', 'PENDING', 'READY', 'FAILED', 'VALIDATING'].includes(status);
+}
+
+function currentHumanAction(mission, tasks = []) {
+  const candidates = [
+    mission.active_human_action,
+    mission.current_human_action_checkpoint,
+    mission.human_action_checkpoint,
+    mission.human_action,
+    ...tasks.flatMap((task) => [task.active_human_action, task.current_human_action_checkpoint, task.human_action_checkpoint, task.human_action])
+  ].filter(Boolean);
+  return candidates.find(isUnresolvedHumanAction) || null;
+}
+
+function activeRecovery(mission, runs, recoveryStatus = null) {
+  if (recoveryStatus?.recoverable === true && recoveryStatus.mode && recoveryStatus.mode !== 'NO_ACTION') return recoveryStatus;
+  const activeRun = runs.find((run) =>
+    (run.recovery_replay === true || run.recovery_mode || run.corrective_recovery === true) &&
+    ['QUEUED', 'ASSIGNED', 'WAITING', 'RUNNING', 'TESTING', 'PENDING'].includes(upperValue(run.state))
+  );
+  if (activeRun) return { recoverable: true, mode: activeRun.recovery_mode || 'BRAIN_REPLAY', reason: activeRun.progress_message || 'Trusted recovery work is active.', active_run_id: activeRun.id };
+  if (mission.recovery_active_run_id) return { recoverable: true, mode: mission.last_recovery_mode || 'BRAIN_REPLAY', reason: mission.last_recovery_failure_code || 'Trusted recovery work is active.', active_run_id: mission.recovery_active_run_id };
+  return null;
+}
+
+function isVerificationRun(run) {
+  const type = upperValue(run?.run_type || run?.brain_run_type || run?.type);
+  const subtype = upperValue(run?.brain_run_type || run?.run_subtype || run?.mode);
+  const phase = upperValue(run?.phase || run?.brain_phase || run?.progress_message || run?.purpose);
+  return type.includes('VERIFICATION') || subtype.includes('VERIFICATION') || phase.includes('VERIFY') || phase.includes('VERIFICATION');
+}
+
+function isTestRun(run) {
+  const phase = upperValue(run?.phase || run?.execution_phase || run?.progress_message || run?.stage || run?.task_phase);
+  return phase.includes('TEST') || phase.includes('VALIDATION') || upperValue(run?.state) === 'TESTING';
+}
+
+function readyExecutionTask(task) {
+  const stateText = upperValue(task?.state);
+  const requiresExecution = task?.requires_execution !== false && task?.task_spec?.requires_execution !== false;
+  return requiresExecution && ['READY', 'QUEUED', 'ASSIGNED', 'WAITING', 'PENDING'].includes(stateText);
+}
+
+function deriveMissionCenterPhase({ mission, tasks = [], runs = [], humanAction = null, recovery = null }) {
+  const activeRuns = runs.filter((run) => ['QUEUED', 'ASSIGNED', 'WAITING', 'RUNNING', 'TESTING', 'PENDING'].includes(upperValue(run.state)));
+  if (humanAction && isUnresolvedHumanAction(humanAction)) return { key: 'human-action', label: 'Waiting Human Action', actor: 'Human' };
+  if (recovery) return { key: 'recovering', label: 'Recovering', actor: recovery.mode === 'EXECUTION_RETRY' ? 'Executor' : 'Brain' };
+  if (activeRuns.some((run) => run.run_type === 'BRAIN_RUN' && isVerificationRun(run))) return { key: 'verification', label: 'Verification', actor: 'Brain' };
+  if (activeRuns.some((run) => run.run_type === 'EXECUTION_RUN' && isTestRun(run))) return { key: 'testing', label: 'Testing', actor: 'Executor' };
+  if (activeRuns.some((run) => run.run_type === 'EXECUTION_RUN')) return { key: 'executor-working', label: 'Executor Working', actor: 'Executor' };
+  if (tasks.some(readyExecutionTask)) return { key: 'waiting-executor', label: 'Waiting for Executor', actor: 'Executor' };
+  if (activeRuns.some((run) => run.run_type === 'BRAIN_RUN' && ['PROGRAM', 'PLANNING'].includes(upperValue(run.brain_run_type || run.phase || run.run_subtype || run.mode)))) return { key: 'brain-working', label: 'Brain Working', actor: 'Brain' };
+  if (activeRuns.some((run) => run.run_type === 'BRAIN_RUN')) return { key: 'brain-working', label: 'Brain Working', actor: 'Brain' };
+  if (['PLANNING', 'PLAN_REQUIRED', 'PENDING_PLAN'].includes(upperValue(mission.state))) return { key: 'planning', label: 'Planning', actor: 'Brain' };
+  if (['COMPLETED', 'DONE', 'SUCCESS'].includes(upperValue(mission.state))) return { key: 'completed', label: 'Completed', actor: 'MRAPI' };
+  if (['BLOCKED', 'FAILED', 'CANCELLED', 'ERROR'].includes(upperValue(mission.state))) return { key: 'blocked-failed', label: 'Blocked/Failed', actor: 'MRAPI' };
+  return { key: 'planning', label: 'Planning', actor: 'Brain' };
+}
+
+function missionCenterExplanation(phase, mission, result) {
+  const outcome = result ? textValue(result.summary, result.content, result.text, result.output?.final_result_text, result.result_type) : '';
+  const map = {
+    planning: 'Brain is preparing the execution plan.',
+    'brain-working': 'Brain is working from trusted mission context.',
+    'waiting-executor': 'A prepared task is waiting for Executor work.',
+    'executor-working': 'Executor is working on the current task.',
+    testing: 'Required tests are running or being evaluated.',
+    verification: 'Brain is validating trusted execution evidence.',
+    'human-action': 'MRAPI is waiting for a required human action before this Mission can continue.',
+    recovering: 'Existing Mission recovery is in progress.',
+    completed: outcome ? `Mission finished: ${outcome}` : 'Mission finished; trusted final result is available when persisted.',
+    'blocked-failed': 'Trusted state indicates this Mission cannot currently continue.'
+  };
+  return map[phase.key] || textValue(mission.progress_message, mission.state, 'Mission state is available.');
+}
+
+function missionCenterNextStep(phase) {
+  return {
+    planning: 'Brain is preparing the execution plan.',
+    'brain-working': 'Wait for Brain result.',
+    'waiting-executor': 'Executor can begin the prepared Task.',
+    'executor-working': 'Wait for execution/test result.',
+    testing: 'Required tests are running or being evaluated.',
+    verification: 'Brain is validating trusted execution evidence.',
+    'human-action': 'Complete the requested human action and mark LISTO.',
+    recovering: 'Existing Mission recovery is in progress.',
+    completed: 'Mission finished; show trusted final result.',
+    'blocked-failed': 'Inspect trusted failure details and use recovery if available.'
+  }[phase.key] || 'Wait for trusted state to update.';
+}
+
+function latestMissionActivity(mission, tasks, runs, results, humanAction) {
+  const sources = [mission, ...tasks, ...runs, ...results, humanAction].filter(Boolean);
+  const stamped = sources.flatMap((item) => [
+    item.updated_at,
+    item.completed_at,
+    item.started_at,
+    item.created_at,
+    item.validation_completed_at,
+    item.responded_at
+  ].filter(Boolean).map((value) => ({ value, ms: timestampMs(value) })));
+  return stamped.sort((a, b) => b.ms - a.ms)[0] || null;
+}
+
+function trustedEvidenceStatus(result) {
+  if (!result) return { label: 'Not verified yet', className: 'neutral', pass: false };
+  const candidates = [
+    result.verification_status,
+    result.evidence_status,
+    result.validation_status,
+    result.status,
+    result.success === true ? 'PASS' : '',
+    result.output?.status,
+    result.output?.validation_status,
+    result.output?.verification_status,
+    result.output?.validation_result?.status,
+    result.output?.validation_result?.ok === true ? 'PASS' : ''
+  ].map(upperValue).filter(Boolean);
+  if (candidates.some((value) => ['PASS', 'PASSED', 'SUCCESS', 'COMPLETED', 'DONE'].includes(value))) return { label: 'PASS', className: 'pass', pass: true };
+  if (candidates.some((value) => ['FAIL', 'FAILED', 'ERROR', 'REJECTED'].includes(value))) return { label: 'FAILED', className: 'failed', pass: false };
+  return { label: 'Not verified yet', className: 'neutral', pass: false };
+}
+
+function recoveryActionLabel(mode) {
+  if (mode === 'BRAIN_REPLAY' || mode === 'BRAIN_CORRECTIVE_REPLAY') return 'Correct / Replay Brain';
+  if (mode === 'EXECUTION_RETRY') return 'Retry Execution';
+  if (mode === 'HUMAN_ACTION_RESUME') return 'Resume Mission';
+  if (mode === 'AUTOPILOT_RESUME') return 'Resume Autopilot';
+  return 'Recover Mission';
+}
+
+function recoveryPanel(mission, recovery) {
+  if (!recovery?.recoverable || !recovery.mode || recovery.mode === 'NO_ACTION') {
+    return '<section class="mission-center-empty" aria-label="Recovery unavailable">Recovery unavailable from trusted state.</section>';
+  }
+  const active = recovery.active === true || recovery.active_run_id || mission.recovery_active_run_id;
+  const label = recoveryActionLabel(recovery.mode);
+  return `
+    <section class="mission-center-recovery" aria-label="Recovery">
+      <div>
+        <span class="eyebrow">Recovery</span>
+        <h3>${escapeHtml(label)}</h3>
+        <p>${escapeHtml(recovery.reason || 'Trusted recovery is available for this Mission.')}</p>
+      </div>
+      <button type="button" class="danger-button mrapi-mission-center-recovery" data-mission-center-recovery="1" data-mission-id="${escapeHtml(mission.id)}" data-recovery-mode="${escapeHtml(recovery.mode)}" ${active ? 'disabled' : ''}>${escapeHtml(active ? 'Recovery in progress' : label)}</button>
+    </section>
+  `;
+}
+
+function humanActionValidationStatus(checkpoint) {
+  const validation = checkpoint?.validation_result || checkpoint?.validation || {};
+  const status = upperValue(
+    validation.status ||
+    validation.validation_status ||
+    (validation.ok === true ? 'PASS' : '') ||
+    (validation.ok === false ? 'FAILED' : '') ||
+    checkpoint?.validation_state ||
+    checkpoint?.validation_status
+  );
+  if (['PASS', 'PASSED', 'SUCCESS', 'COMPLETED', 'DONE'].includes(status)) return { label: 'PASS', className: 'pass' };
+  if (['FAIL', 'FAILED', 'ERROR', 'REJECTED'].includes(status)) return { label: 'FAILED', className: 'failed' };
+  if (status) return { label: status, className: 'neutral' };
+  return { label: 'Not verified yet', className: 'neutral' };
+}
+
+function humanActionPanel(mission, checkpoint) {
+  if (!checkpoint || !isUnresolvedHumanAction(checkpoint)) return '';
+  const validation = humanActionValidationStatus(checkpoint);
+  const canReady = textValue(checkpoint.checkpoint_id || checkpoint.id) && textValue(checkpoint.roadmap_id || mission.roadmap_id);
+  return `
+    <section class="mission-center-human-action" aria-label="Action required">
+      <div class="mission-center-panel-header">
+        <div><span class="eyebrow">ACTION REQUIRED</span><h3>${escapeHtml(textValue(checkpoint.title, checkpoint.name, 'Human Action'))}</h3></div>
+        <span class="evidence-badge ${escapeHtml(validation.className)}">${escapeHtml(validation.label)}</span>
+      </div>
+      <div class="mission-center-facts">
+        <div><span>What MRAPI needs</span><strong>${escapeHtml(textValue(checkpoint.human_action_request, checkpoint.request, mission.human_action_request, 'A trusted human action is required.'))}</strong></div>
+        <div><span>Why it is needed</span><strong>${escapeHtml(textValue(checkpoint.reason, checkpoint.blocker_message, checkpoint.blocker_code, mission.blocker_message, 'The Mission is paused until this checkpoint is satisfied.'))}</strong></div>
+        <div><span>User action</span><strong>${escapeHtml(textValue(checkpoint.user_action, checkpoint.instruction, checkpoint.instructions, 'Complete the requested action outside MRAPI.'))}</strong></div>
+        <div><span>Location / target</span><strong>${escapeHtml(textValue(checkpoint.action_location, checkpoint.target, checkpoint.location, 'No target provided'))}</strong></div>
+        <div><span>Expected evidence</span><strong>${escapeHtml(textValue(checkpoint.validation_method, checkpoint.evidence_expected, checkpoint.expected_evidence, 'Trusted validation evidence is required.'))}</strong></div>
+        <div><span>Validation state</span><strong>${escapeHtml(validation.label)}</strong></div>
+      </div>
+      <div class="mission-center-actions">
+        <button type="button" class="primary-button human-action-ready-button" data-human-action-ready="1" data-mission-id="${escapeHtml(mission.id)}" data-roadmap-id="${escapeHtml(checkpoint.roadmap_id || mission.roadmap_id || '')}" data-checkpoint-id="${escapeHtml(checkpoint.checkpoint_id || checkpoint.id || '')}" ${canReady ? '' : 'disabled'}>LISTO</button>
+        <span class="mission-meta">${canReady ? 'LISTO validates trusted state; it does not locally mark PASS.' : 'LISTO unavailable: checkpoint or roadmap context is missing.'}</span>
+      </div>
+    </section>
+  `;
+}
+
+function roadmapMilestoneBlock(mission) {
+  const roadmapText = textValue(mission.roadmap_title, mission.roadmap_name);
+  const milestoneText = textValue(mission.milestone_title, mission.milestone_name);
+  if (!roadmapText && !milestoneText && !mission.roadmap_id && !mission.milestone_id) return '';
+  return `
+    <section class="mission-center-context">
+      <span class="eyebrow">Roadmap / Milestone</span>
+      <div class="mission-center-context-grid">
+        <div><span>Roadmap</span><strong>${escapeHtml(roadmapText || 'Linked roadmap')}</strong></div>
+        <div><span>Milestone</span><strong>${escapeHtml(milestoneText || 'Linked milestone')}</strong></div>
+      </div>
+    </section>
+  `;
+}
+
+function evidenceSummary(result) {
+  const evidence = trustedEvidenceStatus(result);
+  const summary = result ? textValue(result.summary, result.content, result.text, result.output?.final_result_text, result.result_type, 'Persisted result available.') : 'No result yet.';
+  return `
+    <section class="mission-center-evidence" aria-label="Evidence and verification">
+      <div class="mission-center-panel-header">
+        <div><span class="eyebrow">Result / Verification</span><h3>Latest Outcome</h3></div>
+        <span class="evidence-badge ${escapeHtml(evidence.className)}">${escapeHtml(evidence.label)}</span>
+      </div>
+      <p>${escapeHtml(summary)}</p>
+      <div class="mission-meta">${result ? 'Persisted Result is available; raw output is under Technical Details.' : 'No result yet.'}</div>
+    </section>
+  `;
+}
+
+function technicalDetails(mission, tasks, runs, results, recovery, humanAction, planData, latestActivity) {
+  return `
+    <details class="mission-center-technical technical-details">
+      <summary>Advanced / Technical Details</summary>
+      <div class="technical-grid">
+        <div><span>Mission ID</span><code>${escapeHtml(mission.id)}</code></div>
+        <div><span>Tenant / Workspace / Project</span><code>${escapeHtml(textValue(mission.tenant_id, 'tenant unavailable'))} / ${escapeHtml(textValue(mission.workspace_id, 'workspace unavailable'))} / ${escapeHtml(textValue(mission.project_id, 'project unavailable'))}</code></div>
+        <div><span>Roadmap ID</span><code>${escapeHtml(mission.roadmap_id || 'none')}</code></div>
+        <div><span>Milestone ID</span><code>${escapeHtml(mission.milestone_id || 'none')}</code></div>
+        <div><span>Task IDs and states</span><code>${escapeHtml(tasks.map((task) => `${task.id}:${task.state || 'UNKNOWN'}${task.phase ? `/${task.phase}` : ''}`).join(', ') || 'none')}</code></div>
+        <div><span>Brain Run IDs/types/states</span><code>${escapeHtml(runs.filter((run) => run.run_type === 'BRAIN_RUN').map((run) => `${run.id}:${run.brain_run_type || run.phase || run.run_type}/${run.state || 'UNKNOWN'}`).join(', ') || 'none')}</code></div>
+        <div><span>Execution Run IDs/states</span><code>${escapeHtml(runs.filter((run) => run.run_type === 'EXECUTION_RUN').map((run) => `${run.id}:${run.state || 'UNKNOWN'}${run.phase ? `/${run.phase}` : ''}`).join(', ') || 'none')}</code></div>
+        <div><span>Raw Mission state</span><code>${escapeHtml(mission.state || 'UNKNOWN')}</code></div>
+        <div><span>Latest activity timestamp</span><code>${escapeHtml(latestActivity?.value || 'none')}</code></div>
+        <div><span>Result IDs</span><code>${escapeHtml(results.map((result) => `${result.id || 'result'}:${result.status || result.result_type || 'UNKNOWN'}`).join(', ') || 'none')}</code></div>
+        <div><span>Recovery metadata</span><pre class="result-json">${escapeHtml(JSON.stringify(recovery || mission.recovery || {}, null, 2))}</pre></div>
+        <div><span>Human Action/checkpoint identifiers</span><pre class="result-json">${escapeHtml(JSON.stringify(humanAction || {}, null, 2))}</pre></div>
+        <div><span>Raw result/evidence payload</span><pre class="result-json">${escapeHtml(JSON.stringify(results, null, 2))}</pre></div>
+        <div><span>Raw Mission payload</span><pre class="result-json">${escapeHtml(JSON.stringify({ mission, plan: planData }, null, 2))}</pre></div>
+      </div>
+    </details>
+  `;
+}
+
+function renderMissionCenter({ mission, tasks, runs, results, planData, recovery }) {
+  if (!mission) return '<section class="mission-center-state error-state">Mission not found or unavailable.</section>';
+  const humanAction = currentHumanAction(mission, tasks);
+  const currentRecovery = activeRecovery(mission, runs, recovery);
+  const phase = deriveMissionCenterPhase({ mission, tasks, runs, humanAction, recovery: currentRecovery });
+  const result = latestResult(mission.id);
+  const task = currentTask(tasks, runs);
+  const latestActivity = latestMissionActivity(mission, tasks, runs, results, humanAction);
+  const progress = missionProgress(mission);
+  const worker = textValue(mission.worker_name, mission.preferred_worker_name, mission.preferred_worker_id, mission.worker_id, 'Automatic');
+  return `
+    <section class="mission-center" aria-label="Mission Center">
+      <section class="mission-center-now phase-${escapeHtml(phase.key)}" aria-labelledby="missionCenterNowTitle">
+        <div class="mission-center-panel-header">
+          <div><span class="eyebrow">What is happening now</span><h3 id="missionCenterNowTitle">${escapeHtml(phase.label)}</h3></div>
+          ${stateBadge(mission.state)}
+        </div>
+        <p>${escapeHtml(missionCenterExplanation(phase, mission, result))}</p>
+        <div class="mission-center-facts">
+          <div><span>Mission objective</span><strong>${escapeHtml(mission.objective || 'Objective unavailable')}</strong></div>
+          <div><span>Worker</span><strong>${escapeHtml(worker)}</strong></div>
+          <div><span>Current actor</span><strong>${escapeHtml(phase.actor || 'MRAPI')}</strong></div>
+          <div><span>Current Task</span><strong>${escapeHtml(taskTitle(task) || (tasks.length ? 'Task title unavailable' : 'No Tasks yet'))}</strong></div>
+          <div><span>Latest activity</span><strong>${escapeHtml(formatTrustedTime(latestActivity?.value))}</strong></div>
+          <div><span>Next expected step</span><strong>${escapeHtml(missionCenterNextStep(phase))}</strong></div>
+        </div>
+        ${progress ? `<div class="mission-center-secondary">${progressBar(progress)}</div>` : ''}
+      </section>
+      ${humanActionPanel(mission, humanAction)}
+      ${roadmapMilestoneBlock(mission)}
+      <div class="mission-center-grid">
+        ${evidenceSummary(result)}
+        ${recoveryPanel(mission, currentRecovery)}
+      </div>
+      ${!tasks.length && !runs.length ? '<section class="mission-center-empty">No Tasks/Runs yet.</section>' : ''}
+      ${renderPlanSection(mission, planData)}
+      ${typeof window !== 'undefined' && typeof window.mrapiCleanResult === 'function' && result ? `<section class="mission-center-artifacts" aria-label="Artifact evidence drill-down">${window.mrapiCleanResult(result)}</section>` : ''}
+      ${renderBlockerDiagnostics(mission)}
+      ${technicalDetails(mission, tasks, runs, results, currentRecovery, humanAction, planData, latestActivity)}
+    </section>
+  `;
+}
+
 function renderBlockerDiagnostics(mission) {
   if (mission.state !== 'BLOCKED') return '';
   const code = mission.blocker_code || mission.blocked_reason || mission.block_reason || 'BLOCK_REASON_UNAVAILABLE';
@@ -558,54 +912,39 @@ function renderExecutionSnapshotSummary(mission, runs) {
 
 async function openMissionDetail(missionId) {
   const mission = state.missions.find((item) => item.id === missionId);
-  if (!mission) return;
+  $('#missionDetailTitle').textContent = 'Mission Center';
+  $('#missionDetailBody').innerHTML = '<section class="mission-center-state loading-state">Loading Mission Center...</section>';
+  $('#missionDetailModal').hidden = false;
+  if (!mission) {
+    $('#missionDetailBody').innerHTML = '<section class="mission-center-state error-state">Mission not found or unavailable.</section>';
+    return;
+  }
   let planData = null;
+  let recovery = null;
   try {
     planData = await api(`/api/missions/${encodeURIComponent(missionId)}/plan`);
   } catch {
     planData = null;
   }
+  try {
+    recovery = await api(`/api/missions/${encodeURIComponent(missionId)}/recovery`);
+  } catch (error) {
+    recovery = { recoverable: false, mode: 'NO_ACTION', reason: `Recovery unavailable: ${error.message}` };
+  }
   const runs = state.runs.filter((run) => run.mission_id === missionId);
   const results = state.results.filter((result) => result.mission_id === missionId);
-  const progress = missionProgress(mission);
-  const canRetry = ['FAILED', 'BLOCKED'].includes(mission.state);
-  const canCancel = ['READY', 'PLANNING', 'RUNNING', 'BLOCKED'].includes(mission.state);
 
-  $('#missionDetailTitle').textContent = mission.objective;
-  $('#missionDetailBody').innerHTML = `
-    <div class="detail-grid">
-      <div><span class="eyebrow">STATE</span>${stateBadge(mission.state)}</div>
-      <div><span class="eyebrow">WORKER</span><strong>${escapeHtml(mission.preferred_worker_id || 'Automatic')}</strong></div>
-    </div>
-    <div class="modal-actions">
-      <span>${escapeHtml(mission.state)}</span>
-      <div>
-        ${canRetry ? `<button type="button" class="ghost-button retry-button" data-mission-id="${escapeHtml(mission.id)}">Retry execution</button>` : ''}
-        ${canCancel ? `<button type="button" class="ghost-button cancel-mission-button" data-mission-id="${escapeHtml(mission.id)}">Cancel</button>` : ''}
-      </div>
-    </div>
-    ${progressBar(progress)}
-    ${renderExecutionSnapshotSummary(mission, runs)}
-    ${renderBlockerDiagnostics(mission)}
-    ${renderPlanSection(mission, planData)}
-    <h3>Runs</h3>
-    ${runs.length ? runs.map((run) => `
-      <div class="detail-row">
-        <div><strong>${escapeHtml(run.run_type)}</strong><div class="mission-meta">${escapeHtml(run.progress_message || '')}</div></div>
-        <div>${stateBadge(run.state)} ${escapeHtml(run.progress_percent ?? 0)}%</div>
-      </div>
-    `).join('') : '<div class="empty-state">No runs yet.</div>'}
-    <h3>Results</h3>
-    ${results.length ? results.map((result) => `
-      <div class="result-block">
-        <strong>${escapeHtml(result.result_type || 'RESULT')}</strong>
-        <p>${escapeHtml(result.content || result.text || result.output?.final_result_text || result.summary || '')}</p>
-        ${result.output ? `<pre class="result-json">${escapeHtml(JSON.stringify(result.output, null, 2))}</pre>` : ''}
-      </div>
-    `).join('') : '<div class="empty-state">No result yet.</div>'}
-  `;
+  $('#missionDetailTitle').textContent = mission.objective || 'Mission Center';
+  $('#missionDetailBody').innerHTML = renderMissionCenter({
+    mission,
+    tasks: missionTasks(missionId),
+    runs,
+    results,
+    planData,
+    recovery
+  });
   bindMissionActions();
-  $('#missionDetailModal').hidden = false;
+  bindMissionCenterActions();
 }
 
 function closeMissionDetail() {
@@ -806,6 +1145,35 @@ function populateMissionSelectors() {
   refreshProjectOptions(state.context.projectId);
 }
 
+function bindMissionCenterActions() {
+  $$('.human-action-ready-button').forEach((button) => {
+    button.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const missionId = button.dataset.missionId;
+      const roadmapId = button.dataset.roadmapId;
+      const checkpointId = button.dataset.checkpointId;
+      if (!missionId || !roadmapId || !checkpointId) {
+        showToast('LISTO failed: checkpoint context is incomplete.', true);
+        return;
+      }
+      button.disabled = true;
+      try {
+        await api(`/api/planner/proposals/${encodeURIComponent(roadmapId)}/human-action/${encodeURIComponent(checkpointId)}/ready`, {
+          method: 'POST',
+          body: JSON.stringify({ ready: true })
+        });
+        showToast('Human Action submitted for trusted validation.');
+        await loadAll();
+        await openMissionDetail(missionId);
+      } catch (error) {
+        showToast(`LISTO failed: ${error.message}`, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+}
+
 function refreshProjectOptions(preferredProjectId = '') {
   const workspaceId = $('#missionWorkspace').value;
   const projects = projectsForWorkspace(workspaceId);
@@ -945,6 +1313,14 @@ function bindEvents() {
 bindEvents();
 loadTrustedContext().finally(loadAll);
 setInterval(loadAll, 5000);
+
+globalThis.mrapiMissionCenterHumanActionV1 = {
+  renderMissionCenter,
+  deriveMissionCenterPhase,
+  currentHumanAction,
+  trustedEvidenceStatus,
+  recoveryActionLabel
+};
 
 
 // v0.4.3.1 — Project Context / Roadmap entry points.

@@ -33,8 +33,8 @@
     }
 
     const label = status.mode === 'BRAIN_REPLAY'
-      ? (recoveryInstruction ? 'Edit & Recover' : 'Recover & Correct')
-      : (status.action_label || 'Recover Mission');
+      ? (recoveryInstruction ? 'Edit & Recover' : 'Correct / Replay Brain')
+      : recoveryActionLabel(status.mode, status.action_label);
 
     if (!confirm(`${label} for this Mission?`)) return;
 
@@ -49,13 +49,21 @@
 
       currentRecovery = null;
       showToast(`${label} started.`);
-      if (typeof closeMissionDetail === 'function') closeMissionDetail();
       if (typeof loadAll === 'function') await loadAll();
+      if (typeof openMissionDetail === 'function') await openMissionDetail(missionId);
     } catch (error) {
       showToast(`Recovery failed: ${error.message}`, true);
     } finally {
       button.disabled = false;
     }
+  }
+
+  function recoveryActionLabel(mode, fallback = '') {
+    if (mode === 'BRAIN_REPLAY' || mode === 'BRAIN_CORRECTIVE_REPLAY') return 'Correct / Replay Brain';
+    if (mode === 'EXECUTION_RETRY') return 'Retry Execution';
+    if (mode === 'HUMAN_ACTION_RESUME') return 'Resume Mission';
+    if (mode === 'AUTOPILOT_RESUME') return 'Resume Autopilot';
+    return fallback || 'Recover Mission';
   }
 
   async function decorateMissionDetail(missionId) {
@@ -87,9 +95,7 @@
       primary.type = 'button';
       primary.className = 'ghost-button mrapi-recovery-button';
       primary.dataset.missionId = missionId;
-      primary.textContent = currentRecovery.mode === 'BRAIN_REPLAY'
-        ? 'Recover & Correct'
-        : (currentRecovery.action_label || 'Recover Mission');
+      primary.textContent = recoveryActionLabel(currentRecovery.mode, currentRecovery.action_label);
       primary.title = currentRecovery.reason || '';
       primary.addEventListener('click', async (event) => {
         event.preventDefault();
@@ -119,6 +125,15 @@
   }
 
   document.addEventListener('click', (event) => {
+    const recoveryButton = event.target.closest?.('[data-mission-center-recovery]');
+    if (recoveryButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      const missionId = recoveryButton.dataset.missionId;
+      if (missionId) void performRecovery(missionId, recoveryButton, recoveryButton.dataset.recoveryMode === 'BRAIN_REPLAY');
+      return;
+    }
+
     const row = event.target.closest?.('[data-open-mission]');
     if (!row) return;
     const missionId = row.dataset.openMission;
@@ -141,4 +156,6 @@
       subtree: true
     });
   }
+
+  window.mrapiMissionRecovery = { recoveryStatus, recoveryActionLabel };
 })();

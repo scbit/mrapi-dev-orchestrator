@@ -53,6 +53,8 @@
     </div>`;
   }
 
+  window.mrapiCleanResult = cleanResult;
+
   renderReports = function () {
     const reportTypes = new Set(['EXECUTION_OUTPUT', 'BRAIN_RESULT', 'REPORT']);
     const results = state.results.filter((r) => reportTypes.has(r.result_type) || !r.result_type);
