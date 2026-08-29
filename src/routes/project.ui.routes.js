@@ -30,18 +30,86 @@ button{background:#dceaff;color:#07101d;border:0;border-radius:9px;padding:11px 
 <div id="status" class="status">Cargando workspaces...</div>
 </div>
 <div class="panel"><h2>Projects existentes</h2><div id="projects"></div></div>
+<div class="panel" id="editPanel" style="display:none">
+<!-- PROJECT_EDIT_RUNTIME_UI_V2 -->
+<h2>Editar Project Runtime</h2>
+<input type="hidden" id="editProjectId">
+<div class="grid">
+<label>Project<input id="editProjectName" disabled></label>
+<label>Project ID<input id="editProjectIdDisplay" disabled></label>
+<label>GitHub repository<input id="editRepo" placeholder="scbit/mrapi-dev-orchestrator"></label>
+<label>Branch<input id="editBranch" value="main"></label>
+<label>Host<select id="editHost"><option value="Shadow">Shadow</option></select></label>
+<label>Local path en Shadow<input id="editPath" placeholder="C:\\Users\\Shadow\\Documents\\GitHub\\repo"></label>
+</div>
+<p>
+<button id="saveEdit" type="button">Guardar cambios</button>
+<button id="cancelEdit" type="button" style="margin-left:8px;background:#25344a;color:#edf4ff">Cancelar</button>
+</p>
+<div id="editStatus" class="status">Seleccioná Editar en un Project.</div>
+</div>
 </main><script>
 const statusEl=document.getElementById('status');
+let currentProjects=[];
 async function j(url,opt){const r=await fetch(url,opt);const t=await r.text();let d={};try{d=t?JSON.parse(t):{}}catch{}if(!r.ok)throw new Error(d.error||t||('HTTP '+r.status));return d}
 async function load(){
   const [w,p]=await Promise.all([j('/api/workspaces'),j('/api/projects')]);
+  currentProjects=p.items||[];
   const ws=w.items||w||[]; workspace.innerHTML=ws.map(x=>'<option value="'+x.id+'">'+(x.name||x.id)+'</option>').join('');
-  projects.innerHTML=(p.items||[]).map(x=>{
+  projects.innerHTML=currentProjects.map(x=>{
     const rt=x.runtime_context||{}; const ready=(x.runtime_binding_state||rt.binding_state||'UNCONFIGURED');
-    return '<div style="padding:10px 0;border-bottom:1px solid #263449"><b>'+ (x.name||x.id) +'</b> <span class="'+(ready==='READY'?'ok':'err')+'">'+ready+'</span><br><small>'+x.id+' · '+(x.repository_full_name||'repo missing')+' · '+(rt.repository_path||x.local_path||'path missing')+'</small></div>'
+    return '<div style="padding:10px 0;border-bottom:1px solid #263449"><b>'+ (x.name||x.id) +'</b> <span class="'+(ready==='READY'?'ok':'err')+'">'+ready+'</span><br><small>'+x.id+' · '+(x.repository_full_name||'repo missing')+' · '+(rt.repository_path||x.local_path||'path missing')+'</small><br><button type="button" class="editProjectBtn" data-project-id="'+x.id+'" style="margin-top:8px;padding:7px 11px">Editar</button></div>'
   }).join('')||'<small>No projects</small>';
   statusEl.textContent='Listo.';
 }
+
+projects.addEventListener('click',(event)=>{
+  const btn=event.target.closest('.editProjectBtn');
+  if(!btn)return;
+  const id=btn.dataset.projectId;
+  const x=currentProjects.find(p=>p.id===id);
+  if(!x)return;
+  const rt=x.runtime_context||{};
+  document.getElementById('editProjectId').value=x.id||'';
+  document.getElementById('editProjectIdDisplay').value=x.id||'';
+  document.getElementById('editProjectName').value=x.name||x.id||'';
+  document.getElementById('editRepo').value=x.repository_full_name||rt.repository_full_name||'';
+  document.getElementById('editBranch').value=x.default_branch||rt.default_branch||'main';
+  document.getElementById('editHost').value=rt.host_name||x.host_name||'Shadow';
+  document.getElementById('editPath').value=rt.repository_path||x.local_path||'';
+  document.getElementById('editStatus').textContent='Editando '+(x.name||x.id);
+  document.getElementById('editPanel').style.display='block';
+  document.getElementById('editPanel').scrollIntoView({behavior:'smooth',block:'start'});
+});
+
+document.getElementById('cancelEdit').onclick=()=>{
+  document.getElementById('editPanel').style.display='none';
+};
+
+document.getElementById('saveEdit').onclick=async()=>{try{
+  const id=document.getElementById('editProjectId').value;
+  if(!id)throw new Error('PROJECT_ID_REQUIRED');
+  const editStatus=document.getElementById('editStatus');
+  editStatus.textContent='Guardando runtime...';
+  const body={
+    repository_full_name:document.getElementById('editRepo').value,
+    default_branch:document.getElementById('editBranch').value,
+    host_name:document.getElementById('editHost').value,
+    repository_path:document.getElementById('editPath').value
+  };
+  const d=await j('/api/projects/'+encodeURIComponent(id)+'/runtime',{
+    method:'PUT',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(body)
+  });
+  const rt=d.runtime_context||{};
+  const ready=d.runtime_binding_state||rt.binding_state||'UNCONFIGURED';
+  editStatus.innerHTML='<span class="'+(ready==='READY'?'ok':'err')+'">Runtime guardado: '+ready+'</span>';
+  await load();
+}catch(e){
+  document.getElementById('editStatus').innerHTML='<span class="err">'+e.message+'</span>';
+}};
+
 create.onclick=async()=>{try{
   statusEl.textContent='Creando...';
   const body={workspace_id:document.getElementById('workspace').value,name:document.getElementById('name').value,repository_full_name:document.getElementById('repo').value,default_branch:document.getElementById('branch').value,host_name:document.getElementById('host').value,repository_path:document.getElementById('path').value};
