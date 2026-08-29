@@ -27,6 +27,51 @@ function checkpointStatus(checkpoint) {
   return clean(checkpoint?.status || checkpoint?.waiting_status, 100).toUpperCase();
 }
 
+function recoveryConflict(message) {
+  const error = new Error(message);
+  error.status = 409;
+  return error;
+}
+
+function recoveryState(value) {
+  return clean(value, 120).toUpperCase();
+}
+
+function activeWorkState(value) {
+  return ['QUEUED', 'ASSIGNED', 'WAITING', 'RUNNING', 'TESTING', 'PENDING'].includes(recoveryState(value));
+}
+
+function terminalWorkState(value) {
+  return ['COMPLETED', 'DONE', 'FAILED', 'CANCELLED', 'SKIPPED'].includes(recoveryState(value));
+}
+
+function validateRecoveryProvenance({ tenantId, mission, roadmap, milestone }) {
+  if (!mission || mission.tenant_id !== tenantId) {
+    throw recoveryConflict('RECOVERY_MISSION_TENANT_MISMATCH');
+  }
+  if (!mission.roadmap_id || !mission.milestone_id) {
+    throw recoveryConflict('RECOVERY_MISSION_ROADMAP_PROVENANCE_REQUIRED');
+  }
+  if (!roadmap) {
+    throw recoveryConflict('RECOVERY_ROADMAP_NOT_FOUND');
+  }
+  if (roadmap.tenant_id !== tenantId) {
+    throw recoveryConflict('RECOVERY_ROADMAP_TENANT_MISMATCH');
+  }
+  if (mission.roadmap_id !== roadmap.id) {
+    throw recoveryConflict('RECOVERY_MISSION_ROADMAP_MISMATCH');
+  }
+  if (!milestone) {
+    throw recoveryConflict('RECOVERY_MILESTONE_NOT_FOUND');
+  }
+  if (mission.milestone_id !== milestone.id) {
+    throw recoveryConflict('RECOVERY_MISSION_MILESTONE_MISMATCH');
+  }
+  if (milestone.mission_id && milestone.mission_id !== mission.id) {
+    throw recoveryConflict('RECOVERY_MILESTONE_MISSION_MISMATCH');
+  }
+}
+
 function missionCheckpoint(mission, roadmap, milestone) {
   return mission?.human_action_checkpoint ||
     milestone?.human_action_checkpoint ||
@@ -54,13 +99,16 @@ function sortLatest(items) {
 async function loadRecoveryContext(db, tenantId, missionId) {
   const missionRef = db.collection('missions').doc(missionId);
   const missionSnap = await missionRef.get();
-  if (!missionSnap.exists || missionSnap.data().tenant_id !== tenantId) {
+  if (!missionSnap.exists) {
     const error = new Error('MISSION_NOT_FOUND');
     error.status = 404;
     throw error;
   }
 
   const mission = { id: missionSnap.id, ...missionSnap.data() };
+  if (mission.tenant_id !== tenantId) {
+    throw recoveryConflict('RECOVERY_MISSION_TENANT_MISMATCH');
+  }
 
   const [runsSnap, tasksSnap, roadmapSnap] = await Promise.all([
     db.collection('runs').where('tenant_id', '==', tenantId).limit(300).get(),
@@ -86,18 +134,82 @@ async function loadRecoveryContext(db, tenantId, missionId) {
     ? (roadmap.milestones || []).find((item) => item.id === mission.milestone_id) || null
     : null;
 
+  if (mission.autopilot_mode === true || mission.roadmap_id || mission.milestone_id) {
+    validateRecoveryProvenance({ tenantId, mission, roadmap, milestone });
+  }
+
   return { mission, runs, tasks, roadmap, milestone };
 }
 
 function classifyRecoveryContext(context) {
   const { mission, runs, tasks, roadmap, milestone } = context;
   const state = clean(mission.state, 100).toUpperCase();
+  const activeReplayRun = runs.find((run) => (
+    run.run_type === 'BRAIN_RUN' &&
+    run.recovery_replay === true &&
+    run.mission_id === mission.id &&
+    activeWorkState(run.state)
+  )) || null;
+  if (activeReplayRun) {
+    return {
+      recoverable: true,
+      mode: 'BRAIN_REPLAY',
+      action_label: recoveryLabel('BRAIN_REPLAY'),
+      reason: 'BRAIN_REPLAY_ALREADY_ACTIVE',
+      active_run_id: activeReplayRun.id,
+      reused_active: true,
+      latest_run_id: activeReplayRun.retry_of_run_id || activeReplayRun.parent_run_id || null
+    };
+  }
+
+  const activeRetryTask = tasks.find((task) => (
+    task.mission_id === mission.id &&
+    (task.autopilot_phase === 'RETRY' || task.id === mission.current_retry_task_id || task.id === mission.current_task_id) &&
+    activeWorkState(task.state) &&
+    (
+      mission.approved_execution_snapshot_id
+        ? task.execution_snapshot_id === mission.approved_execution_snapshot_id
+        : task.autopilot_phase === 'RETRY'
+    )
+  )) || null;
+  if (activeRetryTask && ['RUNNING', 'BLOCKED', 'FAILED', 'RETRYABLE'].includes(state)) {
+    return {
+      recoverable: true,
+      mode: 'EXECUTION_RETRY',
+      action_label: recoveryLabel('EXECUTION_RETRY'),
+      reason: 'EXECUTION_RETRY_ALREADY_ACTIVE',
+      active_task_id: activeRetryTask.id,
+      reused_active: true,
+      latest_run_id: activeRetryTask.current_run_id || activeRetryTask.execution_run_id || null
+    };
+  }
+
   const latestRun = runs[0] || null;
   const latestBrainRun = runs.find((run) => run.run_type === 'BRAIN_RUN') || null;
   const latestExecutionRun = runs.find((run) => run.run_type === 'EXECUTION_RUN') || null;
-  const activeRun = runs.find((run) => run.state === 'RUNNING') || null;
+  const activeRun = runs.find((run) => activeWorkState(run.state)) || null;
   const checkpoint = missionCheckpoint(mission, roadmap, milestone);
   const checkpointState = checkpointStatus(checkpoint);
+
+  const activeResumeTask = checkpoint?.checkpoint_id
+    ? tasks.find((task) => (
+        task.mission_id === mission.id &&
+        task.human_action_checkpoint_id === checkpoint.checkpoint_id &&
+        activeWorkState(task.state)
+      )) || null
+    : null;
+  if (activeResumeTask) {
+    return {
+      recoverable: true,
+      mode: 'HUMAN_ACTION_RESUME',
+      action_label: recoveryLabel('HUMAN_ACTION_RESUME'),
+      reason: 'HUMAN_ACTION_RESUME_ALREADY_ACTIVE',
+      checkpoint_id: checkpoint.checkpoint_id || null,
+      active_task_id: activeResumeTask.id,
+      reused_active: true,
+      failure_stage: 'HUMAN_ACTION'
+    };
+  }
 
   if (activeRun && !['BLOCKED', 'FAILED'].includes(state)) {
     return {
@@ -118,25 +230,30 @@ function classifyRecoveryContext(context) {
     120
   ).toUpperCase() || 'PROGRAM';
 
-  if (
-    mission.autopilot_mode === true &&
-    checkpoint &&
-    checkpointState === 'RESOLVED' &&
-    !checkpoint.continuation_task_id &&
-    resumePhase === 'PROGRAM' &&
-    !['COMPLETED', 'CANCELLED'].includes(state)
-  ) {
-    return {
-      recoverable: true,
-      mode: 'HUMAN_ACTION_RESUME',
-      action_label: recoveryLabel('HUMAN_ACTION_RESUME'),
-      reason: 'RESOLVED_PROGRAM_CHECKPOINT_WITHOUT_CONTINUATION',
-      checkpoint_id: checkpoint.checkpoint_id || null,
-      failure_stage: 'HUMAN_ACTION'
-    };
+  if (mission.autopilot_mode === true && checkpoint && !['COMPLETED', 'CANCELLED'].includes(state)) {
+    if (['WAITING_FOR_HUMAN', 'NEED_HUMAN_ACTION'].includes(checkpointState) || ['NEED_HUMAN_ACTION', 'WAITING_FOR_HUMAN'].includes(state)) {
+      return {
+        recoverable: true,
+        mode: 'HUMAN_ACTION_RESUME',
+        action_label: recoveryLabel('HUMAN_ACTION_RESUME'),
+        reason: 'HUMAN_ACTION_CHECKPOINT_WAITING',
+        checkpoint_id: checkpoint.checkpoint_id || null,
+        failure_stage: 'HUMAN_ACTION'
+      };
+    }
+    if (checkpointState === 'RESOLVED' && !checkpoint.continuation_task_id && resumePhase === 'PROGRAM') {
+      return {
+        recoverable: true,
+        mode: 'HUMAN_ACTION_RESUME',
+        action_label: recoveryLabel('HUMAN_ACTION_RESUME'),
+        reason: 'RESOLVED_PROGRAM_CHECKPOINT_WITHOUT_CONTINUATION',
+        checkpoint_id: checkpoint.checkpoint_id || null,
+        failure_stage: 'HUMAN_ACTION'
+      };
+    }
   }
 
-  if (['BLOCKED', 'FAILED'].includes(state)) {
+  if (['BLOCKED', 'FAILED', 'RETRYABLE'].includes(state)) {
     if (mission.approved_execution_snapshot_id) {
       return {
         recoverable: true,
@@ -317,12 +434,20 @@ async function replayAutopilotBrain(db, tenantId, context) {
     // Firestore requires every transaction read to happen before the first write.
     // Read the Roadmap now, before tx.set(newRunRef) / tx.set(missionRef).
     let freshRoadmap = null;
+    let freshMilestone = null;
     if (roadmapRef && milestone) {
       const roadmapSnap = await tx.get(roadmapRef);
       if (roadmapSnap.exists && roadmapSnap.data().tenant_id === tenantId) {
         freshRoadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
+        freshMilestone = (freshRoadmap.milestones || []).find((item) => item.id === freshMission.milestone_id) || null;
       }
     }
+    validateRecoveryProvenance({
+      tenantId,
+      mission: freshMission,
+      roadmap: freshRoadmap,
+      milestone: freshMilestone
+    });
 
     const latestBrain = missionRuns.find((run) => run.run_type === 'BRAIN_RUN') || null;
     const attempt = Math.max(
@@ -380,6 +505,8 @@ async function replayAutopilotBrain(db, tenantId, context) {
       progress_percent: 0,
       progress_message: 'Mission recovery: Brain replay started',
       recovery_replay: true,
+      recovery_mode: 'BRAIN_REPLAY',
+      recovery_generation: attempt,
       started_at: timestamp(),
       created_at: timestamp(),
       updated_at: timestamp()
@@ -438,6 +565,21 @@ async function recoverHumanActionContinuation(db, tenantId, context) {
   const checkpoint = missionCheckpoint(mission, roadmap, milestone);
   const brainRunId = await resolveProgramBrainRunId(db, tenantId, context);
 
+  if (['WAITING_FOR_HUMAN', 'NEED_HUMAN_ACTION'].includes(checkpointStatus(checkpoint))) {
+    return {
+      success: false,
+      mode: 'HUMAN_ACTION_RESUME',
+      reused: true,
+      no_new_work: true,
+      state: 'NEED_HUMAN_ACTION',
+      mission_id: mission.id,
+      roadmap_id: roadmap?.id || mission.roadmap_id || null,
+      milestone_id: milestone?.id || mission.milestone_id || null,
+      checkpoint_id: checkpoint?.checkpoint_id || null,
+      reason: 'HUMAN_ACTION_CHECKPOINT_NOT_RESOLVED'
+    };
+  }
+
   if (!roadmap || !milestone || !checkpoint?.checkpoint_id || !brainRunId) {
     const error = new Error('HUMAN_ACTION_RECOVERY_PROVENANCE_INCOMPLETE');
     error.status = 409;
@@ -451,6 +593,39 @@ async function recoverHumanActionContinuation(db, tenantId, context) {
     brain_run_id: brainRunId,
     checkpoint_id: checkpoint.checkpoint_id
   });
+}
+
+function reusedRetryWork(context) {
+  const { mission, tasks, runs } = context;
+  const task = tasks.find((item) => (
+    item.mission_id === mission.id &&
+    activeWorkState(item.state) &&
+    (
+      item.id === mission.current_retry_task_id ||
+      item.autopilot_phase === 'RETRY' ||
+      (mission.approved_execution_snapshot_id && item.execution_snapshot_id === mission.approved_execution_snapshot_id)
+    )
+  )) || null;
+  if (!task) return null;
+  const run = runs.find((item) => (
+    item.run_type === 'EXECUTION_RUN' &&
+    item.mission_id === mission.id &&
+    item.task_id === task.id &&
+    !terminalWorkState(item.state)
+  )) || null;
+  return {
+    success: true,
+    mode: 'EXECUTION_RETRY',
+    reused: true,
+    no_new_work: true,
+    mission_id: mission.id,
+    roadmap_id: mission.roadmap_id || null,
+    milestone_id: mission.milestone_id || null,
+    task_id: task.id,
+    execution_run_id: run?.id || task.current_run_id || task.execution_run_id || null,
+    retry_of_task_id: task.retry_of_task_id || null,
+    retry_of_run_id: task.retry_of_run_id || run?.retry_of_run_id || null
+  };
 }
 
 async function recoverMission(db, tenantId, missionId) {
@@ -478,11 +653,25 @@ async function recoverMission(db, tenantId, missionId) {
   }
 
   if (classification.mode === 'EXECUTION_RETRY') {
+    const reused = reusedRetryWork(context);
+    if (reused) return reused;
     const result = await retryMission(db, tenantId, missionId);
+    if (result.task_id) {
+      await db.collection('missions').doc(missionId).set({
+        current_task_id: result.task_id,
+        updated_at: timestamp()
+      }, { merge: true });
+    }
     return {
       success: true,
       mode: 'EXECUTION_RETRY',
       mission_id: missionId,
+      roadmap_id: context.mission.roadmap_id || null,
+      milestone_id: context.mission.milestone_id || null,
+      task_id: result.task_id || null,
+      execution_run_id: result.execution_run_id || null,
+      reused: result.reused === true,
+      no_new_work: result.no_new_work === true,
       result
     };
   }

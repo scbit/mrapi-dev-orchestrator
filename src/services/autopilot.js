@@ -1060,7 +1060,14 @@ function parseAutopilotDecision(text) {
 }
 
 const TERMINAL_MISSION_STATES = new Set(['BLOCKED', 'COMPLETED', 'FAILED', 'CANCELLED']);
-const ACTIVE_MILESTONE_STATES = new Set(['PLANNING', 'RUNNING', 'VERIFYING', 'NEED_HUMAN_ACTION']);
+const ACTIVE_MILESTONE_STATES = new Set([
+  'PLANNING',
+  'RUNNING',
+  'VERIFYING',
+  'NEED_HUMAN_ACTION',
+  'WAITING_FOR_HUMAN'
+]);
+const RECOVERABLE_ACTIVE_MILESTONE_STATES = new Set(['BLOCKED', 'FAILED', 'RETRYABLE']);
 const NON_RUNNABLE_ROADMAP_STATES = new Set(['BLOCKED', 'ERROR', 'FAILED', 'CANCELLED', 'NEED_HUMAN_ACTION', 'PAUSED', 'COMPLETED']);
 const PLANNER_START_ALLOWED_STATES = new Set(['ACTIVE']);
 
@@ -1151,7 +1158,11 @@ function plannerAutopilotBrainContext({ tenantId, roadmap, milestone, project })
 function activeMilestone(roadmap) {
   return [...(roadmap.milestones || [])]
     .sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
-    .find((item) => ACTIVE_MILESTONE_STATES.has(String(item.state || '').toUpperCase())) || null;
+    .find((item) => {
+      const state = String(item.state || '').toUpperCase();
+      return ACTIVE_MILESTONE_STATES.has(state) ||
+        (RECOVERABLE_ACTIVE_MILESTONE_STATES.has(state) && Boolean(item.mission_id));
+    }) || null;
 }
 
 function milestoneWithState(roadmap, milestoneId, state, extra = {}) {

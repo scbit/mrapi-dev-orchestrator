@@ -4,9 +4,6 @@ const {
   getMissionRecoveryStatus,
   recoverMission
 } = require('../services/missionRecovery');
-const {
-  correctiveBrainRecovery
-} = require('../services/correctiveRecovery');
 
 function createRecoveryRouter({ db }) {
   const router = express.Router();
@@ -36,29 +33,16 @@ function createRecoveryRouter({ db }) {
 
   router.post('/:missionId/recover', async (req, res, next) => {
     try {
-      const status = await getMissionRecoveryStatus(
+      const result = await recoverMission(
         db,
         req.tenantId,
         req.params.missionId
       );
 
-      const result = status.mode === 'BRAIN_REPLAY'
-        ? await correctiveBrainRecovery(
-            db,
-            req.tenantId,
-            req.params.missionId,
-            {
-              failure_code: status.failure_code || status.reason || null,
-              recovery_instruction: req.body?.recovery_instruction || ''
-            }
-          )
-        : await recoverMission(
-            db,
-            req.tenantId,
-            req.params.missionId
-          );
-
-      res.json(serializeFirestore(result));
+      const code = result.reused === true || result.no_new_work === true
+        ? 200
+        : 202;
+      res.status(code).json(serializeFirestore(result));
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });
       next(error);
