@@ -76,6 +76,13 @@ function plannerPageHtml() {
     .human-action-panel p { margin:7px 0 0; color:#ffe7bc; }
     .human-action-panel .checkpoint-source { color:var(--muted); font-size:12px; margin-top:4px; }
     .human-action-actions { margin-top:14px; display:flex; flex-wrap:wrap; gap:10px; align-items:center; }
+    .runtime-panel { margin-top:14px; padding-top:14px; border-top:1px solid var(--line); }
+    .runtime-actions { display:flex; flex-wrap:wrap; gap:9px; align-items:center; margin-top:12px; }
+    .runtime-form { margin-top:10px; padding:12px; border:1px solid rgba(255,255,255,.08); border-radius:10px; background:rgba(255,255,255,.025); }
+    .action-error { width:100%; color:#ffb9bd; font-size:12px; }
+    .mission-board { margin-top:18px; }
+    .mission-list { display:grid; gap:10px; }
+    .mission-row { border:1px solid rgba(255,255,255,.1); border-radius:10px; padding:12px; background:rgba(255,255,255,.025); }
     .summary-metrics { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; margin:16px 0; }
     .metric { border:1px solid rgba(255,255,255,.08); border-radius:10px; padding:10px; background:rgba(255,255,255,.025); }
     .metric strong { display:block; color:#f7fbff; font-size:22px; margin-top:3px; }
@@ -154,6 +161,11 @@ function plannerPageHtml() {
         <div id="startView" class="hidden"></div>
       </section>
     </section>
+    <section class="panel mission-board" aria-label="Missions recovery">
+      <div class="proposal-head"><div><span class="label">MISSIONS</span><h2>Mission Recovery</h2></div><button class="secondary" id="refreshMissions" type="button">Refresh missions</button></div>
+      <div id="missionsRecoveryStatus" class="small"></div>
+      <div id="missionsRecoveryList" class="mission-list"><span class="small">Loading missions...</span></div>
+    </section>
   </main>
 
   <script>
@@ -173,6 +185,10 @@ function plannerPageHtml() {
       recentLoading: true,
       recentError: '',
       humanActionSubmitting: false,
+      milestoneActionSubmitting: {},
+      missions: [],
+      missionsLoading: true,
+      missionsError: '',
       restoredPlanner: false,
       activeContext: null,
       pendingAuthoritativeContext: null
@@ -275,7 +291,10 @@ function plannerPageHtml() {
       proposalView: document.getElementById('proposalView'),
       startView: document.getElementById('startView'),
       recentList: document.getElementById('recentPlannerList'),
-      recentError: document.getElementById('recentPlannerError')
+      recentError: document.getElementById('recentPlannerError'),
+      missionsRefresh: document.getElementById('refreshMissions'),
+      missionsStatus: document.getElementById('missionsRecoveryStatus'),
+      missionsList: document.getElementById('missionsRecoveryList')
     };
 
     function text(value) {
@@ -1180,6 +1199,296 @@ function plannerPageHtml() {
         '<div><span class="label">Retry required tests (' + escapeHtml(tests.length) + ')</span>' + boundedList(tests, 6, 'No retry required tests recorded') + '</div>';
     }
 
+    function runtimeForMilestone(proposal, milestone) {
+      const runtime = Array.isArray(proposal?.milestone_runtime) ? proposal.milestone_runtime : [];
+      const milestoneId = text(milestone?.id).trim();
+      return runtime.find((item) => text(item?.milestone_id).trim() === milestoneId) || null;
+    }
+
+    function runSummary(run) {
+      if (!run || typeof run !== 'object') return 'Not recorded';
+      const id = text(run.id || run.run_id).trim() || 'Not recorded';
+      const state = text(run.state || run.status).trim() || 'state not recorded';
+      return id + ' / ' + state;
+    }
+
+    function objectSummary(item) {
+      if (!item || typeof item !== 'object') return 'Not recorded';
+      return text(item.summary || item.title || item.text || item.description || item.message || item.id || item.evidence_id || '').trim() || 'Recorded';
+    }
+
+    function runtimeState(runtime, milestone) {
+      return text(runtime?.milestone_state || milestone?.state || '').trim() || 'Not recorded';
+    }
+
+    function recoveryActionHtml(runtime) {
+      const recovery = runtime?.recovery || {};
+      const missionId = text(runtime?.mission_id).trim();
+      if (!missionId || recovery.recoverable !== true || !recovery.mode || recovery.mode === 'NO_ACTION') return '';
+      if (recovery.mode === 'BRAIN_REPLAY') {
+        return '<button class="danger" type="button" data-milestone-recovery="1" data-mission-id="' + escapeHtml(missionId) + '" data-milestone-id="' + escapeHtml(runtime?.milestone_id || '') + '" data-recovery-mode="BRAIN_REPLAY">Replay Brain</button>';
+      }
+      if (recovery.mode === 'EXECUTION_RETRY') {
+        return '<button class="danger" type="button" data-milestone-recovery="1" data-mission-id="' + escapeHtml(missionId) + '" data-milestone-id="' + escapeHtml(runtime?.milestone_id || '') + '" data-recovery-mode="EXECUTION_RETRY">Retry Execution</button>';
+      }
+      if (recovery.mode === 'HUMAN_ACTION_RESUME') {
+        return '<button class="danger" type="button" data-milestone-recovery="1" data-mission-id="' + escapeHtml(missionId) + '" data-milestone-id="' + escapeHtml(runtime?.milestone_id || '') + '" data-recovery-mode="HUMAN_ACTION_RESUME">Resume</button>';
+      }
+      return '';
+    }
+
+    function unresolvedRuntimeHumanAction(runtime) {
+      const human = runtime?.human_action;
+      if (!human || typeof human !== 'object') return false;
+      if (human.resolved === true || human.is_resolved === true || human.stale === true || human.is_stale === true) return false;
+      const status = text(human.status || human.waiting_status || human.checkpoint_status || human.state || '').trim().toUpperCase();
+      return ['WAITING_FOR_HUMAN', 'WAITING_HUMAN', 'NEED_HUMAN_ACTION', 'NEEDS_HUMAN_ACTION', 'HUMAN_ACTION_REQUIRED'].includes(status);
+    }
+
+    function runtimeHumanActionId(runtime) {
+      const human = runtime?.human_action || {};
+      return text(human.checkpoint_id || human.human_action_id || human.action_id || human.id).trim();
+    }
+
+    function responderFormHtml(roadmapId, milestoneId) {
+      return '<details class="runtime-form"><summary><strong>RESPONDER</strong></summary>' +
+        '<label class="field"><span>Response text</span><textarea data-responder-text="' + escapeHtml(milestoneId) + '" placeholder="Add the human response for this milestone."></textarea></label>' +
+        '<label class="field"><span>Optional references JSON</span><textarea data-responder-references="' + escapeHtml(milestoneId) + '" placeholder="[{&quot;type&quot;:&quot;URL&quot;,&quot;title&quot;:&quot;Spec&quot;,&quot;url&quot;:&quot;https://example.test&quot;}]"></textarea></label>' +
+        '<div class="runtime-actions"><button class="primary" type="button" data-milestone-respond="1" data-roadmap-id="' + escapeHtml(roadmapId) + '" data-milestone-id="' + escapeHtml(milestoneId) + '">Send RESPONDER</button><span class="small">POST /api/roadmaps/' + escapeHtml(roadmapId) + '/milestones/' + escapeHtml(milestoneId) + '/respond</span></div>' +
+        '<div class="action-error" data-action-error="' + escapeHtml(milestoneId) + '"></div>' +
+        '</details>';
+    }
+
+    function downstreamImpactHtml(runtime) {
+      const impact = runtime?.downstream_impact;
+      if (!impact || typeof impact !== 'object') return '<div><span class="label">Downstream impact</span><p>Not recorded</p></div>';
+      const affected = Array.isArray(impact.affected_milestone_ids) ? impact.affected_milestone_ids : [];
+      const impactId = text(impact.impact_id || impact.evidence_id || impact.id).trim();
+      const pending = text(impact.status).trim().toUpperCase() === 'PENDING_APPROVAL';
+      const actions = pending && impactId
+        ? '<div class="runtime-actions"><button class="secondary" type="button" data-downstream-impact="approve" data-impact-id="' + escapeHtml(impactId) + '" data-roadmap-id="' + escapeHtml(runtime.roadmap_id) + '" data-milestone-id="' + escapeHtml(runtime.milestone_id) + '">Approve downstream impact</button><button class="danger" type="button" data-downstream-impact="reject" data-impact-id="' + escapeHtml(impactId) + '" data-roadmap-id="' + escapeHtml(runtime.roadmap_id) + '" data-milestone-id="' + escapeHtml(runtime.milestone_id) + '">Reject downstream impact</button></div>'
+        : '';
+      return '<div><span class="label">Downstream impact</span><p>' + escapeHtml(impact.status || 'Not recorded') + (impact.reason ? ' - ' + escapeHtml(impact.reason) : '') + '</p>' + boundedList(affected, 6, 'No affected milestones recorded') + actions + '</div>';
+    }
+
+    function renderMilestoneRuntime(milestone, runtime, options = {}) {
+      const roadmapId = text(options.roadmapId || runtime?.roadmap_id || state.proposalId).trim();
+      const milestoneId = text(milestone?.id || runtime?.milestone_id).trim();
+      const approved = options.approved === true;
+      const blocker = runtime?.blocker || {};
+      const latestEvidence = runtime?.latest_evidence || null;
+      const latestHumanResponse = runtime?.latest_human_response || null;
+      const recovery = runtime?.recovery || {};
+      const action = recoveryActionHtml(runtime);
+      const checkpointId = runtimeHumanActionId(runtime);
+      const resolve = unresolvedRuntimeHumanAction(runtime) && checkpointId
+        ? '<button class="secondary" type="button" data-runtime-human-action-ready="1" data-checkpoint-id="' + escapeHtml(checkpointId) + '">Resolve Human Action</button>'
+        : '';
+      const evidence = latestEvidence
+        ? '<button class="secondary" type="button" data-milestone-evidence="1" data-roadmap-id="' + escapeHtml(roadmapId) + '" data-mission-id="' + escapeHtml(runtime?.mission_id || '') + '" data-milestone-id="' + escapeHtml(milestoneId) + '">Evidence</button>'
+        : '<button class="secondary" type="button" disabled>Evidence</button>';
+      return '<section class="runtime-panel" aria-label="Milestone runtime">' +
+        '<span class="label">RUNTIME</span>' +
+        '<div class="kv">' +
+        '<div><span class="label">Milestone state</span><p>' + escapeHtml(runtimeState(runtime, milestone)) + '</p></div>' +
+        '<div><span class="label">Mission ID</span><p>' + escapeHtml(runtime?.mission_id || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Brain Run</span><p>' + escapeHtml(runSummary(runtime?.brain_run)) + '</p></div>' +
+        '<div><span class="label">Execution Run</span><p>' + escapeHtml(runSummary(runtime?.execution_run)) + '</p></div>' +
+        '<div><span class="label">Blocker/failure</span><p>' + escapeHtml(blocker.code || blocker.reason || 'Not recorded') + (blocker.message ? '<br>' + escapeHtml(blocker.message) : '') + '</p></div>' +
+        '<div><span class="label">Latest evidence</span><p>' + escapeHtml(objectSummary(latestEvidence)) + (latestEvidence?.id || latestEvidence?.evidence_id ? '<br>ID: ' + escapeHtml(latestEvidence.id || latestEvidence.evidence_id) : '') + '</p></div>' +
+        '<div><span class="label">Latest human response</span><p>' + escapeHtml(objectSummary(latestHumanResponse)) + (latestHumanResponse?.evidence_id || latestHumanResponse?.id ? '<br>ID: ' + escapeHtml(latestHumanResponse.evidence_id || latestHumanResponse.id) : '') + '</p></div>' +
+        '<div><span class="label">Recovery</span><p>' + escapeHtml((recovery.mode || 'NO_ACTION') + ' / ' + (recovery.recoverable ? 'recoverable' : 'not recoverable')) + (recovery.reason ? '<br>' + escapeHtml(recovery.reason) : '') + '</p></div>' +
+        downstreamImpactHtml(runtime) +
+        '</div>' +
+        '<div class="runtime-actions">' + evidence + action + resolve + '</div>' +
+        '<div class="action-error" data-action-error="' + escapeHtml(milestoneId) + '"></div>' +
+        (approved && roadmapId && milestoneId ? responderFormHtml(roadmapId, milestoneId) : '') +
+        '</section>';
+    }
+
+    function missionStateClass(mission) {
+      const state = text(mission?.state).trim().toUpperCase();
+      if (['COMPLETED', 'COMPLETE', 'DONE'].includes(state)) return 'complete';
+      if (['BLOCKED', 'FAILED', 'WAITING_HUMAN', 'NEED_HUMAN_ACTION', 'RETRYABLE'].includes(state)) return 'blocked';
+      if (['RUNNING', 'PLANNING', 'READY'].includes(state)) return 'active';
+      if (['CANCELLED', 'CANCELED'].includes(state)) return 'cancelled';
+      return 'awaiting';
+    }
+
+    function missionStateLabel(mission) {
+      const state = text(mission?.state).trim().toUpperCase();
+      if (state === 'WAITING_HUMAN' || state === 'NEED_HUMAN_ACTION') return 'WAITING_HUMAN';
+      return state || 'NOT_RECORDED';
+    }
+
+    function renderMissionsRecovery() {
+      if (!els.missionsList) return;
+      els.missionsStatus.textContent = state.missionsError || '';
+      if (state.missionsLoading) {
+        els.missionsList.innerHTML = '<span class="small">Loading missions...</span>';
+        return;
+      }
+      if (state.missionsError) {
+        els.missionsList.innerHTML = '<span class="small">Missions are unavailable right now.</span>';
+        return;
+      }
+      if (!state.missions.length) {
+        els.missionsList.innerHTML = '<span class="small">No missions yet.</span>';
+        return;
+      }
+      els.missionsList.innerHTML = state.missions.map((item) => {
+        const recovery = item.recovery || {};
+        const recoveryButton = recovery.recoverable === true && item.id
+          ? '<button class="danger" type="button" data-mission-recovery="1" data-mission-id="' + escapeHtml(item.id) + '">' + escapeHtml(recovery.action_label || (recovery.mode === 'BRAIN_REPLAY' ? 'Replay Brain' : recovery.mode === 'EXECUTION_RETRY' ? 'Retry Execution' : recovery.mode === 'HUMAN_ACTION_RESUME' ? 'Resume' : 'Recover')) + '</button>'
+          : '';
+        return '<article class="mission-row"><div class="proposal-head"><div><h3>' + escapeHtml(item.objective || item.title || item.id || 'Mission') + '</h3><div class="meta">Mission ' + escapeHtml(item.id || 'Not recorded') + '</div></div><span class="badge ' + missionStateClass(item) + '">' + escapeHtml(missionStateLabel(item)) + '</span></div>' +
+          '<div class="runtime-actions"><span class="small">Recovery: ' + escapeHtml((recovery.mode || 'NO_ACTION') + (recovery.reason ? ' - ' + recovery.reason : '')) + '</span>' + recoveryButton + '</div></article>';
+      }).join('');
+    }
+
+    async function loadMissionsRecovery() {
+      if (!els.missionsList) return;
+      state.missionsLoading = true;
+      state.missionsError = '';
+      renderMissionsRecovery();
+      try {
+        const data = await fetch('/api/missions').then(parseResponse);
+        const missions = Array.isArray(data.items) ? data.items : [];
+        const recoverableStates = new Set(['BLOCKED', 'FAILED', 'WAITING_HUMAN', 'NEED_HUMAN_ACTION', 'RETRYABLE']);
+        const enriched = await Promise.all(missions.map(async (mission) => {
+          const missionState = text(mission?.state).trim().toUpperCase();
+          if (!mission?.id || !recoverableStates.has(missionState)) return mission;
+          try {
+            const recovery = await fetch('/api/missions/' + encodeURIComponent(mission.id) + '/recovery').then(parseResponse);
+            return { ...mission, recovery };
+          } catch {
+            return { ...mission, recovery: { recoverable: false, mode: 'NO_ACTION', reason: 'RECOVERY_STATUS_UNAVAILABLE' } };
+          }
+        }));
+        state.missions = enriched;
+        state.missionsLoading = false;
+        renderMissionsRecovery();
+      } catch (error) {
+        state.missionsLoading = false;
+        state.missionsError = 'Missions failed to load: ' + error.message;
+        renderMissionsRecovery();
+      }
+    }
+
+    function setActionError(key, message) {
+      const target = els.proposalView.querySelector ? els.proposalView.querySelector('[data-action-error="' + key + '"]') : null;
+      if (target) target.textContent = message || '';
+      else if (message) setStatus(message, 'error');
+    }
+
+    function parseResponderReferences(value) {
+      const raw = text(value).trim();
+      if (!raw) return undefined;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error('References must be a JSON array.');
+      return parsed;
+    }
+
+    async function postMilestoneResponse(button) {
+      const roadmapId = text(button?.dataset?.roadmapId).trim();
+      const milestoneId = text(button?.dataset?.milestoneId).trim();
+      if (!roadmapId || !milestoneId || state.milestoneActionSubmitting[milestoneId]) return;
+      const textEl = els.proposalView.querySelector ? els.proposalView.querySelector('[data-responder-text="' + milestoneId + '"]') : null;
+      const refsEl = els.proposalView.querySelector ? els.proposalView.querySelector('[data-responder-references="' + milestoneId + '"]') : null;
+      const responseText = text(textEl?.value).trim();
+      if (!responseText) return setActionError(milestoneId, 'RESPONDER text is required.');
+      state.milestoneActionSubmitting[milestoneId] = true;
+      button.disabled = true;
+      setActionError(milestoneId, '');
+      try {
+        const body = { text: responseText };
+        const references = parseResponderReferences(refsEl?.value);
+        if (references !== undefined) body.references = references;
+        await fetch('/api/roadmaps/' + encodeURIComponent(roadmapId) + '/milestones/' + encodeURIComponent(milestoneId) + '/respond', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body)
+        }).then(parseResponse);
+        setStatus('RESPONDER saved. Refreshing trusted roadmap runtime...', 'success');
+        await loadProposal();
+      } catch (error) {
+        setActionError(milestoneId, 'RESPONDER failed: ' + error.message);
+      } finally {
+        state.milestoneActionSubmitting[milestoneId] = false;
+        button.disabled = false;
+      }
+    }
+
+    async function postMissionRecovery(button) {
+      const missionId = text(button?.dataset?.missionId).trim();
+      const milestoneId = text(button?.dataset?.milestoneId || button?.closest?.('.milestone')?.querySelector?.('[data-action-error]')?.dataset?.actionError || '').trim();
+      if (!missionId || state.milestoneActionSubmitting['mission:' + missionId]) return;
+      state.milestoneActionSubmitting['mission:' + missionId] = true;
+      button.disabled = true;
+      try {
+        await fetch('/api/missions/' + encodeURIComponent(missionId) + '/recover', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({})
+        }).then(parseResponse);
+        setStatus('Mission recovery started. Refreshing trusted state...', 'success');
+        await loadProposal();
+        await loadMissionsRecovery();
+      } catch (error) {
+        if (milestoneId) setActionError(milestoneId, 'Recovery failed: ' + error.message);
+        else setStatus('Recovery failed: ' + error.message, 'error');
+      } finally {
+        state.milestoneActionSubmitting['mission:' + missionId] = false;
+        button.disabled = false;
+      }
+    }
+
+    async function showMilestoneEvidence(button) {
+      const roadmapId = text(button?.dataset?.roadmapId).trim();
+      const missionId = text(button?.dataset?.missionId).trim();
+      const milestoneId = text(button?.dataset?.milestoneId).trim();
+      if (!missionId || !milestoneId) return;
+      button.disabled = true;
+      try {
+        const data = await fetch('/api/evidence').then(parseResponse);
+        const items = (Array.isArray(data.items) ? data.items : []).filter((item) =>
+          text(item?.mission_id).trim() === missionId &&
+          (!text(item?.milestone_id).trim() || text(item.milestone_id).trim() === milestoneId) &&
+          (!text(item?.roadmap_id).trim() || text(item.roadmap_id).trim() === roadmapId)
+        ).slice(0, 20);
+        const key = milestoneId;
+        setActionError(key, items.length
+          ? 'Evidence for Mission ' + missionId + ' / milestone ' + milestoneId + ': ' + items.map((item) => objectSummary(item) + ' (' + (item.id || item.evidence_id || 'no id') + ')').join('; ')
+          : 'No scoped evidence returned for Mission ' + missionId + ' / milestone ' + milestoneId + '.');
+      } catch (error) {
+        setActionError(milestoneId, 'Evidence failed: ' + error.message);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function postDownstreamImpact(button) {
+      const action = text(button?.dataset?.downstreamImpact).trim();
+      const roadmapId = text(button?.dataset?.roadmapId).trim();
+      const milestoneId = text(button?.dataset?.milestoneId).trim();
+      const impactId = text(button?.dataset?.impactId).trim();
+      if (!action || !roadmapId || !milestoneId || !impactId) return;
+      button.disabled = true;
+      try {
+        await fetch('/api/roadmaps/' + encodeURIComponent(roadmapId) + '/milestones/' + encodeURIComponent(milestoneId) + '/downstream-impact/' + encodeURIComponent(impactId) + '/' + encodeURIComponent(action), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({})
+        }).then(parseResponse);
+        setStatus('Downstream impact updated. Refreshing trusted runtime...', 'success');
+        await loadProposal();
+      } catch (error) {
+        setActionError(milestoneId, 'Downstream impact failed: ' + error.message);
+      } finally {
+        button.disabled = false;
+      }
+    }
+
     function syncRevisionSubmitState() {
       const hasFeedback = Boolean(els.revisionFeedback.value.trim());
       els.submitRevision.disabled = state.revisionSubmitting || !hasFeedback;
@@ -1225,7 +1534,7 @@ function plannerPageHtml() {
           (isCompleted(proposal) ? renderCompletedSummary(proposal, milestones) : renderSummaryCard(proposal, milestones, { historical: true })) +
           renderHumanActionPanels(humanActionViews) +
           renderRoadmapAdvancedDetails(proposal, { historical: true }) +
-          '<h2>Milestones</h2><div class="milestones">' + milestones.map((item) => renderMilestone(item.milestone, item.index, { historical: true })).join('') + '</div>';
+          '<h2>Milestones</h2><div class="milestones">' + milestones.map((item) => renderMilestone(item.milestone, item.index, { historical: true, proposal, approved: false })).join('') + '</div>';
         setStatus('Historical roadmap is available read-only. Lifecycle actions are unavailable.', '');
         return;
       }
@@ -1244,7 +1553,7 @@ function plannerPageHtml() {
         (isCompleted(proposal) ? renderCompletedSummary(proposal, milestones) : renderSummaryCard(proposal, milestones)) +
         renderHumanActionPanels(humanActionViews) +
         renderRoadmapAdvancedDetails(proposal) +
-        '<h2>Milestones</h2><div class="milestones">' + milestones.map((item) => renderMilestone(item.milestone, item.index)).join('') + '</div>';
+        '<h2>Milestones</h2><div class="milestones">' + milestones.map((item) => renderMilestone(item.milestone, item.index, { proposal, approved })).join('') + '</div>';
       if (isRunning(proposal)) setStatus('Running - current milestone is in progress.', 'success');
       else if (proposed && !approved) setStatus('Waiting for approval - revisalo antes de aprobar.', '');
       else if (isRevisionPending(proposal)) setStatus('Cambios pedidos. W01 está revisando el roadmap con tu feedback.', 'success');
@@ -1267,8 +1576,10 @@ function plannerPageHtml() {
       const description = text(milestone.description).trim() || (historical ? 'Description not recorded.' : '');
       const blocked = ['BLOCKED', 'WAITING', 'PENDING'].includes(text(milestone.state).toUpperCase()) && Array.isArray(dependencyItems) && dependencyItems.length > 0;
       const retryDetails = retryAudit(milestone);
+      const runtime = runtimeForMilestone(options.proposal || state.proposal, milestone);
       return '<details class="milestone"><summary class="milestone-summary"><div><h3>' + escapeHtml(milestone.order || index + 1) + '. ' + escapeHtml(milestone.title) + '</h3><div class="meta">' + escapeHtml(milestone.objective || milestone.expected_outcome) + (blocked ? ' - waiting on dependencies' : '') + '</div></div><span class="badge">' + escapeHtml(friendlyMilestoneState(milestone)) + '</span></summary>' +
         '<div class="kv"><div><span class="label">Description</span><p>' + escapeHtml(description) + '</p></div></div>' +
+        renderMilestoneRuntime(milestone, runtime, { roadmapId: state.proposalId, approved: options.approved === true }) +
         '<details class="advanced-details"><summary><strong>Advanced milestone details</strong></summary><div class="kv">' +
         '<div><span class="label">Milestone ID</span><p>' + escapeHtml(milestone.id) + '</p></div>' +
         '<div><span class="label">Raw lifecycle state</span><p>' + escapeHtml(rawLifecycleState(milestone) || 'Not recorded') + '</p></div>' +
@@ -1329,7 +1640,17 @@ function plannerPageHtml() {
           return;
         }
         const proposal = await fetch('/api/planner/proposals/' + encodeURIComponent(proposalId)).then(parseResponse);
-        renderProposal(proposal);
+        let runtimeProposal = proposal;
+        const roadmapId = text(proposal.roadmap_id || proposal.proposal_id || proposal.id || proposalId).trim();
+        if (roadmapId) {
+          try {
+            const roadmapRuntime = await fetch('/api/roadmaps/' + encodeURIComponent(roadmapId)).then(parseResponse);
+            if (Array.isArray(roadmapRuntime.milestone_runtime)) {
+              runtimeProposal = { ...proposal, milestone_runtime: roadmapRuntime.milestone_runtime };
+            }
+          } catch {}
+        }
+        renderProposal(runtimeProposal);
       } catch (error) {
         setStatus('Proposal retrieval failed: ' + error.message, 'error');
       }
@@ -1444,8 +1765,18 @@ function plannerPageHtml() {
 
     els.refresh.addEventListener('click', loadProposal);
     els.proposalView.addEventListener('click', (event) => {
-      const button = event.target?.closest ? event.target.closest('[data-human-action-ready]') : event.target;
-      if (button?.dataset?.humanActionReady) confirmHumanActionReady(button);
+      const target = event.target?.closest ? event.target.closest('button') : event.target;
+      if (!target?.dataset) return;
+      if (target.dataset.humanActionReady || target.dataset.runtimeHumanActionReady) return confirmHumanActionReady(target);
+      if (target.dataset.milestoneRespond) return postMilestoneResponse(target);
+      if (target.dataset.milestoneRecovery) return postMissionRecovery(target);
+      if (target.dataset.milestoneEvidence) return showMilestoneEvidence(target);
+      if (target.dataset.downstreamImpact) return postDownstreamImpact(target);
+    });
+    els.missionsRefresh.addEventListener('click', loadMissionsRecovery);
+    els.missionsList.addEventListener('click', (event) => {
+      const button = event.target?.closest ? event.target.closest('[data-mission-recovery]') : event.target;
+      if (button?.dataset?.missionRecovery) postMissionRecovery(button);
     });
     els.recentList.addEventListener('click', (event) => {
       const row = event.target?.closest ? event.target.closest('[data-proposal-id]') : event.target;
@@ -1579,6 +1910,7 @@ function plannerPageHtml() {
     state.restoredPlanner = restorePlannerState();
     syncSubmitState();
     loadRecentPlannerRequests();
+    loadMissionsRecovery();
     loadPlannerContextOptions();
   </script>
 </body>
