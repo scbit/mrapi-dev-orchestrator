@@ -4,6 +4,7 @@ const { serializeFirestore } = require('../utils/firestore');
 const { normalizeRoadmapInput, nextMilestone, MILESTONE_STATES } = require('../services/roadmap');
 const { startNextRoadmapMilestone } = require('../services/autopilot');
 const { dispatchMission } = require('../services/orchestration');
+const { resolveRoadmapRuntime } = require('../services/milestoneRuntime');
 
 function now() {
   return new Date();
@@ -63,7 +64,12 @@ function createRoadmapsRouter({ repos, db }) {
       if (!roadmap || roadmap.tenant_id !== req.tenantId) {
         return res.status(404).json({ error: 'ROADMAP_NOT_FOUND' });
       }
-      res.json(serializeFirestore({ ...roadmap, next_milestone: nextMilestone(roadmap) }));
+      const milestoneRuntime = await resolveRoadmapRuntime(db, req.tenantId, roadmap);
+      res.json(serializeFirestore({
+        ...roadmap,
+        next_milestone: nextMilestone(roadmap),
+        milestone_runtime: milestoneRuntime
+      }));
     } catch (error) {
       next(error);
     }
