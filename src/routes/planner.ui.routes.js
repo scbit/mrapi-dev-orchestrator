@@ -25,6 +25,10 @@ function plannerPageHtml() {
     .request-panel { padding:20px; }
     .request-panel h2 { margin:0 0 8px; font-size:28px; }
     .flow { margin:0 0 18px; color:#cfe0f7; }
+    .human-flow { display:grid; gap:8px; margin:16px 0; padding:0; list-style:none; }
+    .human-flow li { display:flex; gap:10px; align-items:flex-start; padding:10px 11px; border:1px solid rgba(255,255,255,.08); border-radius:10px; background:rgba(255,255,255,.025); color:#cfe0f7; }
+    .human-flow strong { color:var(--text); }
+    .step-dot { flex:0 0 24px; display:inline-grid; place-items:center; width:24px; height:24px; border-radius:999px; border:1px solid rgba(106,167,255,.35); color:#b9d4ff; font-size:12px; font-weight:900; }
     .context-box { margin:16px 0; padding:14px; border:1px solid rgba(255,255,255,.08); border-radius:12px; background:rgba(255,255,255,.025); }
     .context-box h3 { margin:0 0 10px; color:#cfe0f7; font-size:14px; }
     .context-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
@@ -105,6 +109,10 @@ function plannerPageHtml() {
     .advanced-details { margin-top:14px; background:rgba(255,255,255,.025); }
     .hidden { display:none !important; }
     .small { color:var(--muted); font-size:12px; }
+    .review-actions { margin:12px 0 4px; padding:13px; border:1px solid rgba(106,167,255,.18); border-radius:12px; background:rgba(106,167,255,.055); }
+    .review-actions p { margin:0 0 10px; }
+    .mission-summary { display:grid; gap:5px; color:var(--muted); }
+    .mission-summary strong { color:var(--text); }
     @media (max-width:820px) { .grid,.info-grid,.kv,.context-grid,.summary-metrics,.bounded-summary { grid-template-columns:1fr; } .topbar { align-items:flex-start; flex-direction:column; } }
   </style>
 </head>
@@ -120,6 +128,14 @@ function plannerPageHtml() {
         <h2>¿Qué querés hacer?</h2>
         <p class="flow">Pedís algo → W01 prepara el plan → lo revisás → aprobás → recién ahí puede ejecutarse.</p>
         <label class="field primary-request"><span>Contale a W01 qué necesitás</span><textarea id="plannerRequest" name="request" required minlength="1" placeholder="Contame qué querés crear, cambiar o mejorar. W01 te va a proponer un plan antes de ejecutar nada."></textarea></label>
+        <ol class="human-flow" aria-label="Planner human flow">
+          <li><span class="step-dot">1</span><span><strong>Ask / Request.</strong> Contale a W01 que necesitas.</span></li>
+          <li><span class="step-dot">2</span><span><strong>Roadmap prepared.</strong> MRAPI arma un plan antes de ejecutar.</span></li>
+          <li><span class="step-dot">3</span><span><strong>Review.</strong> Revisas objetivo, riesgos y milestones.</span></li>
+          <li><span class="step-dot">4</span><span><strong>Approve or Request Changes.</strong> Aprobalo o pedi ajustes.</span></li>
+          <li><span class="step-dot">5</span><span><strong>Start Autopilot.</strong> Solo aparece cuando el roadmap aprobado todavia no empezo.</span></li>
+          <li><span class="step-dot">6</span><span><strong>Resume Autopilot.</strong> Solo aparece cuando el estado persistido requiere continuar o recuperar.</span></li>
+        </ol>
         <section class="context-box" aria-label="Contexto">
           <h3>Contexto</h3>
           <div class="context-grid">
@@ -140,9 +156,11 @@ function plannerPageHtml() {
 
       <section class="panel">
         <div id="statusMessage" class="status">Elegí el contexto y contame qué querés hacer.</div>
-        <div class="secondary-tools">
+        <details class="advanced-details secondary-tools">
+          <summary><strong>Advanced / Technical Details</strong></summary>
           <label class="field"><span>Roadmap para actualizar</span><input id="proposalId" autocomplete="off" placeholder="Disponible cuando el plan esté listo"></label>
-        </div>
+          <p class="small">Use this only to reopen a persisted roadmap directly. Primary Planner flow keeps technical identifiers secondary.</p>
+        </details>
         <div class="actions">
           <button class="secondary" id="refreshProposal" type="button">Actualizar plan</button>
           <button class="primary hidden" id="approveRoadmap" type="button">Approve roadmap</button>
@@ -857,10 +875,10 @@ function plannerPageHtml() {
       if (hasState(item, ['RUNNING', 'EXECUTING', 'VERIFYING'])) return 'Running';
       if (raw === 'PLANNING') return 'Planning';
       if (raw === 'PENDING') return isMilestone ? 'Pending' : (status === 'APPROVED' ? 'Approved' : 'Planning');
-      if (proposedIsAwaitingApproval) return 'Waiting for approval';
+      if (proposedIsAwaitingApproval) return 'Ready for review';
       if ((raw === 'ACTIVE' || raw === 'APPROVED') && status === 'APPROVED') return 'Approved';
       if (raw === 'APPROVED' && !status) return 'Approved';
-      if (raw === 'PROPOSED') return isMilestone ? 'Pending' : 'Waiting for approval';
+      if (raw === 'PROPOSED') return isMilestone ? 'Pending' : 'Ready for review';
       if (rawDisplay) return titleCaseState(rawDisplay) + (!isMilestone && status ? ' / ' + titleCaseState(status) : '');
       return isMilestone ? 'Pending' : 'Planning';
     }
@@ -902,6 +920,19 @@ function plannerPageHtml() {
       return milestones.some((milestone) => {
         const raw = lifecycleState(milestone);
         return Boolean(text(milestone?.mission_id).trim()) || !['', 'PROPOSED', 'PENDING'].includes(raw);
+      });
+    }
+
+    function trustedResumeAvailable(proposal) {
+      const runtimes = Array.isArray(proposal?.milestone_runtime) ? proposal.milestone_runtime : [];
+      const milestones = Array.isArray(proposal?.milestones) ? proposal.milestones : [];
+      const activeStates = new Set(['PLANNING', 'RUNNING', 'EXECUTING', 'VERIFYING', 'BLOCKED', 'FAILED', 'RETRYABLE', 'WAITING_HUMAN', 'NEED_HUMAN_ACTION']);
+      if (milestones.some((milestone) => activeStates.has(text(milestone?.state).trim().toUpperCase()))) return true;
+      return runtimes.some((runtime) => {
+        const runtimeState = text(runtime?.milestone_state || runtime?.state || runtime?.status || runtime?.mission_state || runtime?.mission?.state).trim().toUpperCase();
+        return activeStates.has(runtimeState) ||
+          unresolvedRuntimeHumanAction(runtime) ||
+          (runtime?.recovery?.recoverable === true && runtime?.recovery?.mode && runtime.recovery.mode !== 'NO_ACTION');
       });
     }
 
@@ -1143,6 +1174,7 @@ function plannerPageHtml() {
         '<div class="info-grid"><div><span class="label">Planner Mission ID</span><p>' + escapeHtml(text(proposal.planner_mission_id || proposal.mission_id || state.missionId || 'Not recorded')) + '</p></div>' +
         '<div><span class="label">Brain Run ID</span><p>' + escapeHtml(text(proposal.brain_run_id || proposal.active_revision_brain_run_id || state.brainRunId || 'Not recorded')) + '</p></div>' +
         '<div><span class="label">Proposal type</span><p>' + escapeHtml(text(proposal.proposal_type || 'Not recorded')) + '</p></div></div>' +
+        '<div class="info-grid"><div><span class="label">Metadata repair details</span><p>' + escapeHtml(state.metadataRepairError || 'No metadata repair error recorded') + '</p></div></div>' +
         '<div class="kv"><div><span class="label">Provenance</span>' + renderJson(proposal.provenance) + '</div>' +
         '<div><span class="label">Revision history</span>' + renderJson(proposal.revision_history) + '</div></div>' +
         '</details>';
@@ -1150,7 +1182,7 @@ function plannerPageHtml() {
 
     function renderNotice(proposal) {
       if (isProposed(proposal)) {
-        return '<div class="notice"><strong>Waiting for approval.</strong> Nothing has run yet. Review the roadmap before approving it.</div>';
+        return '<div class="notice"><strong>Ready for review.</strong> Nothing has run yet. Review the roadmap before approving it.</div>';
       }
       if (isRevisionPending(proposal)) {
         return '<div class="notice"><strong>Cambios pedidos.</strong> W01 is revising the roadmap with your feedback. Approve and Start are unavailable until the updated plan is ready.</div>';
@@ -1168,6 +1200,20 @@ function plannerPageHtml() {
         return '<div class="notice terminal"><strong>This roadmap is ' + escapeHtml(stateLabel(proposal)) + '.</strong> It is not presented as ordinary executable approved work.</div>';
       }
       return '<div class="notice"><strong>Roadmap status: ' + escapeHtml(stateLabel(proposal)) + '.</strong> It is not ready to start yet.</div>';
+    }
+
+    function renderReviewActionSummary(proposal, options = {}) {
+      if (options.historical) return '';
+      if (isProposed(proposal)) {
+        return '<section class="review-actions" aria-label="Review actions"><p><strong>Review.</strong> This is the roadmap MRAPI prepared from your request.</p><p>Choose <strong>Approve roadmap</strong> when it is right, or <strong>Request changes</strong> to send feedback back to W01.</p></section>';
+      }
+      if (isApproved(proposal) && !hasStartedMilestone(proposal)) {
+        return '<section class="review-actions" aria-label="Start Autopilot"><p><strong>Approved and ready to start.</strong> Start Autopilot is the next explicit action.</p></section>';
+      }
+      if (trustedResumeAvailable(proposal)) {
+        return '<section class="review-actions" aria-label="Resume Autopilot"><p><strong>Resume Autopilot.</strong> Trusted persisted state shows work can continue or recover.</p></section>';
+      }
+      return '';
     }
 
     function renderHistoricalNotice() {
@@ -1234,18 +1280,53 @@ function plannerPageHtml() {
       return text(runtime?.milestone_state || milestone?.state || '').trim() || 'Not recorded';
     }
 
+    function runtimePhase(runtime, milestone) {
+      const raw = text(runtime?.mission?.state || runtime?.mission_state || runtime?.phase || runtime?.status || runtimeState(runtime, milestone)).trim();
+      return titleCaseState(raw, 'Not started yet');
+    }
+
+    function runtimeWorker(proposal, milestone, runtime) {
+      return text(runtime?.mission?.worker_id || runtime?.worker_id || milestone?.owner_worker_id || proposal?.owner_worker_id || 'W01').trim() || 'W01';
+    }
+
+    function verificationSummary(runtime) {
+      const evidence = runtime?.latest_evidence || runtime?.verification_evidence || null;
+      if (!evidence || typeof evidence !== 'object') return 'Not verified yet';
+      const evidenceState = text(evidence.verification_state || evidence.state || evidence.status || evidence.result).trim().toUpperCase();
+      const trustedPass = evidence.verified === true || evidence.passed === true || ['PASSED', 'PASS', 'COMPLETED', 'COMPLETE', 'SUCCESS'].includes(evidenceState);
+      const summary = text(evidence.summary || evidence.title || evidence.message || evidence.outcome).trim();
+      if (trustedPass) return 'Verification passed' + (summary ? ': ' + summary : '');
+      return summary || titleCaseState(evidenceState, 'Verification evidence recorded');
+    }
+
+    function recoverySummary(runtime) {
+      const recovery = runtime?.recovery || {};
+      if (recovery.recoverable === true && recovery.mode && recovery.mode !== 'NO_ACTION') {
+        return titleCaseState(recovery.mode) + (recovery.reason ? ': ' + recovery.reason : '');
+      }
+      return recovery.reason || 'No recovery action available.';
+    }
+
+    function linkedMissionSummary(proposal, milestone, runtime) {
+      const objective = text(runtime?.mission?.objective || runtime?.mission_objective || milestone?.objective || milestone?.expected_outcome).trim();
+      return '<div class="mission-summary"><strong>' + escapeHtml(objective || 'Mission objective not recorded') + '</strong>' +
+        '<span>Worker: ' + escapeHtml(runtimeWorker(proposal, milestone, runtime)) + '</span>' +
+        '<span>Status: ' + escapeHtml(runtimePhase(runtime, milestone)) + '</span>' +
+        '<span>' + escapeHtml(verificationSummary(runtime)) + '</span></div>';
+    }
+
     function recoveryActionHtml(runtime) {
       const recovery = runtime?.recovery || {};
       const missionId = text(runtime?.mission_id).trim();
       if (!missionId || recovery.recoverable !== true || !recovery.mode || recovery.mode === 'NO_ACTION') return '';
       if (recovery.mode === 'BRAIN_REPLAY') {
-        return '<button class="danger" type="button" data-milestone-recovery="1" data-mission-id="' + escapeHtml(missionId) + '" data-milestone-id="' + escapeHtml(runtime?.milestone_id || '') + '" data-recovery-mode="BRAIN_REPLAY">Replay Brain</button>';
+        return '<button class="danger" type="button" data-milestone-recovery="1" data-mission-id="' + escapeHtml(missionId) + '" data-milestone-id="' + escapeHtml(runtime?.milestone_id || '') + '" data-recovery-mode="BRAIN_REPLAY">Correct / Replay Brain</button>';
       }
       if (recovery.mode === 'EXECUTION_RETRY') {
         return '<button class="danger" type="button" data-milestone-recovery="1" data-mission-id="' + escapeHtml(missionId) + '" data-milestone-id="' + escapeHtml(runtime?.milestone_id || '') + '" data-recovery-mode="EXECUTION_RETRY">Retry Execution</button>';
       }
       if (recovery.mode === 'HUMAN_ACTION_RESUME') {
-        return '<button class="danger" type="button" data-milestone-recovery="1" data-mission-id="' + escapeHtml(missionId) + '" data-milestone-id="' + escapeHtml(runtime?.milestone_id || '') + '" data-recovery-mode="HUMAN_ACTION_RESUME">Resume</button>';
+        return '<button class="danger" type="button" data-milestone-recovery="1" data-mission-id="' + escapeHtml(missionId) + '" data-milestone-id="' + escapeHtml(runtime?.milestone_id || '') + '" data-recovery-mode="HUMAN_ACTION_RESUME">Resume Mission</button>';
       }
       return '';
     }
@@ -1303,14 +1384,13 @@ function plannerPageHtml() {
       return '<section class="runtime-panel" aria-label="Milestone runtime">' +
         '<span class="label">RUNTIME</span>' +
         '<div class="kv">' +
-        '<div><span class="label">Milestone state</span><p>' + escapeHtml(runtimeState(runtime, milestone)) + '</p></div>' +
-        '<div><span class="label">Mission ID</span><p>' + escapeHtml(runtime?.mission_id || 'Not recorded') + '</p></div>' +
-        '<div><span class="label">Brain Run</span><p>' + escapeHtml(runSummary(runtime?.brain_run)) + '</p></div>' +
-        '<div><span class="label">Execution Run</span><p>' + escapeHtml(runSummary(runtime?.execution_run)) + '</p></div>' +
-        '<div><span class="label">Blocker/failure</span><p>' + escapeHtml(blocker.code || blocker.reason || 'Not recorded') + (blocker.message ? '<br>' + escapeHtml(blocker.message) : '') + '</p></div>' +
-        '<div><span class="label">Latest evidence</span><p>' + escapeHtml(objectSummary(latestEvidence)) + (latestEvidence?.id || latestEvidence?.evidence_id ? '<br>ID: ' + escapeHtml(latestEvidence.id || latestEvidence.evidence_id) : '') + '</p></div>' +
-        '<div><span class="label">Latest human response</span><p>' + escapeHtml(objectSummary(latestHumanResponse)) + (latestHumanResponse?.evidence_id || latestHumanResponse?.id ? '<br>ID: ' + escapeHtml(latestHumanResponse.evidence_id || latestHumanResponse.id) : '') + '</p></div>' +
-        '<div><span class="label">Recovery</span><p>' + escapeHtml((recovery.mode || 'NO_ACTION') + ' / ' + (recovery.recoverable ? 'recoverable' : 'not recoverable')) + (recovery.reason ? '<br>' + escapeHtml(recovery.reason) : '') + '</p></div>' +
+        '<div><span class="label">Linked Mission</span>' + linkedMissionSummary(options.proposal || state.proposal, milestone, runtime) + '</div>' +
+        '<div><span class="label">Current work</span><p>' + escapeHtml(runtimePhase(runtime, milestone)) + '</p></div>' +
+        '<div><span class="label">Worker</span><p>' + escapeHtml(runtimeWorker(options.proposal || state.proposal, milestone, runtime)) + '</p></div>' +
+        '<div><span class="label">Verification</span><p>' + escapeHtml(verificationSummary(runtime)) + '</p></div>' +
+        '<div><span class="label">Recovery</span><p>' + escapeHtml(recoverySummary(runtime)) + '</p></div>' +
+        '<div><span class="label">Human response</span><p>' + escapeHtml(objectSummary(latestHumanResponse)) + '</p></div>' +
+        '<div><span class="label">Blocker/failure</span><p>' + escapeHtml(blocker.message || blocker.reason || blocker.code || 'Not recorded') + '</p></div>' +
         downstreamImpactHtml(runtime) +
         '</div>' +
         '<div class="runtime-actions">' + evidence + action + resolve + '</div>' +
@@ -1590,9 +1670,10 @@ function plannerPageHtml() {
         els.start.classList.add('hidden');
         hideRevisionForm();
         els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>Proposal unavailable</h2></div><span class="badge blocked">INCOMPLETE</span></div>' +
-          '<div class="notice terminal"><strong>Proposal review data is incomplete or malformed.</strong> Refresh the persisted proposal after Brain planning completes. Approval is unavailable until required review fields are returned by the server.</div>' +
-          renderHumanActionPanels(humanActionViews);
-        setStatus('Proposal review data is incomplete or malformed. Approval is unavailable.', 'error');
+          '<div class="notice terminal"><strong>Roadmap metadata needs repair or the proposal is still being prepared.</strong> Refresh the persisted proposal after Brain planning completes. Approval is unavailable until required review fields are returned by the server.</div>' +
+          renderHumanActionPanels(humanActionViews) +
+          renderRoadmapAdvancedDetails(proposal, { historical: true });
+        setStatus('Roadmap metadata needs repair or the proposal is still being prepared. Approval is unavailable.', 'error');
         return;
       }
       if (!reviewComplete) {
@@ -1625,21 +1706,24 @@ function plannerPageHtml() {
       const hasPendingAutopilotWork = proposalMilestones.some((milestone) =>
         pendingAutopilotStates.has(text(milestone?.state).trim().toUpperCase())
       );
-      const canStart = approved && !isTerminal(proposal) && !hasActiveAutopilotWork && hasPendingAutopilotWork;
+      const canInitialStart = approved && !autopilotStarted && !isTerminal(proposal) && !hasActiveAutopilotWork && hasPendingAutopilotWork;
+      const canResume = approved && autopilotStarted && !isCompleted(proposal) && trustedResumeAvailable(proposal);
+      const canStart = canInitialStart || canResume;
       els.approve.classList.toggle('hidden', !canApprove);
       els.requestChanges.classList.toggle('hidden', !canRequestChanges);
       els.start.classList.toggle('hidden', !canStart);
-      els.start.textContent = autopilotStarted ? 'Resume Autopilot' : 'Start Autopilot';
+      els.start.textContent = canResume ? 'Resume Autopilot' : 'Start Autopilot';
       if (!canRequestChanges || isRevisionPending(proposal)) hideRevisionForm();
       els.proposalView.classList.remove('hidden');
       els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>' + escapeHtml(proposal.title) + '</h2></div><span class="badge ' + stateClass(proposal) + '">' + escapeHtml(stateLabel(proposal)) + '</span></div>' +
         renderNotice(proposal) +
         (isCompleted(proposal) ? renderCompletedSummary(proposal, milestones) : renderSummaryCard(proposal, milestones)) +
+        renderReviewActionSummary(proposal) +
         renderHumanActionPanels(humanActionViews) +
         renderRoadmapAdvancedDetails(proposal) +
         '<h2>Milestones</h2><div class="milestones">' + milestones.map((item) => renderMilestone(item.milestone, item.index, { proposal, approved })).join('') + '</div>';
       if (isRunning(proposal)) setStatus('Running - current milestone is in progress.', 'success');
-      else if (proposed && !approved) setStatus('Waiting for approval - revisalo antes de aprobar.', '');
+      else if (proposed && !approved) setStatus('Ready for review - revisalo antes de aprobar.', '');
       else if (isRevisionPending(proposal)) setStatus('Cambios pedidos. W01 está revisando el roadmap con tu feedback.', 'success');
       else if (approved && autopilotStarted) setStatus('Autopilot is managing roadmap continuation from the current persisted state.', 'success');
       else if (approved) setStatus('Roadmap aprobado. Start Autopilot ya está disponible.', 'success');
@@ -1667,12 +1751,19 @@ function plannerPageHtml() {
         renderMilestoneRuntime(milestone, runtime, { roadmapId: state.proposalId, approved: options.approved === true }) +
         '<details class="advanced-details"><summary><strong>Advanced milestone details</strong></summary><div class="kv">' +
         '<div><span class="label">Milestone ID</span><p>' + escapeHtml(milestone.id) + '</p></div>' +
+        '<div><span class="label">Mission ID</span><p>' + escapeHtml(runtime?.mission_id || milestone.mission_id || 'Not recorded') + '</p></div>' +
         '<div><span class="label">Raw lifecycle state</span><p>' + escapeHtml(rawLifecycleState(milestone) || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Raw runtime state</span><p>' + escapeHtml(runtime?.milestone_state || runtime?.state || runtime?.status || 'Not recorded') + '</p></div>' +
+        '<div><span class="label">Task IDs</span>' + list([runtime?.task_id, runtime?.current_task_id, milestone.task_id].filter(Boolean), 'Not recorded') + '</div>' +
+        '<div><span class="label">Brain Run IDs</span>' + list([runtime?.brain_run?.id, runtime?.brain_run_id, milestone.brain_run_id].filter(Boolean), 'Not recorded') + '</div>' +
+        '<div><span class="label">Execution Run IDs</span>' + list([runtime?.execution_run?.id, runtime?.execution_run_id, milestone.execution_run_id].filter(Boolean), 'Not recorded') + '</div>' +
         '<div><span class="label">Executor requirement</span><p><span class="badge ' + executorClass + '">' + escapeHtml(executorLabel) + '</span></p></div>' +
         '<div><span class="label">Dependencies</span>' + list(dependencyItems, dependencyEmptyText) + '</div>' +
         '<div><span class="label">Risks</span>' + list(milestone.risks, risksEmptyText) + '</div>' +
         '<div><span class="label">Success criteria</span>' + list(milestone.success_criteria, successCriteriaEmptyText) + '</div>' +
         '<div><span class="label">Order</span><p>' + escapeHtml(milestone.order || index + 1) + '</p></div>' +
+        '<div><span class="label">Raw evidence</span>' + renderJson(runtime?.latest_evidence || runtime?.verification_evidence) + '</div>' +
+        '<div><span class="label">Raw recovery</span>' + renderJson(runtime?.recovery) + '</div>' +
         retryDetails + '</div></details></details>';
     }
 
@@ -1740,7 +1831,7 @@ function plannerPageHtml() {
 
           if (repairKey && !state.metadataRepairAttempts[repairKey]) {
             state.metadataRepairAttempts[repairKey] = true;
-            setStatus('Planner metadata incomplete. Repairing trusted persisted proposal...', '');
+            setStatus('Roadmap metadata needs repair. Repairing trusted persisted proposal...', '');
 
             try {
               const repair = await fetch(
@@ -1758,7 +1849,7 @@ function plannerPageHtml() {
 
               if (isProposalRenderable(proposal) && isReviewComplete(proposal)) {
                 setStatus(
-                  'Planner metadata repaired automatically' +
+                  'Roadmap metadata repaired automatically' +
                   (repair?.source ? ' from ' + repair.source + '.' : '.'),
                   'success'
                 );
@@ -1944,17 +2035,16 @@ function plannerPageHtml() {
       syncRevisionSubmitState();
       setStatus('Enviando cambios a W01...', '');
       try {
-        const revised = await fetch('/api/planner/roadmaps/' + encodeURIComponent(proposalId) + '/request-changes', {
+        await fetch('/api/planner/roadmaps/' + encodeURIComponent(proposalId) + '/request-changes', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ feedback })
         }).then(parseResponse);
-        state.proposal = revised;
         els.approve.classList.add('hidden');
         els.requestChanges.classList.add('hidden');
         els.start.classList.add('hidden');
         hideRevisionForm();
-        renderProposal(revised);
+        await loadProposal();
         setStatus('Cambios pedidos. W01 está revisando el roadmap con tu feedback.', 'success');
         loadRecentPlannerRequests();
       } catch (error) {
