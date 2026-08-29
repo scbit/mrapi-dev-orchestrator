@@ -5,6 +5,7 @@ const { normalizeRoadmapInput, nextMilestone, MILESTONE_STATES } = require('../s
 const { startNextRoadmapMilestone } = require('../services/autopilot');
 const { dispatchMission } = require('../services/orchestration');
 const { resolveRoadmapRuntime } = require('../services/milestoneRuntime');
+const { saveMilestoneResponse } = require('../services/milestoneResponse');
 
 function now() {
   return new Date();
@@ -169,6 +170,28 @@ function createRoadmapsRouter({ repos, db }) {
         milestone_id: started.milestone.id,
         mission_id: started.mission.id,
         brain_run_id: brainRun.id
+      }));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.post('/:roadmapId/milestones/:milestoneId/respond', async (req, res, next) => {
+    try {
+      const response = await saveMilestoneResponse(
+        db,
+        req.tenantId,
+        req.params.roadmapId,
+        req.params.milestoneId,
+        req.body || {}
+      );
+      res.status(201).json(serializeFirestore({
+        evidence_id: response.evidence_id,
+        id: response.id,
+        roadmap_id: response.roadmap_id,
+        milestone_id: response.milestone_id,
+        mission_id: response.mission_id
       }));
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });

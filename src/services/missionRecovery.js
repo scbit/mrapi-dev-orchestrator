@@ -1,4 +1,5 @@
 const { resumeAutopilotProgramAfterHumanAction, retryMission } = require('./orchestration');
+const { listMilestoneResponses } = require('./milestoneResponse');
 
 function timestamp() {
   try {
@@ -249,6 +250,12 @@ async function replayAutopilotBrain(db, tenantId, context) {
   const missionRef = db.collection('missions').doc(mission.id);
   const roadmapRef = roadmap ? db.collection('roadmaps').doc(roadmap.id) : null;
   const newRunRef = db.collection('runs').doc();
+  const milestoneHumanResponses = mission.roadmap_id && mission.milestone_id
+    ? await listMilestoneResponses(db, tenantId, mission.roadmap_id, mission.milestone_id, {
+        missionId: mission.id,
+        includePremission: true
+      })
+    : [];
   let result = null;
 
   await db.runTransaction(async (tx) => {
@@ -325,6 +332,11 @@ async function replayAutopilotBrain(db, tenantId, context) {
       120
     ).toUpperCase();
 
+    const baseBrainContext = freshMission.brain_context || latestBrain?.brain_context || null;
+    const brainContext = baseBrainContext && typeof baseBrainContext === 'object' && !Array.isArray(baseBrainContext)
+      ? { ...baseBrainContext, milestone_human_responses: milestoneHumanResponses }
+      : { milestone_human_responses: milestoneHumanResponses };
+
     const brainRun = {
       id: newRunRef.id,
       tenant_id: tenantId,
@@ -338,7 +350,7 @@ async function replayAutopilotBrain(db, tenantId, context) {
       parent_run_id: latestBrain?.id || null,
       retry_of_run_id: latestBrain?.id || null,
       objective: freshMission.objective,
-      brain_context: freshMission.brain_context || latestBrain?.brain_context || null,
+      brain_context: brainContext,
       autopilot_mode: freshMission.autopilot_mode === true,
       autopilot_phase: autopilotPhase,
       roadmap_id: freshMission.roadmap_id || null,

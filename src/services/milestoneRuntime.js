@@ -1,4 +1,5 @@
 const { getMissionRecoveryStatus } = require('./missionRecovery');
+const { listMilestoneResponses } = require('./milestoneResponse');
 
 function clean(value, max = 4000) {
   return String(value ?? '').trim().slice(0, max);
@@ -32,6 +33,8 @@ function baseRuntime(roadmap, milestone) {
     human_action: null,
     blocker: blockerFrom(milestone),
     latest_evidence: null,
+    latest_human_response: null,
+    human_response_count: 0,
     recovery: null
   };
 }
@@ -127,10 +130,28 @@ async function resolveLatestEvidence(db, tenantId, roadmap, milestone, missionId
   })))[0] || null;
 }
 
+async function resolveHumanResponses(db, tenantId, roadmap, milestone, missionId = undefined) {
+  return listMilestoneResponses(db, tenantId, roadmap.id, milestone.id, {
+    ...(missionId !== undefined ? { missionId, includePremission: true } : {})
+  });
+}
+
 async function resolveMilestoneRuntime(db, tenantId, roadmap, milestone) {
   const runtime = baseRuntime(roadmap, milestone);
+  const humanResponses = await resolveHumanResponses(
+    db,
+    tenantId,
+    roadmap,
+    milestone,
+    runtime.mission_id || undefined
+  );
   if (!runtime.mission_id) {
-    return { ...runtime, recovery: noRecovery() };
+    return {
+      ...runtime,
+      latest_human_response: humanResponses[0] || null,
+      human_response_count: humanResponses.length,
+      recovery: noRecovery()
+    };
   }
 
   const missionSnap = await db.collection('missions').doc(runtime.mission_id).get();
@@ -146,6 +167,8 @@ async function resolveMilestoneRuntime(db, tenantId, roadmap, milestone) {
         reason: 'TRUSTED_PROVENANCE_MISMATCH',
         state: mission?.state || null
       },
+      latest_human_response: humanResponses[0] || null,
+      human_response_count: humanResponses.length,
       recovery: noRecovery('TRUSTED_PROVENANCE_MISMATCH')
     };
   }
@@ -163,6 +186,8 @@ async function resolveMilestoneRuntime(db, tenantId, roadmap, milestone) {
     human_action: checkpointFrom(mission, milestone),
     blocker: blockerFrom(mission, milestone),
     latest_evidence: await resolveLatestEvidence(db, tenantId, roadmap, milestone, mission.id),
+    latest_human_response: humanResponses[0] || null,
+    human_response_count: humanResponses.length,
     recovery
   };
 }
