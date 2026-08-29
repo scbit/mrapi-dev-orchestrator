@@ -4,6 +4,33 @@ const {
   hasValidAutopilotDecision
 } = require('../lib/autopilot-contract');
 
+async function setComposerText(page, input, text) {
+  const value = String(text ?? '');
+
+  await input.waitFor({ state: 'visible', timeout: 60000 });
+  await input.click();
+
+  // ChatGPT uses a ProseMirror contenteditable composer. locator.fill()
+  // can time out on large prompts. Chromium insertText is more reliable.
+  await input.press('Control+A');
+  await input.press('Backspace');
+  await page.keyboard.insertText(value);
+
+  await page.waitForFunction(
+    ({ selector, minLength }) => {
+      const el = document.querySelector(selector);
+      if (!el) return false;
+      const current = String(el.innerText || el.textContent || '');
+      return current.length >= minLength;
+    },
+    {
+      selector: '#prompt-textarea',
+      minLength: Math.max(1, Math.min(value.length, 64))
+    },
+    { timeout: 15000 }
+  );
+}
+
 async function getLastAssistantText(page) {
   const messages = page.locator('[data-message-author-role="assistant"]');
   const count = await messages.count();
@@ -87,7 +114,7 @@ async function requestExecutorProgramRepair(page, previousText, timeoutMs) {
   const input = page.locator('#prompt-textarea').first();
   await input.waitFor({ state: 'visible', timeout: 60000 });
   await input.click();
-  await input.fill(`Your previous AUTOPILOT PROGRAM response is missing or malformed for an executor-required milestone. Do not redesign the milestone and do not add prose. Return ONLY:
+  await setComposerText(page, input, `Your previous AUTOPILOT PROGRAM response is missing or malformed for an executor-required milestone. Do not redesign the milestone and do not add prose. Return ONLY:
 <MRAPI_CONTROL>
 {
   "requires_execution": true,
@@ -112,7 +139,7 @@ async function requestBrainOnlyProgramRepair(page, previousText, timeoutMs) {
   const input = page.locator('#prompt-textarea').first();
   await input.waitFor({ state: 'visible', timeout: 60000 });
   await input.click();
-  await input.fill(`Your previous AUTOPILOT PROGRAM response is missing or malformed for a trusted Brain-only milestone (executor_required=false).
+  await setComposerText(page, input, `Your previous AUTOPILOT PROGRAM response is missing or malformed for a trusted Brain-only milestone (executor_required=false).
 
 Do NOT create a Task.
 Do NOT request Codex or any EXECUTION_RUN.
@@ -142,7 +169,7 @@ async function requestAutopilotFormatRepair(page, previousText, timeoutMs) {
   const input = page.locator('#prompt-textarea').first();
   await input.waitFor({ state: 'visible', timeout: 60000 });
   await input.click();
-  await input.fill(`Your previous AUTOPILOT VERIFICATION response did not match the required machine-readable contract. Do not re-run Codex. Return ONLY:
+  await setComposerText(page, input, `Your previous AUTOPILOT VERIFICATION response did not match the required machine-readable contract. Do not re-run Codex. Return ONLY:
 <MRAPI_AUTOPILOT>
 {
   "action": "COMPLETE",
@@ -185,7 +212,7 @@ async function runChatGPTWeb({ cfg, run, prompt, onProgress }) {
 
     if (onProgress) await onProgress(20, `Sending mission to ${workerId} Brain`);
     await input.click();
-    await input.fill(prompt);
+    await setComposerText(page, input, prompt);
     await input.press('Enter');
 
     console.log('[BRAIN WEB] prompt sent');
