@@ -1711,7 +1711,16 @@ function plannerPageHtml() {
       const canStart = canInitialStart || canResume;
       els.approve.classList.toggle('hidden', !canApprove);
       els.requestChanges.classList.toggle('hidden', !canRequestChanges);
-      els.start.classList.toggle('hidden', !canStart);
+      // MANUAL_RESUME_AUTOPILOT_CONTROL_V2
+      // Human safety valve only. It never selects or advances a milestone.
+      // The trusted /autopilot backend remains lifecycle authority.
+      const manualAutopilotMilestones = Array.isArray(proposal?.milestones) ? proposal.milestones : [];
+      const manualAutopilotHasUnfinished = manualAutopilotMilestones.some((milestone) =>
+        !['COMPLETED', 'COMPLETE', 'DONE'].includes(text(milestone?.state).trim().toUpperCase())
+      );
+      const manualAutopilotApproved = isApproved(proposal);
+      const manualAutopilotAvailable = manualAutopilotApproved && !isTerminal(proposal) && manualAutopilotHasUnfinished;
+      els.start.classList.toggle('hidden', !manualAutopilotAvailable);
       els.start.textContent = canResume ? 'Resume Autopilot' : 'Start Autopilot';
       if (!canRequestChanges || isRevisionPending(proposal)) hideRevisionForm();
       els.proposalView.classList.remove('hidden');

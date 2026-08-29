@@ -328,6 +328,34 @@ async function loadRoadmaps() {
   });
 }
 
+// MANUAL_RESUME_AUTOPILOT_ROADMAP_UI_V2
+function syncManualAutopilotControl(item) {
+  const button = $('#resumeAutopilotButton');
+  if (!button) return;
+
+  if (!item) {
+    button.hidden = true;
+    return;
+  }
+
+  const milestones = orderedMilestones(item);
+  const roadmapState = rawState(item);
+  const terminal = ['COMPLETED', 'COMPLETE', 'DONE', 'CANCELLED', 'CANCELED'].includes(roadmapState);
+  const approval = text(item?.approval_status || item?.approval?.status).toUpperCase();
+  const approved = approval === 'APPROVED' ||
+    (item?.proposal_type === 'PLANNER_ROADMAP' && ['ACTIVE', 'APPROVED'].includes(roadmapState));
+  const unfinished = milestones.some((milestone) =>
+    !['COMPLETED', 'COMPLETE', 'DONE'].includes(rawState(milestone))
+  );
+  const started = milestones.some((milestone) =>
+    Boolean(text(milestone?.mission_id)) ||
+    !['', 'PENDING', 'PROPOSED', 'READY'].includes(rawState(milestone))
+  );
+
+  button.hidden = !(approved && !terminal && unfinished);
+  button.textContent = started ? 'RESUME AUTOPILOT' : 'START AUTOPILOT';
+}
+
 function renderMilestoneStateEditor(item) {
   const target = $('#milestoneStateEditor');
   if (!target) return;
@@ -364,6 +392,7 @@ async function editRoadmap(id) {
   reopenButton.dataset.milestoneId = blockedMilestone?.id || '';
   $('#roadmapMilestones').value = orderedMilestones(item).map((m) => m.title).join('\n');
   renderMilestoneStateEditor(item);
+  syncManualAutopilotControl(item);
   $('#roadmapEditor').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -381,6 +410,7 @@ function openNewRoadmap() {
   $('#roadmapMilestones').value = ['Project Context','Roadmap Engine','Autopilot Loop','Git / Deploy Pipeline','Reporting / Notifications','Mission Conversation'].join('\n');
   currentRoadmap = null;
   renderMilestoneStateEditor(null);
+  syncManualAutopilotControl(null);
 }
 
 async function init() {
@@ -460,6 +490,33 @@ $('#roadmapForm').addEventListener('submit', async (event) => {
     await loadRoadmaps();
     await editRoadmap(saved.id);
   } catch (error) { message.textContent = `Error: ${error.message}`; }
+});
+
+$('#resumeAutopilotButton').addEventListener('click', async () => {
+  const id = text($('#roadmapId').value || currentRoadmap?.id);
+  if (!id) return;
+
+  const button = $('#resumeAutopilotButton');
+  button.disabled = true;
+  $('#roadmapMessage').textContent = 'Asking trusted Autopilot to start or resume...';
+
+  try {
+    const result = await api(`/api/roadmaps/${encodeURIComponent(id)}/autopilot`, {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+
+    $('#roadmapMessage').textContent = result?.no_new_work
+      ? 'Autopilot already owns the persisted work. Refreshing trusted state...'
+      : 'Autopilot accepted Start / Resume. Refreshing trusted state...';
+
+    await loadRoadmaps();
+    await editRoadmap(id);
+  } catch (error) {
+    $('#roadmapMessage').textContent = `Autopilot Start / Resume failed: ${error.message}`;
+  } finally {
+    button.disabled = false;
+  }
 });
 
 $('#reopenRoadmapButton').addEventListener('click', async () => {
