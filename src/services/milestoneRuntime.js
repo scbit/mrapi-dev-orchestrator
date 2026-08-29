@@ -1,5 +1,6 @@
 const { getMissionRecoveryStatus } = require('./missionRecovery');
 const { listMilestoneResponses } = require('./milestoneResponse');
+const { latestDownstreamImpactProposal } = require('./downstreamImpact');
 
 function clean(value, max = 4000) {
   return String(value ?? '').trim().slice(0, max);
@@ -35,6 +36,7 @@ function baseRuntime(roadmap, milestone) {
     latest_evidence: null,
     latest_human_response: null,
     human_response_count: 0,
+    downstream_impact: null,
     recovery: null
   };
 }
@@ -145,11 +147,19 @@ async function resolveMilestoneRuntime(db, tenantId, roadmap, milestone) {
     milestone,
     runtime.mission_id || undefined
   );
+  const downstreamImpact = await latestDownstreamImpactProposal(
+    db,
+    tenantId,
+    roadmap.id,
+    milestone.id,
+    runtime.mission_id ? { missionId: runtime.mission_id } : {}
+  );
   if (!runtime.mission_id) {
     return {
       ...runtime,
       latest_human_response: humanResponses[0] || null,
       human_response_count: humanResponses.length,
+      downstream_impact: downstreamImpact,
       recovery: noRecovery()
     };
   }
@@ -169,6 +179,7 @@ async function resolveMilestoneRuntime(db, tenantId, roadmap, milestone) {
       },
       latest_human_response: humanResponses[0] || null,
       human_response_count: humanResponses.length,
+      downstream_impact: downstreamImpact,
       recovery: noRecovery('TRUSTED_PROVENANCE_MISMATCH')
     };
   }
@@ -188,6 +199,7 @@ async function resolveMilestoneRuntime(db, tenantId, roadmap, milestone) {
     latest_evidence: await resolveLatestEvidence(db, tenantId, roadmap, milestone, mission.id),
     latest_human_response: humanResponses[0] || null,
     human_response_count: humanResponses.length,
+    downstream_impact: downstreamImpact,
     recovery
   };
 }

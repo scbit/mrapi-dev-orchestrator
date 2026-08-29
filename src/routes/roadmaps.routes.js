@@ -6,6 +6,10 @@ const { startNextRoadmapMilestone } = require('../services/autopilot');
 const { dispatchMission } = require('../services/orchestration');
 const { resolveRoadmapRuntime } = require('../services/milestoneRuntime');
 const { saveMilestoneResponse } = require('../services/milestoneResponse');
+const {
+  createDownstreamImpactProposal,
+  updateDownstreamImpactStatus
+} = require('../services/downstreamImpact');
 
 function now() {
   return new Date();
@@ -192,6 +196,95 @@ function createRoadmapsRouter({ repos, db }) {
         roadmap_id: response.roadmap_id,
         milestone_id: response.milestone_id,
         mission_id: response.mission_id
+      }));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.post('/:roadmapId/milestones/:milestoneId/downstream-impact', async (req, res, next) => {
+    try {
+      const proposal = await createDownstreamImpactProposal(
+        db,
+        req.tenantId,
+        req.params.roadmapId,
+        req.params.milestoneId,
+        req.body || {}
+      );
+      res.status(201).json(serializeFirestore({
+        impact_id: proposal.impact_id,
+        evidence_id: proposal.evidence_id,
+        id: proposal.id,
+        status: proposal.status,
+        roadmap_id: proposal.roadmap_id,
+        source_milestone_id: proposal.source_milestone_id,
+        mission_id: proposal.mission_id,
+        affected_milestone_ids: proposal.affected_milestone_ids,
+        reason: proposal.reason
+      }));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.post('/:roadmapId/milestones/:milestoneId/downstream-impact/:impactId/approve', async (req, res, next) => {
+    try {
+      const proposal = await updateDownstreamImpactStatus(
+        db,
+        req.tenantId,
+        req.params.roadmapId,
+        req.params.milestoneId,
+        req.params.impactId,
+        'APPROVED',
+        req.body || {}
+      );
+      res.json(serializeFirestore({
+        impact_id: proposal.impact_id,
+        evidence_id: proposal.evidence_id,
+        id: proposal.id,
+        status: proposal.status,
+        roadmap_id: proposal.roadmap_id,
+        source_milestone_id: proposal.source_milestone_id,
+        mission_id: proposal.mission_id,
+        affected_milestone_ids: proposal.affected_milestone_ids,
+        reason: proposal.reason,
+        approval: proposal.approval,
+        approved_at: proposal.approved_at,
+        approved_by: proposal.approved_by,
+        approval_source: proposal.approval_source
+      }));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.post('/:roadmapId/milestones/:milestoneId/downstream-impact/:impactId/reject', async (req, res, next) => {
+    try {
+      const proposal = await updateDownstreamImpactStatus(
+        db,
+        req.tenantId,
+        req.params.roadmapId,
+        req.params.milestoneId,
+        req.params.impactId,
+        'REJECTED',
+        req.body || {}
+      );
+      res.json(serializeFirestore({
+        impact_id: proposal.impact_id,
+        evidence_id: proposal.evidence_id,
+        id: proposal.id,
+        status: proposal.status,
+        roadmap_id: proposal.roadmap_id,
+        source_milestone_id: proposal.source_milestone_id,
+        mission_id: proposal.mission_id,
+        affected_milestone_ids: proposal.affected_milestone_ids,
+        reason: proposal.reason,
+        rejected_at: proposal.rejected_at,
+        rejected_by: proposal.rejected_by,
+        rejection_source: proposal.rejection_source
       }));
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });

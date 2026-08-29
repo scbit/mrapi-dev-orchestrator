@@ -1,5 +1,6 @@
 const { resumeAutopilotProgramAfterHumanAction, retryMission } = require('./orchestration');
 const { listMilestoneResponses } = require('./milestoneResponse');
+const { latestDownstreamImpactProposal } = require('./downstreamImpact');
 
 function timestamp() {
   try {
@@ -256,6 +257,11 @@ async function replayAutopilotBrain(db, tenantId, context) {
         includePremission: true
       })
     : [];
+  const downstreamImpactProposal = mission.roadmap_id && mission.milestone_id
+    ? await latestDownstreamImpactProposal(db, tenantId, mission.roadmap_id, mission.milestone_id, {
+        missionId: mission.id
+      })
+    : null;
   let result = null;
 
   await db.runTransaction(async (tx) => {
@@ -336,6 +342,20 @@ async function replayAutopilotBrain(db, tenantId, context) {
     const brainContext = baseBrainContext && typeof baseBrainContext === 'object' && !Array.isArray(baseBrainContext)
       ? { ...baseBrainContext, milestone_human_responses: milestoneHumanResponses }
       : { milestone_human_responses: milestoneHumanResponses };
+    if (['PENDING_APPROVAL', 'APPROVED'].includes(downstreamImpactProposal?.status)) {
+      brainContext.downstream_impact = {
+        detected: true,
+        status: downstreamImpactProposal.status,
+        approval_required: downstreamImpactProposal.status === 'PENDING_APPROVAL',
+        impact_id: downstreamImpactProposal.impact_id,
+        roadmap_id: downstreamImpactProposal.roadmap_id,
+        source_milestone_id: downstreamImpactProposal.source_milestone_id,
+        mission_id: downstreamImpactProposal.mission_id,
+        affected_milestones: downstreamImpactProposal.affected_milestone_ids,
+        affected_milestone_ids: downstreamImpactProposal.affected_milestone_ids,
+        reason: downstreamImpactProposal.reason
+      };
+    }
 
     const brainRun = {
       id: newRunRef.id,
