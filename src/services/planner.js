@@ -1101,9 +1101,16 @@ async function startPlannerRoadmap(db, tenantId, roadmapId, input = {}) {
       return Boolean(milestone.mission_id) || !['', 'PROPOSED', 'PENDING'].includes(state);
     })
     .sort((a, b) => Number(b.order || 0) - Number(a.order || 0));
-  if (startedMilestones.length > 0) {
-    const activeStates = new Set(['PLANNING', 'RUNNING', 'VERIFYING', 'NEED_HUMAN_ACTION', 'BLOCKED', 'FAILED', 'RETRYABLE', 'WAITING_HUMAN']);
-    const milestone = startedMilestones.find((item) => activeStates.has(String(item.state || '').trim().toUpperCase())) || startedMilestones[0];
+  // UNIFIED_START_RESUME_AUTOPILOT_V1
+  // Reuse only genuinely active/recoverable work. Completed historical milestones
+  // must not prevent the same canonical Autopilot authority from starting the next
+  // eligible milestone when a human explicitly presses Start/Resume Autopilot.
+  const activeStates = new Set(['PLANNING', 'RUNNING', 'VERIFYING', 'NEED_HUMAN_ACTION', 'BLOCKED', 'FAILED', 'RETRYABLE', 'WAITING_HUMAN']);
+  const activeMilestone = startedMilestones.find((item) =>
+    activeStates.has(String(item.state || '').trim().toUpperCase())
+  );
+  if (activeMilestone) {
+    const milestone = activeMilestone;
     let mission = null;
     let brainRun = null;
     if (milestone.mission_id) {

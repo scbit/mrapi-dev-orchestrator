@@ -3,6 +3,8 @@ const express = require('express');
 const { serializeFirestore } = require('../utils/firestore');
 const { normalizeRoadmapInput, nextMilestone } = require('../services/roadmap');
 const { resolveRoadmapRuntime } = require('../services/milestoneRuntime');
+const { startPlannerRoadmap } = require('../services/planner');
+const { assertProjectRuntimeReady } = require('../services/projectRuntime');
 const { saveMilestoneResponse } = require('../services/milestoneResponse');
 const {
   createDownstreamImpactProposal,
@@ -158,6 +160,56 @@ function createRoadmapsRouter({ repos, db }) {
     }
   });
 
+
+  // UNIFIED_AUTOPILOT_ENDPOINT_V1
+  // Shared human control surface for both Planner and Roadmap UI.
+  // No milestone selection is accepted here; canonical Autopilot derives the next
+  // action exclusively from trusted persisted Roadmap/Mission state.
+  router.post('/:roadmapId/autopilot', async (req, res, next) => {
+    try {
+      const body = req.body || {};
+      const forbidden = ['milestone_id', 'milestoneId', 'next_milestone_id', 'nextMilestoneId']
+        .find((key) => Object.prototype.hasOwnProperty.call(body, key));
+      if (forbidden) {
+        return res.status(400).json({ error: 'AUTOPILOT_MILESTONE_SELECTION_FORBIDDEN' });
+      }
+
+      const roadmap = await repos.roadmaps.getById(req.params.roadmapId);
+      if (!roadmap || roadmap.tenant_id !== req.tenantId) {
+        return res.status(404).json({ error: 'ROADMAP_NOT_FOUND' });
+      }
+
+      await assertProjectRuntimeReady(
+        db,
+        req.tenantId,
+        roadmap.project_id,
+        roadmap.workspace_id || null
+      );
+
+      const started = await startPlannerRoadmap(
+        db,
+        req.tenantId,
+        req.params.roadmapId,
+        { max_attempts: body.max_attempts || 3 }
+      );
+
+      const current = await repos.roadmaps.getById(req.params.roadmapId);
+      res.status(started.no_new_work ? 200 : 201).json(serializeFirestore({
+        ok: true,
+        roadmap_id: req.params.roadmapId,
+        state: current?.state || started.roadmap?.state || null,
+        milestone_id: started.milestone?.id || null,
+        mission_id: started.mission?.id || null,
+        brain_run_id: started.brain_run?.id || null,
+        reused: started.reused === true,
+        no_new_work: started.no_new_work === true,
+        already_complete: started.already_complete === true
+      }));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
 
   router.post('/:roadmapId/advance', async (req, res, next) => {
     try {

@@ -1610,10 +1610,21 @@ function plannerPageHtml() {
       const canApprove = proposed && !approved && !isTerminal(proposal);
       const canRequestChanges = canApprove;
       const autopilotStarted = hasStartedMilestone(proposal);
-      const canStart = approved && !isTerminal(proposal) && !isRunning(proposal) && !autopilotStarted;
+      // UNIFIED_START_RESUME_PLANNER_UI_V1
+      const activeAutopilotStates = new Set(['PLANNING', 'RUNNING', 'VERIFYING', 'BLOCKED', 'FAILED', 'RETRYABLE', 'WAITING_HUMAN', 'NEED_HUMAN_ACTION']);
+      const pendingAutopilotStates = new Set(['PENDING', 'PROPOSED', 'READY']);
+      const proposalMilestones = Array.isArray(proposal.milestones) ? proposal.milestones : [];
+      const hasActiveAutopilotWork = proposalMilestones.some((milestone) =>
+        activeAutopilotStates.has(text(milestone?.state).trim().toUpperCase())
+      );
+      const hasPendingAutopilotWork = proposalMilestones.some((milestone) =>
+        pendingAutopilotStates.has(text(milestone?.state).trim().toUpperCase())
+      );
+      const canStart = approved && !isTerminal(proposal) && !hasActiveAutopilotWork && hasPendingAutopilotWork;
       els.approve.classList.toggle('hidden', !canApprove);
       els.requestChanges.classList.toggle('hidden', !canRequestChanges);
       els.start.classList.toggle('hidden', !canStart);
+      els.start.textContent = autopilotStarted ? 'Resume Autopilot' : 'Start Autopilot';
       if (!canRequestChanges || isRevisionPending(proposal)) hideRevisionForm();
       els.proposalView.classList.remove('hidden');
       els.proposalView.innerHTML = '<div class="proposal-head"><div><span class="label">ROADMAP PROPOSAL</span><h2>' + escapeHtml(proposal.title) + '</h2></div><span class="badge ' + stateClass(proposal) + '">' + escapeHtml(stateLabel(proposal)) + '</span></div>' +
@@ -1924,7 +1935,7 @@ function plannerPageHtml() {
       const proposalId = els.proposalId.value.trim() || state.proposalId;
       if (!proposalId) return setStatus('Start failed: proposal ID is required.', 'error');
       try {
-        const started = await fetch('/api/planner/roadmaps/' + encodeURIComponent(proposalId) + '/start', {
+        const started = await fetch('/api/roadmaps/' + encodeURIComponent(proposalId) + '/autopilot', {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({})

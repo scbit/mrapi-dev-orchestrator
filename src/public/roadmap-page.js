@@ -97,6 +97,25 @@ function editRoadmap(id) {
   reopenButton.hidden = !(item.state === 'BLOCKED' || blockedMilestone);
   reopenButton.dataset.milestoneId = blockedMilestone?.id || '';
   $('#autoAdvance').checked = Boolean(item.auto_advance);
+  // UNIFIED_START_RESUME_ROADMAP_UI_V2
+  const autopilotActiveStates = new Set(['PLANNING','RUNNING','VERIFYING','BLOCKED','FAILED','RETRYABLE','WAITING_HUMAN','NEED_HUMAN_ACTION']);
+  const autopilotPendingStates = new Set(['PENDING','PROPOSED','READY']);
+  const autopilotMilestones = item.milestones || [];
+  const hasActiveAutopilotWork = autopilotMilestones.some((m) =>
+    autopilotActiveStates.has(String(m.state || '').trim().toUpperCase())
+  );
+  const hasPendingAutopilotWork = autopilotMilestones.some((m) =>
+    autopilotPendingStates.has(String(m.state || '').trim().toUpperCase())
+  );
+  const hasStartedAutopilotWork = autopilotMilestones.some((m) =>
+    Boolean(m.mission_id) ||
+    ['COMPLETED','COMPLETE','DONE'].includes(String(m.state || '').trim().toUpperCase())
+  );
+  const roadmapTerminal = ['COMPLETED','COMPLETE','CANCELLED','CANCELED']
+    .includes(String(item.state || '').trim().toUpperCase());
+  const autopilotButton = $('#startNextMilestoneButton');
+  autopilotButton.hidden = roadmapTerminal || hasActiveAutopilotWork || !hasPendingAutopilotWork;
+  autopilotButton.textContent = hasStartedAutopilotWork ? 'RESUME AUTOPILOT' : 'START AUTOPILOT';
   $('#roadmapMilestones').value = (item.milestones || []).sort((a,b)=>(a.order||0)-(b.order||0)).map((m) => m.title).join('\n');
   renderMilestoneStateEditor(item);
   $('#roadmapEditor').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -218,13 +237,13 @@ $('#startNextMilestoneButton').addEventListener('click', async () => {
   }
   const button = $('#startNextMilestoneButton');
   button.disabled = true;
-  $('#roadmapMessage').textContent = 'Starting next milestone…';
+  $('#roadmapMessage').textContent = 'Starting/resuming Autopilot…';
   try {
-    const started = await api(`/api/roadmaps/${encodeURIComponent(id)}/advance`, {
+    const started = await api(`/api/roadmaps/${encodeURIComponent(id)}/autopilot`, {
       method: 'POST',
       body: JSON.stringify({ max_attempts: 3 })
     });
-    $('#roadmapMessage').textContent = `Autopilot started. Mission ${started.mission_id} · Brain Run ${started.brain_run_id}`;
+    $('#roadmapMessage').textContent = `Autopilot started/resumed. Mission ${started.mission_id} · Brain Run ${started.brain_run_id}`;
     await loadRoadmaps();
     editRoadmap(id);
   } catch (error) {
