@@ -1356,24 +1356,83 @@ function plannerPageHtml() {
 
     async function loadMissionsRecovery() {
       if (!els.missionsList) return;
+
+      // PLANNER_SCOPED_RECOVERY_UI_V2
+      // Mission Recovery is scoped to the Roadmap currently loaded in Planner.
+      // Never load the tenant-wide Mission collection here.
+      const roadmapId = text(
+        els.proposalId?.value ||
+        state.proposalId ||
+        state.proposal?.roadmap_id ||
+        state.proposal?.id
+      ).trim();
+
+      if (!roadmapId) {
+        state.missions = [];
+        state.missionsLoading = false;
+        state.missionsError = '';
+        renderMissionsRecovery();
+        return;
+      }
+
       state.missionsLoading = true;
       state.missionsError = '';
       renderMissionsRecovery();
+
       try {
-        const data = await fetch('/api/missions').then(parseResponse);
+        const data = await fetch(
+          '/api/missions?roadmap_id=' + encodeURIComponent(roadmapId) + '&limit=25'
+        ).then(parseResponse);
+
         const missions = Array.isArray(data.items) ? data.items : [];
-        const recoverableStates = new Set(['BLOCKED', 'FAILED', 'WAITING_HUMAN', 'NEED_HUMAN_ACTION', 'RETRYABLE']);
-        const enriched = await Promise.all(missions.map(async (mission) => {
-          const missionState = text(mission?.state).trim().toUpperCase();
-          if (!mission?.id || !recoverableStates.has(missionState)) return mission;
-          try {
-            const recovery = await fetch('/api/missions/' + encodeURIComponent(mission.id) + '/recovery').then(parseResponse);
-            return { ...mission, recovery };
-          } catch {
-            return { ...mission, recovery: { recoverable: false, mode: 'NO_ACTION', reason: 'RECOVERY_STATUS_UNAVAILABLE' } };
+        const recoverableStates = new Set([
+          'BLOCKED',
+          'FAILED',
+          'WAITING_HUMAN',
+          'NEED_HUMAN_ACTION',
+          'RETRYABLE'
+        ]);
+
+        const recoverable = missions.filter((mission) =>
+          mission?.id &&
+          recoverableStates.has(text(mission?.state).trim().toUpperCase())
+        );
+
+        const recoveryByMissionId = new Map();
+
+        // Avoid a recovery-request storm against the backend.
+        const concurrency = 3;
+        for (let i = 0; i < recoverable.length; i += concurrency) {
+          const batch = recoverable.slice(i, i + concurrency);
+          const results = await Promise.all(batch.map(async (mission) => {
+            try {
+              const recovery = await fetch(
+                '/api/missions/' + encodeURIComponent(mission.id) + '/recovery'
+              ).then(parseResponse);
+              return [mission.id, recovery];
+            } catch {
+              return [
+                mission.id,
+                {
+                  recoverable: false,
+                  mode: 'NO_ACTION',
+                  reason: 'RECOVERY_STATUS_UNAVAILABLE'
+                }
+              ];
+            }
+          }));
+
+          for (const [missionId, recovery] of results) {
+            recoveryByMissionId.set(missionId, recovery);
           }
-        }));
-        state.missions = enriched;
+        }
+
+        state.missions = missions.map((mission) =>
+          recoveryByMissionId.has(mission.id)
+            ? { ...mission, recovery: recoveryByMissionId.get(mission.id) }
+            : mission
+        );
+
         state.missionsLoading = false;
         renderMissionsRecovery();
       } catch (error) {

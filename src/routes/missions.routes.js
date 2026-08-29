@@ -12,8 +12,24 @@ function createMissionsRouter({ repos }) {
 
   router.get('/', async (req, res, next) => {
     try {
-      const missions = await repos.missions.listByTenant(req.tenantId);
-      res.json({ items: serializeFirestore(missions), total: missions.length });
+      // PLANNER_SCOPED_MISSIONS_API_V2
+      const roadmapId = cleanString(req.query?.roadmap_id);
+      const requestedLimit = Number.parseInt(req.query?.limit, 10);
+      const limit = Number.isFinite(requestedLimit)
+        ? Math.max(1, Math.min(requestedLimit, 100))
+        : (roadmapId ? 25 : 100);
+
+      const missions = roadmapId
+        ? await repos.missions.listByRoadmap(req.tenantId, roadmapId, limit)
+        : await repos.missions.listByTenant(req.tenantId, limit);
+
+      res.json({
+        items: serializeFirestore(missions),
+        total: missions.length,
+        scope: roadmapId
+          ? { roadmap_id: roadmapId, limit }
+          : { tenant_id: req.tenantId, limit }
+      });
     } catch (error) {
       next(error);
     }
