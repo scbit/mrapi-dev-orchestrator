@@ -1,4 +1,5 @@
 const $ = (selector) => document.querySelector(selector);
+let workspaces = [];
 let projects = [];
 let roadmaps = [];
 
@@ -17,7 +18,42 @@ function selectedProject() {
   return projects.find((item) => item.id === $('#projectSelect').value) || null;
 }
 
+function projectWorkspaceId(project) {
+  return String(project?.workspace_id || project?.workspaceId || '').trim();
+}
+
+function workspaceLabel(workspace, workspaceId = '') {
+  return String(workspace?.name || workspace?.display_name || workspaceId || 'Workspace not recorded').trim();
+}
+
+function projectLabel(project, projectId = '') {
+  return String(project?.name || project?.title || project?.display_name || projectId || 'Project not recorded').trim();
+}
+
+function renderTrustedContext(source = null) {
+  const selected = selectedProject();
+  const projectId = String(source?.project_id || selected?.id || '').trim();
+  const project = projects.find((item) => item.id === projectId) || selected || null;
+  const workspaceId = String(source?.workspace_id || projectWorkspaceId(project) || '').trim();
+  const workspace = workspaces.find((item) => item.id === workspaceId) || null;
+  const html = `
+    <div class="context-current">
+      <div><span class="eyebrow">Workspace</span><strong>${esc(workspaceLabel(workspace, workspaceId))}</strong></div>
+      <div><span class="eyebrow">Project</span><strong>${esc(projectLabel(project, projectId))}</strong></div>
+    </div>
+    <details class="technical-details compact"><summary>Technical details</summary><div>Workspace ID: ${esc(workspaceId || 'none')}<br>Project ID: ${esc(projectId || 'none')}</div></details>
+  `;
+  const pageContext = $('#roadmapTrustedContext');
+  if (pageContext) {
+    pageContext.className = projectId ? 'context-status is-ready' : 'context-status is-attention';
+    pageContext.innerHTML = html;
+  }
+  const editorContext = $('#roadmapEditorContext');
+  if (editorContext) editorContext.innerHTML = html;
+}
+
 function populateContext(project) {
+  renderTrustedContext();
   $('#repositoryFullName').value = project?.repository_full_name || '';
   $('#repositoryUrl').value = project?.repository_url || '';
   $('#localPath').value = project?.local_path || '';
@@ -28,9 +64,13 @@ function populateContext(project) {
 
 async function loadRoadmaps() {
   const project = selectedProject();
-  if (!project) return;
+  if (!project) {
+    $('#roadmapList').innerHTML = '<div class="empty-state">Select a valid project to view roadmaps.</div>';
+    renderTrustedContext();
+    return;
+  }
+  renderTrustedContext(project);
   const data = await api(`/api/roadmaps?project_id=${encodeURIComponent(project.id)}`);
-  // RECENT_PLANNER_ROADMAPS_FIRST_V2
   const ts = (item) => {
     const raw = item?.updated_at || item?.created_at || 0;
     if (typeof raw === 'string' || typeof raw === 'number') {
@@ -49,58 +89,39 @@ async function loadRoadmaps() {
     .slice(0, 20);
   $('#roadmapList').innerHTML = roadmaps.length ? roadmaps.map((item) => {
     const done = (item.milestones || []).filter((m) => m.state === 'COMPLETED').length;
-    return `<div class="roadmap-item" data-id="${esc(item.id)}"><h3>${esc(item.title)}</h3><p>${esc(item.objective)}</p><div class="roadmap-meta">${esc(item.state)} · ${done}/${(item.milestones || []).length} milestones · ${esc(item.owner_worker_id || 'W01')}</div></div>`;
+    return `<div class="roadmap-item" tabindex="0" data-id="${esc(item.id)}"><h3>${esc(item.title)}</h3><p>${esc(item.objective)}</p><div class="roadmap-meta">${esc(item.state)} - ${done}/${(item.milestones || []).length} milestones - ${esc(item.owner_worker_id || 'W01')}</div></div>`;
   }).join('') : '<div class="empty-state">No roadmap goals for this project yet.</div>';
-  document.querySelectorAll('.roadmap-item').forEach((el) => el.addEventListener('click', () => editRoadmap(el.dataset.id)));
+  document.querySelectorAll('.roadmap-item').forEach((el) => {
+    el.addEventListener('click', () => editRoadmap(el.dataset.id));
+    el.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') editRoadmap(el.dataset.id);
+    });
+  });
 }
-
 
 function renderMilestoneStateEditor(item) {
   const target = $('#milestoneStateEditor');
   if (!target) return;
   const milestones = [...(item?.milestones || [])].sort((a,b)=>(a.order||0)-(b.order||0));
   if (!milestones.length) {
-    target.innerHTML = '<div class="empty-state">Save the roadmap first to manage milestone states.</div>';
+    target.innerHTML = '<div class="empty-state">No persisted milestones to display yet.</div>';
     return;
   }
   target.innerHTML = `
-    <div class="roadmap-state-heading"><strong>Milestone states</strong><span>Update progress without editing the plan text.</span></div>
+    <div class="roadmap-state-heading"><strong>Milestone timeline</strong><span>Lifecycle state is read from trusted Roadmap runtime.</span></div>
     ${milestones.map((m) => `
       <div class="roadmap-milestone-row">
         <div><strong>${esc(m.title)}</strong><div class="roadmap-meta">${esc(m.id)}</div></div>
-        <select class="milestone-state-select" data-roadmap-id="${esc(item.id)}" data-milestone-id="${esc(m.id)}">
-          ${['PENDING','PLANNING','RUNNING','VERIFYING','COMPLETED','BLOCKED','SKIPPED'].map((state) => `<option value="${state}" ${state === m.state ? 'selected' : ''}>${state}</option>`).join('')}
-        </select>
+        <span class="state-badge state-${esc(m.state || 'PENDING')}">${esc(m.state || 'PENDING')}</span>
       </div>
     `).join('')}
   `;
-  target.querySelectorAll('.milestone-state-select').forEach((select) => {
-    select.addEventListener('change', async () => {
-      select.disabled = true;
-      try {
-        const updated = await api(`/api/roadmaps/${encodeURIComponent(select.dataset.roadmapId)}/milestones/${encodeURIComponent(select.dataset.milestoneId)}/state`, {
-          method: 'POST',
-          body: JSON.stringify({ state: select.value })
-        });
-        const index = roadmaps.findIndex((r) => r.id === updated.id);
-        if (index >= 0) roadmaps[index] = updated;
-        renderMilestoneStateEditor(updated);
-        await loadRoadmaps();
-        const next = updated.next_milestone;
-        $('#roadmapMessage').textContent = next
-          ? `Saved. Next executable milestone: ${next.title}`
-          : (updated.state === 'COMPLETED' ? 'Saved. Roadmap completed.' : 'Saved. No executable milestone yet.');
-      } catch (error) {
-        $('#roadmapMessage').textContent = `Error: ${error.message}`;
-        select.disabled = false;
-      }
-    });
-  });
 }
 
 function editRoadmap(id) {
   const item = roadmaps.find((r) => r.id === id);
   if (!item) return;
+  renderTrustedContext(item);
   $('#roadmapEditor').hidden = false;
   $('#roadmapEditorTitle').textContent = item.title;
   $('#roadmapId').value = item.id;
@@ -112,26 +133,6 @@ function editRoadmap(id) {
   const reopenButton = $('#reopenRoadmapButton');
   reopenButton.hidden = !(item.state === 'BLOCKED' || blockedMilestone);
   reopenButton.dataset.milestoneId = blockedMilestone?.id || '';
-  $('#autoAdvance').checked = Boolean(item.auto_advance);
-  // UNIFIED_START_RESUME_ROADMAP_UI_V2
-  const autopilotActiveStates = new Set(['PLANNING','RUNNING','VERIFYING','BLOCKED','FAILED','RETRYABLE','WAITING_HUMAN','NEED_HUMAN_ACTION']);
-  const autopilotPendingStates = new Set(['PENDING','PROPOSED','READY']);
-  const autopilotMilestones = item.milestones || [];
-  const hasActiveAutopilotWork = autopilotMilestones.some((m) =>
-    autopilotActiveStates.has(String(m.state || '').trim().toUpperCase())
-  );
-  const hasPendingAutopilotWork = autopilotMilestones.some((m) =>
-    autopilotPendingStates.has(String(m.state || '').trim().toUpperCase())
-  );
-  const hasStartedAutopilotWork = autopilotMilestones.some((m) =>
-    Boolean(m.mission_id) ||
-    ['COMPLETED','COMPLETE','DONE'].includes(String(m.state || '').trim().toUpperCase())
-  );
-  const roadmapTerminal = ['COMPLETED','COMPLETE','CANCELLED','CANCELED']
-    .includes(String(item.state || '').trim().toUpperCase());
-  const autopilotButton = $('#startNextMilestoneButton');
-  autopilotButton.hidden = roadmapTerminal || hasActiveAutopilotWork || !hasPendingAutopilotWork;
-  autopilotButton.textContent = hasStartedAutopilotWork ? 'RESUME AUTOPILOT' : 'START AUTOPILOT';
   $('#roadmapMilestones').value = (item.milestones || []).sort((a,b)=>(a.order||0)-(b.order||0)).map((m) => m.title).join('\n');
   renderMilestoneStateEditor(item);
   $('#roadmapEditor').scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -140,22 +141,29 @@ function editRoadmap(id) {
 function openNewRoadmap() {
   $('#roadmapEditor').hidden = false;
   $('#roadmapEditorTitle').textContent = 'New roadmap';
+  renderTrustedContext();
   $('#roadmapId').value = '';
   $('#roadmapTitle').value = 'Finish W01 Autopilot';
-  $('#roadmapObjective').value = 'Make W01 able to advance an approved roadmap with Brain-led programming, Codex execution, verification and reporting, escalating only important decisions.';
+  $('#roadmapObjective').value = 'Make W01 able to run an approved roadmap with Brain-led programming, Codex execution, verification and reporting, escalating only important decisions.';
   $('#roadmapWorker').value = 'W01';
   $('#roadmapState').value = 'ACTIVE';
   $('#reopenRoadmapButton').hidden = true;
   $('#reopenRoadmapButton').dataset.milestoneId = '';
-  $('#autoAdvance').checked = false;
   $('#roadmapMilestones').value = ['Project Context','Roadmap Engine','Autopilot Loop','Git / Deploy Pipeline','Reporting / Notifications','Mission Conversation'].join('\n');
   renderMilestoneStateEditor(null);
 }
 
 async function init() {
-  const data = await api('/api/projects');
-  projects = data.items || [];
-  $('#projectSelect').innerHTML = projects.map((p) => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`).join('');
+  const [workspaceData, projectData] = await Promise.all([
+    api('/api/workspaces'),
+    api('/api/projects')
+  ]);
+  workspaces = workspaceData.items || [];
+  projects = projectData.items || [];
+  $('#projectSelect').innerHTML = projects.length
+    ? projects.map((p) => `<option value="${esc(p.id)}">${esc(projectLabel(p))}</option>`).join('')
+    : '<option value="">No projects available</option>';
+  $('#projectSelect').disabled = !projects.length;
   populateContext(selectedProject());
   await loadRoadmaps();
   const anchor = window.location.hash.replace('#', '');
@@ -170,7 +178,7 @@ $('#contextForm').addEventListener('submit', async (event) => {
   const project = selectedProject();
   if (!project) return;
   const message = $('#contextMessage');
-  message.textContent = 'Saving…';
+  message.textContent = 'Saving...';
   try {
     const updated = await api(`/api/projects/${encodeURIComponent(project.id)}/context`, {
       method: 'PUT',
@@ -184,6 +192,7 @@ $('#contextForm').addEventListener('submit', async (event) => {
       })
     });
     projects = projects.map((p) => p.id === updated.id ? updated : p);
+    populateContext(updated);
     message.textContent = 'Project Context saved.';
   } catch (error) { message.textContent = `Error: ${error.message}`; }
 });
@@ -194,22 +203,25 @@ $('#roadmapForm').addEventListener('submit', async (event) => {
   if (!project) return;
   const id = $('#roadmapId').value;
   const existing = roadmaps.find((r) => r.id === id);
+  const ownershipProject = existing
+    ? (projects.find((p) => p.id === existing.project_id) || project)
+    : project;
   const oldByTitle = new Map((existing?.milestones || []).map((m) => [m.title, m]));
   const milestones = $('#roadmapMilestones').value.split('\n').map((title) => title.trim()).filter(Boolean).map((title, index) => ({
     ...(oldByTitle.get(title) || {}), title, order: index + 1,
     state: oldByTitle.get(title)?.state || 'PENDING'
   }));
   const payload = {
-    project_id: project.id,
+    project_id: ownershipProject.id,
     title: $('#roadmapTitle').value,
     objective: $('#roadmapObjective').value,
     owner_worker_id: $('#roadmapWorker').value || 'W01',
     state: $('#roadmapState').value,
-    auto_advance: $('#autoAdvance').checked,
+    auto_advance: Boolean(existing?.auto_advance),
     milestones
   };
   const message = $('#roadmapMessage');
-  message.textContent = 'Saving…';
+  message.textContent = 'Saving...';
   try {
     const saved = id
       ? await api(`/api/roadmaps/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) })
@@ -220,13 +232,12 @@ $('#roadmapForm').addEventListener('submit', async (event) => {
   } catch (error) { message.textContent = `Error: ${error.message}`; }
 });
 
-
 $('#reopenRoadmapButton').addEventListener('click', async () => {
   const id = $('#roadmapId').value;
   if (!id) return;
   const button = $('#reopenRoadmapButton');
   button.disabled = true;
-  $('#roadmapMessage').textContent = 'Reopening blocked milestone…';
+  $('#roadmapMessage').textContent = 'Reopening blocked milestone...';
   try {
     const updated = await api(`/api/roadmaps/${encodeURIComponent(id)}/reopen`, {
       method: 'POST',
@@ -239,31 +250,6 @@ $('#reopenRoadmapButton').addEventListener('click', async () => {
     editRoadmap(id);
   } catch (error) {
     $('#roadmapMessage').textContent = `Reopen failed: ${error.message}`;
-  } finally {
-    button.disabled = false;
-  }
-});
-
-
-$('#startNextMilestoneButton').addEventListener('click', async () => {
-  const id = $('#roadmapId').value;
-  if (!id) {
-    $('#roadmapMessage').textContent = 'Save the roadmap first.';
-    return;
-  }
-  const button = $('#startNextMilestoneButton');
-  button.disabled = true;
-  $('#roadmapMessage').textContent = 'Starting/resuming Autopilot…';
-  try {
-    const started = await api(`/api/roadmaps/${encodeURIComponent(id)}/autopilot`, {
-      method: 'POST',
-      body: JSON.stringify({ max_attempts: 3 })
-    });
-    $('#roadmapMessage').textContent = `Autopilot started/resumed. Mission ${started.mission_id} · Brain Run ${started.brain_run_id}`;
-    await loadRoadmaps();
-    editRoadmap(id);
-  } catch (error) {
-    $('#roadmapMessage').textContent = `Start failed: ${error.message}`;
   } finally {
     button.disabled = false;
   }

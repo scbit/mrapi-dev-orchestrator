@@ -14,21 +14,30 @@
     <aside class="sidebar" id="sidebar">
       <div class="brand"><div class="brand-mark">M</div><div><strong>MRAPI DEV</strong><span>ORCHESTRATOR</span></div></div>
       <nav id="nav">
-        <button class="nav-item active" data-view="dashboard">Dashboard</button>
-        <button class="nav-item" data-view="inbox">Inbox</button>
-        <button class="nav-item" data-view="missions">Missions</button>
-        <button class="nav-item" data-view="tasks">Tasks</button>
-        <button class="nav-item" data-view="workers">Workers</button>
-        <button class="nav-item" data-view="workspaces">Workspaces</button>
-        <button class="nav-item" id="projectsContextNav">Projects</button>
-        <button class="nav-item" id="roadmapNav">Roadmap</button>
-        <button class="nav-item" id="plannerNav">Planner</button>
-        <button class="nav-item" data-view="reports">Reports</button>
-        <button class="nav-item" data-view="evidence">Evidence</button>
-        <button class="nav-item" data-view="notifications">Notifications</button>
-        <button class="nav-item" data-view="executors">Executors</button>
-        <button class="nav-item" data-view="connections">Connections</button>
-        <button class="nav-item" data-view="settings">Settings</button>
+        <div class="nav-group" aria-label="Primary navigation">
+          <span class="nav-group-label">Operate</span>
+          <button class="nav-item active" data-view="dashboard">Overview</button>
+          <button class="nav-item" id="plannerNav">Planner</button>
+          <button class="nav-item" id="roadmapNav">Roadmaps</button>
+          <button class="nav-item" data-view="missions">Missions</button>
+          <button class="nav-item" data-view="workers">Workers</button>
+        </div>
+        <div class="nav-group" aria-label="Context navigation">
+          <span class="nav-group-label">Context</span>
+          <button class="nav-item secondary" data-view="workspaces">Workspaces</button>
+          <button class="nav-item secondary" id="projectsContextNav">Projects</button>
+          <button class="nav-item secondary" data-view="executors">Executors / Hosts</button>
+        </div>
+        <div class="nav-group" aria-label="Technical navigation">
+          <span class="nav-group-label">Technical</span>
+          <button class="nav-item secondary" data-view="inbox">Inbox</button>
+          <button class="nav-item secondary" data-view="tasks">Tasks</button>
+          <button class="nav-item secondary" data-view="reports">Reports</button>
+          <button class="nav-item secondary" data-view="evidence">Evidence</button>
+          <button class="nav-item secondary" data-view="notifications">Notifications</button>
+          <button class="nav-item secondary" data-view="connections">Connections</button>
+          <button class="nav-item secondary" data-view="settings">Settings</button>
+        </div>
       </nav>
       <div class="sidebar-footer"><span class="version">v0.4.4.17</span></div>
     </aside>
@@ -37,6 +46,17 @@
       <header class="topbar">
         <button class="menu-button" id="menuButton" aria-label="Toggle navigation">☰</button>
         <div><div class="eyebrow">FACUNDO GROUP</div><h1 id="pageTitle">Control Room</h1></div>
+        <section class="context-header" aria-label="Current workspace and project context">
+          <div class="context-selector-grid">
+            <label class="context-field" for="globalWorkspaceSelect"><span>Workspace</span><select id="globalWorkspaceSelect" disabled><option value="">Loading context...</option></select></label>
+            <label class="context-field" for="globalProjectSelect"><span>Project</span><select id="globalProjectSelect" disabled><option value="">Select workspace first</option></select></label>
+          </div>
+          <div id="globalContextStatus" class="context-status" role="status">Loading trusted context...</div>
+          <details class="technical-details compact" id="globalContextDetails">
+            <summary>Technical details</summary>
+            <div id="globalContextTechnical">Workspace ID: none<br>Project ID: none</div>
+          </details>
+        </section>
         <button class="primary-button" id="newMissionButton">+ NEW MISSION</button>
       </header>
 
@@ -107,8 +127,8 @@
       <form id="missionForm">
         <label class="field"><span>Objective</span><textarea id="missionObjective" required minlength="3" rows="5" placeholder="Describe the outcome in natural language…"></textarea></label>
         <div class="form-grid">
-          <label class="field"><span>Workspace</span><select id="missionWorkspace" required></select></label>
-          <label class="field"><span>Project</span><select id="missionProject" required></select></label>
+          <label class="field" for="missionWorkspace"><span>Workspace</span><select id="missionWorkspace" required></select></label>
+          <label class="field" for="missionProject"><span>Project</span><select id="missionProject" required></select></label>
           <label class="field"><span>Preferred worker</span><select id="missionWorker"></select></label>
           <label class="field"><span>Priority</span><select id="missionPriority"><option value="NORMAL">Normal</option><option value="HIGH">High</option><option value="CRITICAL">Critical</option><option value="LOW">Low</option></select></label>
         </div>

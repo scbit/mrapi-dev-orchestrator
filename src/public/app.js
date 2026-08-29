@@ -5,21 +5,21 @@ const state = {
   tasks: [],
   runs: [],
   results: [],
-  workspaces: [
-    { id: 'workspace_scb', name: 'SCB' },
-    { id: 'workspace_fm_real_estate', name: 'FM Real Estate' },
-    { id: 'workspace_sentire_marine', name: 'Sentire Marine' }
-  ],
-  projects: [
-    { id: 'project_scb_development', workspace_id: 'workspace_scb', name: 'SCB Development' },
-    { id: 'project_fm_real_estate_analysis', workspace_id: 'workspace_fm_real_estate', name: 'FM Real Estate Analysis' },
-    { id: 'project_sentire_marine_segue', workspace_id: 'workspace_sentire_marine', name: 'Sentire Marine / Segue' },
-    { id: 'project_scb_marketing', workspace_id: 'workspace_scb', name: 'SCB Marketing' }
-  ]
+  workspaces: [],
+  projects: [],
+  context: {
+    loading: true,
+    error: '',
+    workspaceId: '',
+    projectId: '',
+    workspaceName: '',
+    projectName: ''
+  }
 };
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+const productContextStorageKey = 'mrapi.product.context.v1';
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -51,6 +51,193 @@ function escapeHtml(value) {
 function stateBadge(value) {
   const safe = escapeHtml(value || 'UNKNOWN');
   return `<span class="state-badge state-${safe}">${safe}</span>`;
+}
+
+function workspaceLabel(workspace) {
+  return String(workspace?.name || workspace?.display_name || workspace?.id || '').trim();
+}
+
+function projectLabel(project) {
+  return String(project?.name || project?.title || project?.display_name || project?.id || '').trim();
+}
+
+function projectWorkspaceId(project) {
+  return String(project?.workspace_id || project?.workspaceId || '').trim();
+}
+
+function projectsForWorkspace(workspaceId) {
+  return state.projects.filter((project) => projectWorkspaceId(project) === workspaceId);
+}
+
+function readPersistedContextPreference() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(productContextStorageKey) || 'null');
+    if (!saved || typeof saved !== 'object') return null;
+    return {
+      workspaceId: String(saved.workspaceId || saved.workspace_id || '').trim(),
+      projectId: String(saved.projectId || saved.project_id || '').trim()
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistContextPreference() {
+  const current = validatedContext();
+  if (!current.valid) return false;
+  try {
+    localStorage.setItem(productContextStorageKey, JSON.stringify({
+      workspaceId: current.workspace.id,
+      projectId: current.project.id
+    }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearPersistedContextPreference() {
+  try { localStorage.removeItem(productContextStorageKey); } catch {}
+}
+
+function validatedContext(candidate = state.context) {
+  const workspaceId = String(candidate?.workspaceId || candidate?.workspace_id || '').trim();
+  const projectId = String(candidate?.projectId || candidate?.project_id || '').trim();
+  const workspace = state.workspaces.find((item) => item.id === workspaceId);
+  const project = state.projects.find((item) => item.id === projectId);
+  const projectValid = Boolean(project && projectWorkspaceId(project) === workspaceId);
+  return {
+    valid: Boolean(workspace && projectValid),
+    workspaceValid: Boolean(workspace),
+    projectValid,
+    workspace,
+    project,
+    workspaceId,
+    projectId
+  };
+}
+
+function setCurrentContext(workspaceId, projectId, options = {}) {
+  const workspace = state.workspaces.find((item) => item.id === workspaceId) || null;
+  const projects = workspace ? projectsForWorkspace(workspace.id) : [];
+  const project = projects.find((item) => item.id === projectId) || null;
+
+  state.context.workspaceId = workspace?.id || '';
+  state.context.projectId = project?.id || '';
+  state.context.workspaceName = workspace ? workspaceLabel(workspace) : '';
+  state.context.projectName = project ? projectLabel(project) : '';
+
+  if (options.persist) {
+    if (workspace && project) persistContextPreference();
+    else clearPersistedContextPreference();
+  }
+
+  renderContextHeader();
+}
+
+function renderProjectSelectOptions(select, workspaceId, selectedProjectId = '') {
+  const projects = workspaceId ? projectsForWorkspace(workspaceId) : [];
+  if (!workspaceId) {
+    select.innerHTML = '<option value="">Select workspace first</option>';
+    select.disabled = true;
+    return;
+  }
+  if (!projects.length) {
+    select.innerHTML = '<option value="">No projects in this workspace</option>';
+    select.disabled = true;
+    return;
+  }
+  select.innerHTML = '<option value="">Select project</option>' + projects
+    .map((project) => `<option value="${escapeHtml(project.id)}">${escapeHtml(projectLabel(project))}</option>`)
+    .join('');
+  select.value = projects.some((project) => project.id === selectedProjectId) ? selectedProjectId : '';
+  select.disabled = false;
+}
+
+function renderContextHeader() {
+  const workspaceSelect = $('#globalWorkspaceSelect');
+  const projectSelect = $('#globalProjectSelect');
+  const status = $('#globalContextStatus');
+  const technical = $('#globalContextTechnical');
+  if (!workspaceSelect || !projectSelect || !status || !technical) return;
+
+  if (state.context.loading) {
+    workspaceSelect.innerHTML = '<option value="">Loading context...</option>';
+    projectSelect.innerHTML = '<option value="">Loading context...</option>';
+    workspaceSelect.disabled = true;
+    projectSelect.disabled = true;
+    status.textContent = 'Loading trusted context...';
+    status.className = 'context-status is-loading';
+    return;
+  }
+
+  if (state.context.error) {
+    workspaceSelect.innerHTML = '<option value="">Context unavailable</option>';
+    projectSelect.innerHTML = '<option value="">Context unavailable</option>';
+    workspaceSelect.disabled = true;
+    projectSelect.disabled = true;
+    status.textContent = state.context.error;
+    status.className = 'context-status is-error';
+    return;
+  }
+
+  workspaceSelect.innerHTML = '<option value="">Select workspace</option>' + state.workspaces
+    .map((workspace) => `<option value="${escapeHtml(workspace.id)}">${escapeHtml(workspaceLabel(workspace))}</option>`)
+    .join('');
+  workspaceSelect.value = state.workspaces.some((workspace) => workspace.id === state.context.workspaceId)
+    ? state.context.workspaceId
+    : '';
+  workspaceSelect.disabled = !state.workspaces.length;
+  renderProjectSelectOptions(projectSelect, workspaceSelect.value, state.context.projectId);
+
+  const current = validatedContext();
+  if (!state.workspaces.length) {
+    status.textContent = 'No workspaces are available.';
+    status.className = 'context-status is-empty';
+  } else if (workspaceSelect.value && !projectsForWorkspace(workspaceSelect.value).length) {
+    status.textContent = 'This workspace has no projects. Create or select a valid project before starting work.';
+    status.className = 'context-status is-empty';
+  } else if (!current.valid) {
+    status.textContent = 'Select a valid workspace and project before creating scoped work.';
+    status.className = 'context-status is-attention';
+  } else {
+    status.textContent = `${workspaceLabel(current.workspace)} / ${projectLabel(current.project)}`;
+    status.className = 'context-status is-ready';
+  }
+
+  technical.innerHTML = `Workspace ID: ${escapeHtml(state.context.workspaceId || 'none')}<br>Project ID: ${escapeHtml(state.context.projectId || 'none')}`;
+}
+
+async function loadTrustedContext() {
+  state.context.loading = true;
+  state.context.error = '';
+  renderContextHeader();
+  try {
+    const [workspaceData, projectData] = await Promise.all([
+      api('/api/workspaces'),
+      api('/api/projects')
+    ]);
+    state.workspaces = Array.isArray(workspaceData.items) ? workspaceData.items : [];
+    state.projects = Array.isArray(projectData.items) ? projectData.items : [];
+    state.context.loading = false;
+
+    const remembered = readPersistedContextPreference();
+    const validRemembered = remembered ? validatedContext(remembered) : null;
+    if (validRemembered?.valid) {
+      setCurrentContext(validRemembered.workspace.id, validRemembered.project.id);
+    } else {
+      if (remembered?.workspaceId || remembered?.projectId) clearPersistedContextPreference();
+      setCurrentContext('', '');
+    }
+  } catch (error) {
+    state.context.loading = false;
+    state.context.error = `Could not load workspace/project context: ${error.message}`;
+    state.context.workspaceId = '';
+    state.context.projectId = '';
+    state.context.workspaceName = '';
+    state.context.projectName = '';
+    renderContextHeader();
+  }
 }
 
 function runForMission(missionId) {
@@ -594,20 +781,49 @@ function navigate(view) {
 }
 
 function populateMissionSelectors() {
-  $('#missionWorkspace').innerHTML = state.workspaces
-    .map((w) => `<option value="${w.id}">${escapeHtml(w.name)}</option>`)
+  const workspaceSelect = $('#missionWorkspace');
+  const projectSelect = $('#missionProject');
+  if (state.context.loading) {
+    workspaceSelect.innerHTML = '<option value="">Loading context...</option>';
+    projectSelect.innerHTML = '<option value="">Loading context...</option>';
+    workspaceSelect.disabled = true;
+    projectSelect.disabled = true;
+    return;
+  }
+  if (state.context.error) {
+    workspaceSelect.innerHTML = '<option value="">Context unavailable</option>';
+    projectSelect.innerHTML = '<option value="">Context unavailable</option>';
+    workspaceSelect.disabled = true;
+    projectSelect.disabled = true;
+    $('#missionFormMessage').textContent = state.context.error;
+    return;
+  }
+  workspaceSelect.innerHTML = '<option value="">Select workspace</option>' + state.workspaces
+    .map((w) => `<option value="${escapeHtml(w.id)}">${escapeHtml(workspaceLabel(w))}</option>`)
     .join('');
-
-  refreshProjectOptions();
+  workspaceSelect.disabled = !state.workspaces.length;
+  workspaceSelect.value = state.context.workspaceId || '';
+  refreshProjectOptions(state.context.projectId);
 }
 
-function refreshProjectOptions() {
+function refreshProjectOptions(preferredProjectId = '') {
   const workspaceId = $('#missionWorkspace').value;
-  const projects = state.projects.filter((project) => project.workspace_id === workspaceId);
+  const projects = projectsForWorkspace(workspaceId);
 
-  $('#missionProject').innerHTML = projects
-    .map((project) => `<option value="${project.id}">${escapeHtml(project.name)}</option>`)
-    .join('');
+  const projectSelect = $('#missionProject');
+  if (!workspaceId) {
+    projectSelect.innerHTML = '<option value="">Select workspace first</option>';
+    projectSelect.disabled = true;
+  } else if (!projects.length) {
+    projectSelect.innerHTML = '<option value="">No projects in this workspace</option>';
+    projectSelect.disabled = true;
+  } else {
+    projectSelect.innerHTML = '<option value="">Select project</option>' + projects
+      .map((project) => `<option value="${escapeHtml(project.id)}">${escapeHtml(projectLabel(project))}</option>`)
+      .join('');
+    projectSelect.value = projects.some((project) => project.id === preferredProjectId) ? preferredProjectId : '';
+    projectSelect.disabled = false;
+  }
 
   refreshWorkerOptions();
 }
@@ -623,7 +839,8 @@ function refreshWorkerOptions() {
 
 function openMissionModal() {
   populateMissionSelectors();
-  $('#missionFormMessage').textContent = '';
+  const current = validatedContext();
+  $('#missionFormMessage').textContent = current.valid ? '' : 'Select a valid workspace and project before creating a mission.';
   $('#missionModal').hidden = false;
   setTimeout(() => $('#missionObjective').focus(), 0);
 }
@@ -649,12 +866,23 @@ async function submitMission(event) {
   $('#missionFormMessage').textContent = '';
 
   try {
+    const selected = {
+      workspaceId: $('#missionWorkspace').value,
+      projectId: $('#missionProject').value
+    };
+    const current = validatedContext(selected);
+    if (!current.valid) {
+      $('#missionFormMessage').textContent = current.workspaceValid
+        ? 'Select a project that belongs to the selected workspace before creating a mission.'
+        : 'Select a valid workspace before creating a mission.';
+      return;
+    }
     const mission = await api('/api/missions', {
       method: 'POST',
       body: JSON.stringify({
         objective: $('#missionObjective').value,
-        workspace_id: $('#missionWorkspace').value,
-        project_id: $('#missionProject').value,
+        workspace_id: current.workspace.id,
+        project_id: current.project.id,
         preferred_worker_id: $('#missionWorker').value || null,
         priority: $('#missionPriority').value
       })
@@ -673,7 +901,9 @@ async function submitMission(event) {
 
 function bindEvents() {
   $$('.nav-item').forEach((button) => {
-    button.addEventListener('click', () => navigate(button.dataset.view));
+    button.addEventListener('click', () => {
+      if (button.dataset.view) navigate(button.dataset.view);
+    });
   });
 
   $$('[data-view-target]').forEach((button) => {
@@ -687,8 +917,14 @@ function bindEvents() {
   $('#closeMissionModal').addEventListener('click', closeMissionModal);
   $('#cancelMissionButton').addEventListener('click', closeMissionModal);
   $('#missionForm').addEventListener('submit', submitMission);
-  $('#missionWorkspace').addEventListener('change', refreshProjectOptions);
+  $('#missionWorkspace').addEventListener('change', () => refreshProjectOptions(''));
   $('#missionProject').addEventListener('change', refreshWorkerOptions);
+  $('#globalWorkspaceSelect')?.addEventListener('change', () => {
+    setCurrentContext($('#globalWorkspaceSelect').value, '', { persist: true });
+  });
+  $('#globalProjectSelect')?.addEventListener('change', () => {
+    setCurrentContext($('#globalWorkspaceSelect').value, $('#globalProjectSelect').value, { persist: true });
+  });
   $('#menuButton').addEventListener('click', () => $('#sidebar').classList.toggle('open'));
 
   $('#missionModal').addEventListener('click', (event) => {
@@ -707,7 +943,7 @@ function bindEvents() {
 }
 
 bindEvents();
-loadAll();
+loadTrustedContext().finally(loadAll);
 setInterval(loadAll, 5000);
 
 

@@ -123,8 +123,8 @@ function plannerPageHtml() {
         <section class="context-box" aria-label="Contexto">
           <h3>Contexto</h3>
           <div class="context-grid">
-            <label class="field"><span>Workspace</span><select id="workspaceId" name="workspace_id" required disabled><option value="">Cargando contexto...</option></select></label>
-            <label class="field"><span>Project</span><select id="projectId" name="project_id" required disabled><option value="">Elegí un workspace primero</option></select></label>
+            <label class="field" for="workspaceId"><span>Workspace</span><select id="workspaceId" name="workspace_id" aria-label="Workspace" required disabled><option value="">Cargando contexto...</option></select></label>
+            <label class="field" for="projectId"><span>Project</span><select id="projectId" name="project_id" aria-label="Project" required disabled><option value="">Elegí un workspace primero</option></select></label>
           </div>
         </section>
         <div class="actions">
@@ -195,7 +195,7 @@ function plannerPageHtml() {
     };
 
     const plannerStorageKey = 'mrapi.planner.active.v1';
-    const plannerContextStorageKey = 'mrapi.planner.context.v1';
+    const plannerContextStorageKey = 'mrapi.product.context.v1';
 
     function persistPlannerState() {
       try {
@@ -475,7 +475,12 @@ function plannerPageHtml() {
     }
 
     function canSubmit() {
-      return Boolean(!state.contextLoading && !state.contextError && els.workspace.value.trim() && els.project.value.trim() && els.request.value.trim());
+      return Boolean(
+        !state.contextLoading &&
+        !state.contextError &&
+        evaluateContextSelection({ workspaceId: els.workspace.value, projectId: els.project.value }).valid &&
+        els.request.value.trim()
+      );
     }
 
     function syncSubmitState() {
