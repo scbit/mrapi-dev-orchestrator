@@ -1357,8 +1357,19 @@ function runnableRoadmapState(state) {
   return !NON_RUNNABLE_ROADMAP_STATES.has(String(state || '').toUpperCase());
 }
 
+function roadmapAutopilotEnabled(roadmap = {}) {
+  if (Object.prototype.hasOwnProperty.call(roadmap, 'auto_advance') && roadmap.auto_advance !== undefined) {
+    return roadmap.auto_advance === true;
+  }
+  return roadmap.autopilot_enabled === true;
+}
+
+function terminalMilestoneComplete(milestone = {}) {
+  return ['COMPLETE', 'COMPLETED'].includes(String(milestone.state || '').toUpperCase());
+}
+
 function milestonesCompleteOrSkipped(roadmap) {
-  return (roadmap.milestones || []).every((item) => ['COMPLETED', 'SKIPPED'].includes(item.state));
+  return (roadmap.milestones || []).every((item) => terminalMilestoneComplete(item) || String(item.state || '').toUpperCase() === 'SKIPPED');
 }
 
 function pendingMilestones(roadmap) {
@@ -1419,11 +1430,24 @@ async function continueRoadmapAfterComplete(db, tenantId, roadmapId, completedMi
     }
     const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
     const completedMilestone = (roadmap.milestones || []).find((item) => item.id === completedMilestoneId);
-    if (!completedMilestone || completedMilestone.state !== 'COMPLETED') {
+    if (!completedMilestone || !terminalMilestoneComplete(completedMilestone)) {
       checked = { continuation_state: 'CURRENT_NOT_COMPLETED', auto_advance: false, roadmap };
       return;
     }
-    if (roadmap.auto_advance !== true) {
+    if (options.mission_id) {
+      const missionSnap = await tx.get(db.collection('missions').doc(options.mission_id));
+      if (
+        !missionSnap.exists ||
+        missionSnap.data().tenant_id !== tenantId ||
+        missionSnap.data().roadmap_id !== roadmap.id ||
+        missionSnap.data().milestone_id !== completedMilestone.id
+      ) {
+        checked = { continuation_state: 'DENIED', auto_advance: false, roadmap };
+        return;
+      }
+    }
+    const autoAdvance = roadmapAutopilotEnabled(roadmap);
+    if (!autoAdvance) {
       checked = { continuation_state: 'DISABLED', auto_advance: false, roadmap };
       return;
     }
@@ -1452,7 +1476,7 @@ async function continueRoadmapAfterComplete(db, tenantId, roadmapId, completedMi
     const milestone = nextMilestone(roadmap);
     if (!milestone) {
       checked = {
-        continuation_state: pendingMilestones(roadmap).length > 0 ? 'NO_ELIGIBLE_MILESTONE' : 'ROADMAP_COMPLETED',
+        continuation_state: milestonesCompleteOrSkipped(roadmap) ? 'ROADMAP_COMPLETED' : 'NO_ELIGIBLE_MILESTONE',
         auto_advance: true,
         roadmap
       };
@@ -1711,9 +1735,7 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
       }
       const mission = { id: missionSnap.id, ...missionSnap.data() };
       const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
-      if (roadmap.auto_advance !== true) {
-        const error = new Error('AUTOPILOT_VERIFICATION_RUN_NOT_ACTIVE'); error.status = 409; throw error;
-      }
+      const autoAdvance = roadmapAutopilotEnabled(roadmap);
       result = {
         success: true,
         action: 'COMPLETE',
@@ -1721,7 +1743,7 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
         milestone_id: run.milestone_id,
         completed_milestone_id: run.milestone_id,
         mission_id: mission.id,
-        auto_advance: roadmap.auto_advance === true,
+        auto_advance: autoAdvance,
         replayed: true,
         reason: run.autopilot_decision.reason || ''
       };
@@ -1905,8 +1927,8 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
         milestone_id: milestone.id,
         completed_milestone_id: milestone.id,
         mission_id: mission.id,
-        auto_advance: roadmap.auto_advance === true && !roadmapCompleted,
-        continuation_state: roadmapCompleted ? 'ROADMAP_COMPLETED' : (roadmap.auto_advance === true ? 'PENDING' : 'DISABLED'),
+        auto_advance: roadmapAutopilotEnabled(roadmap) && !roadmapCompleted,
+        continuation_state: roadmapCompleted ? 'ROADMAP_COMPLETED' : (roadmapAutopilotEnabled(roadmap) ? 'PENDING' : 'DISABLED'),
         reason: decision.reason
       };
       return;
@@ -2178,7 +2200,7 @@ async function completeVerificationBrainRun(db, tenantId, runId, input = {}) {
       tenantId,
       result.roadmap_id,
       result.milestone_id,
-      input.continuation_options || {}
+      { ...(input.continuation_options || {}), mission_id: result.mission_id }
     );
     result = {
       ...result,
@@ -2302,8 +2324,8 @@ async function completeGitStageExecutionRun(db, tenantId, runId, input = {}) {
         mission_id: mission.id,
         result_id: resultRef.id,
         git_stage_result: git,
-        auto_advance: roadmap.auto_advance === true && !roadmapCompleted,
-        continuation_state: roadmapCompleted ? 'ROADMAP_COMPLETED' : (roadmap.auto_advance === true ? 'PENDING' : 'DISABLED')
+        auto_advance: roadmapAutopilotEnabled(roadmap) && !roadmapCompleted,
+        continuation_state: roadmapCompleted ? 'ROADMAP_COMPLETED' : (roadmapAutopilotEnabled(roadmap) ? 'PENDING' : 'DISABLED')
       };
       return;
     }
@@ -2400,7 +2422,7 @@ async function completeGitStageExecutionRun(db, tenantId, runId, input = {}) {
       tenantId,
       result.roadmap_id,
       result.milestone_id,
-      input.continuation_options || {}
+      { ...(input.continuation_options || {}), mission_id: result.mission_id }
     );
     result = {
       ...result,
