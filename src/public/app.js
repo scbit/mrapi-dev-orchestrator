@@ -320,6 +320,347 @@ function heartbeatLabel(item) {
   return `${item.health_state || 'OFFLINE'} · ${age}`;
 }
 
+function trustedObject(source, names) {
+  for (const name of names) {
+    const value = source?.[name];
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+  }
+  return {};
+}
+
+function arrayValue(value) {
+  if (Array.isArray(value)) return value;
+  if (!value) return [];
+  if (typeof value === 'object') return Object.entries(value).filter(([, enabled]) => enabled === true).map(([key]) => key);
+  return String(value).split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function humanStateLabel(stateKey) {
+  return {
+    IDLE: 'Idle',
+    WORKING: 'Working',
+    WAITING: 'Waiting',
+    BLOCKED: 'Blocked',
+    OFFLINE: 'Offline'
+  }[stateKey] || 'Idle';
+}
+
+function stateBadgeClass(value) {
+  return String(value || 'UNKNOWN').toUpperCase().replace(/[^A-Z0-9_-]/g, '-');
+}
+
+function humanStateBadge(value) {
+  const key = stateBadgeClass(value);
+  return `<span class="state-badge state-${escapeHtml(key)}">${escapeHtml(humanStateLabel(key) || key)}</span>`;
+}
+
+function currentMissionId(worker) {
+  return textValue(worker.current_mission_id, worker.active_mission_id, worker.mission_id, worker.currentMissionId, worker.activeMissionId);
+}
+
+function missionForWorker(worker) {
+  const missionId = currentMissionId(worker);
+  if (!missionId) return null;
+  return state.missions.find((mission) => mission.id === missionId) ||
+    (state.dashboard?.recent_missions || []).find((mission) => mission.id === missionId) ||
+    null;
+}
+
+function executorForWorker(worker) {
+  const binding = trustedObject(worker, ['executor_binding', 'executor', 'execution_binding']);
+  const executorId = textValue(worker.executor_id, worker.executor_binding_id, binding.executor_id, binding.id, binding.executorId);
+  const workerId = textValue(worker.id, worker.code);
+  const items = state.dashboard?.executors?.items || [];
+  return items.find((executor) =>
+    (executorId && [executor.id, executor.executor_id, executor.name].map(textValue).includes(executorId)) ||
+    (workerId && (executor.worker_ids || []).includes(workerId))
+  ) || binding || null;
+}
+
+function brainForWorker(worker) {
+  const binding = trustedObject(worker, ['brain_binding', 'brain', 'brain_configuration']);
+  const workerId = textValue(worker.id, worker.code);
+  const items = state.dashboard?.brain_adapters?.items || [];
+  return items.find((brain) => workerId && (brain.worker_ids || []).includes(workerId)) || binding || null;
+}
+
+function isTrustedOffline(worker, executor = null) {
+  const values = [
+    worker.health_state,
+    worker.runner_status,
+    worker.operational_status,
+    worker.state,
+    worker.executor_health,
+    executor?.health_state,
+    executor?.runner_status
+  ].map(upperValue).filter(Boolean);
+  const hasRuntime = values.some((value) => ['ONLINE', 'HEALTHY', 'READY', 'IDLE', 'RUNNING', 'WORKING', 'AVAILABLE'].includes(value));
+  return values.some((value) => ['OFFLINE', 'UNHEALTHY', 'HEALTH_FAILED', 'DISCONNECTED'].includes(value)) && !hasRuntime;
+}
+
+function isWaitingState(value) {
+  const stateText = upperValue(value);
+  return stateText.includes('WAITING') || ['PENDING', 'QUEUED', 'READY', 'NEEDS_HUMAN', 'HUMAN_ACTION_REQUIRED', 'RECOVERY_REQUIRED'].includes(stateText);
+}
+
+function deriveWorkerHumanStatus(worker) {
+  const mission = missionForWorker(worker);
+  const executor = executorForWorker(worker);
+  const workerStates = [worker.operational_status, worker.status, worker.state, worker.worker_status].map(upperValue).filter(Boolean);
+  const missionStates = [mission?.state, worker.current_mission_status, worker.mission_status].map(upperValue).filter(Boolean);
+  const executorStates = [executor?.runner_status, executor?.health_state, worker.executor_health].map(upperValue).filter(Boolean);
+
+  if (isTrustedOffline(worker, executor)) return 'OFFLINE';
+  if ([...workerStates, ...missionStates].some((value) => ['BLOCKED', 'FAILED_BLOCKED'].includes(value))) return 'BLOCKED';
+  if (currentMissionId(worker) && [...workerStates, ...missionStates, ...executorStates].some((value) => ['RUNNING', 'WORKING', 'BUSY', 'PLANNING', 'TESTING', 'EXECUTING'].includes(value))) return 'WORKING';
+  if (worker.current_brain_run_id || worker.current_run_id || executor?.current_run_id || missionStates.some((value) => ['RUNNING', 'PLANNING'].includes(value))) return 'WORKING';
+  if ([...workerStates, ...missionStates, ...executorStates, worker.waiting_reason, worker.blocker_code].some(isWaitingState)) return 'WAITING';
+  return 'IDLE';
+}
+
+function deriveExecutorHumanStatus(executor) {
+  const values = [executor.health_state, executor.runner_status, executor.state, executor.status].map(upperValue).filter(Boolean);
+  if (values.some((value) => ['OFFLINE', 'UNHEALTHY', 'DISCONNECTED', 'HEALTH_FAILED'].includes(value))) return 'OFFLINE';
+  if (values.some((value) => ['BLOCKED', 'FAILED'].includes(value))) return 'BLOCKED';
+  if (executor.current_run_id || values.some((value) => ['RUNNING', 'WORKING', 'BUSY', 'EXECUTING'].includes(value))) return 'WORKING';
+  if (values.some((value) => ['WAITING', 'QUEUED', 'PENDING', 'READY'].includes(value))) return 'WAITING';
+  return 'IDLE';
+}
+
+function matchingRun(runId) {
+  if (!runId) return null;
+  return state.runs.find((run) => run.id === runId || run.run_id === runId) || null;
+}
+
+function matchingTask(taskId) {
+  if (!taskId) return null;
+  return state.tasks.find((task) => task.id === taskId || task.task_id === taskId) || null;
+}
+
+function scopeSummary(worker) {
+  const workspaceId = textValue(worker.workspace_id, worker.workspaceId);
+  const projectId = textValue(worker.project_id, worker.projectId);
+  const workspace = state.workspaces.find((item) => item.id === workspaceId);
+  const project = state.projects.find((item) => item.id === projectId);
+  return {
+    workspaceId,
+    projectId,
+    workspaceLabel: workspace ? workspaceLabel(workspace) : textValue(worker.workspace_name, workspaceId, 'Not configured'),
+    projectLabel: project ? projectLabel(project) : textValue(worker.project_name, projectId, 'Not configured')
+  };
+}
+
+function latestTrustedActivity(sources) {
+  const stamped = sources.filter(Boolean).flatMap((item) => [
+    item.updated_at,
+    item.completed_at,
+    item.started_at,
+    item.created_at,
+    item.last_activity_at,
+    item.last_seen_at,
+    item.last_heartbeat_at,
+    item.heartbeat_at
+  ].filter(Boolean).map((value) => ({ value, ms: timestampMs(value) })));
+  return stamped.sort((a, b) => b.ms - a.ms)[0] || null;
+}
+
+function renderFact(label, value) {
+  return `<div><span>${escapeHtml(label)}</span><strong>${escapeHtml(textValue(value, 'Not recorded'))}</strong></div>`;
+}
+
+function renderTags(items, emptyText = 'Not configured') {
+  const values = arrayValue(items);
+  return values.length
+    ? `<ul class="compact-tags">${values.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul>`
+    : `<p class="neutral-copy">${escapeHtml(emptyText)}</p>`;
+}
+
+function sensitivePermissionKeys() {
+  return ['git_write', 'push', 'deploy', 'production', 'publishing'];
+}
+
+function permissionEntries(permissions = {}) {
+  const entries = permissions && typeof permissions === 'object' && !Array.isArray(permissions) ? Object.entries(permissions) : [];
+  const present = new Set(entries.map(([key]) => key));
+  for (const key of sensitivePermissionKeys()) {
+    if (!present.has(key)) entries.push([key, null]);
+  }
+  return entries;
+}
+
+function permissionLabel(value) {
+  if (value === true) return 'Allowed';
+  if (value === false) return 'Not authorized';
+  return 'Not configured';
+}
+
+function renderPermissions(permissions) {
+  const entries = permissionEntries(permissions);
+  return entries.length
+    ? `<ul class="permission-list">${entries.map(([key, value]) => `<li><span>${escapeHtml(key)}</span><strong>${escapeHtml(permissionLabel(value))}</strong></li>`).join('')}</ul>`
+    : '<p class="neutral-copy">Not configured</p>';
+}
+
+function renderWorkerCard(worker) {
+  const missionId = currentMissionId(worker);
+  const mission = missionForWorker(worker);
+  const brain = brainForWorker(worker);
+  const executor = executorForWorker(worker);
+  const host = trustedObject(worker, ['host_binding', 'host']);
+  const hostSource = Object.keys(host).length ? host : executor || {};
+  const scope = scopeSummary(worker);
+  const status = deriveWorkerHumanStatus(worker);
+  const brainConfigured = worker.brain_binding || worker.brain || worker.brain_configuration ? 'Yes' : 'No';
+  const executorConfigured = worker.executor_binding || worker.executor || worker.executor_id || executor ? 'Yes' : 'No';
+  const hostConfigured = worker.host_binding || worker.host || executor?.host_name || executor?.host_id ? 'Yes' : 'No';
+  const latest = latestTrustedActivity([worker, mission, brain, executor, hostSource]);
+  const brainRunId = textValue(worker.current_brain_run_id, brain?.current_brain_run_id, brain?.brain_run_id);
+  const executorRunId = textValue(worker.current_run_id, executor?.current_run_id);
+
+  return `
+    <article class="worker-card worker-architecture-card">
+      <div class="worker-card-top">
+        <section class="architecture-section worker-identity-section" aria-label="Worker identity">
+          <span class="eyebrow">Worker identity</span>
+          <h3>${escapeHtml(textValue(worker.name, worker.display_name, worker.code, worker.id, 'Unnamed Worker'))}</h3>
+          <div class="architecture-subtitle">${escapeHtml(textValue(worker.role, 'Role not configured'))}</div>
+          <div class="architecture-subtitle">Worker ${escapeHtml(textValue(worker.code, worker.id, 'Not configured'))}</div>
+        </section>
+        ${humanStateBadge(status)}
+      </div>
+      <div class="architecture-grid">
+        <section class="architecture-section" aria-label="Current Mission">
+          <span class="eyebrow">Current Mission</span>
+          <h4>${escapeHtml(mission ? textValue(mission.objective, 'Mission objective not recorded') : (missionId ? 'Current Mission' : 'No active Mission'))}</h4>
+          <p>${escapeHtml(mission ? textValue(mission.state, mission.status, 'Mission status not recorded') : (missionId ? 'Mission details unavailable in loaded data' : 'No active Mission'))}</p>
+        </section>
+        <section class="architecture-section" aria-label="Scope">
+          <span class="eyebrow">Scope</span>
+          <div class="architecture-facts">
+            ${renderFact('Workspace', scope.workspaceLabel)}
+            ${renderFact('Project', scope.projectLabel)}
+          </div>
+        </section>
+        <section class="architecture-section" aria-label="Brain">
+          <span class="eyebrow">Brain</span>
+          <h4>${escapeHtml(textValue(brain?.name, brain?.provider, brain?.type, worker.brain_type, 'Brain configuration'))}</h4>
+          <div class="architecture-facts">
+            ${renderFact('Configured', brainConfigured)}
+            ${renderFact('Type / provider', textValue(brain?.type, brain?.provider, worker.brain_type, 'Not configured'))}
+            ${renderFact('Health / state', textValue(brain?.health_state, brain?.state, worker.brain_health, 'Not recorded'))}
+            ${renderFact('Current Brain Run', brainRunId ? 'Brain Run active' : 'No current Brain Run')}
+          </div>
+        </section>
+        <section class="architecture-section" aria-label="Executor">
+          <span class="eyebrow">Executor</span>
+          <h4>${escapeHtml(textValue(executor?.name, executor?.id, worker.executor_id, 'Executor availability'))}</h4>
+          <p>Executes Tasks/Runs.</p>
+          <div class="architecture-facts">
+            ${renderFact('Configured', executorConfigured)}
+            ${renderFact('Type', textValue(executor?.executor_type, worker.executor_type, 'Not configured'))}
+            ${renderFact('Availability', textValue(executor?.health_state, executor?.runner_status, worker.executor_health, 'Unavailable'))}
+            ${renderFact('Current Run', executorRunId ? 'Execution in progress' : 'No current Run')}
+          </div>
+        </section>
+        <section class="architecture-section" aria-label="Host">
+          <span class="eyebrow">Host</span>
+          <h4>${escapeHtml(textValue(executor?.host_name, hostSource.host_name, hostSource.name, executor?.host_id, hostSource.host_id, 'Host environment'))}</h4>
+          <p>Environment where Executor runs.</p>
+          <div class="architecture-facts">
+            ${renderFact('Configured', hostConfigured)}
+            ${renderFact('Provider / machine', textValue(hostSource.provider, hostSource.machine, hostSource.environment, 'Not reported'))}
+            ${renderFact('Availability', textValue(hostSource.host_state, hostSource.validation_state, hostSource.health_state, 'Not reported'))}
+            ${renderFact('Repository readiness', textValue(hostSource.repository_state, hostSource.repo_ready, hostSource.runtime_validation_state, 'Not reported'))}
+          </div>
+        </section>
+        <section class="architecture-section" aria-label="Capabilities">
+          <span class="eyebrow">Capabilities</span>
+          ${renderTags(worker.capabilities || executor?.capabilities, 'No capabilities reported')}
+        </section>
+        <section class="architecture-section" aria-label="Permissions">
+          <span class="eyebrow">Permissions</span>
+          ${renderPermissions(worker.permissions)}
+        </section>
+        <section class="architecture-section" aria-label="Last activity">
+          <span class="eyebrow">Last activity</span>
+          <h4>${escapeHtml(latest ? formatTrustedTime(latest.value) : 'No recent activity recorded')}</h4>
+        </section>
+      </div>
+      <details class="advanced-details worker-technical-details">
+        <summary>Advanced / Technical Details</summary>
+        <div class="technical-grid">
+          ${renderFact('Worker ID', textValue(worker.id, worker.code, 'none'))}
+          ${renderFact('Tenant / Workspace / Project IDs', `${textValue(worker.tenant_id, 'tenant unavailable')} / ${textValue(scope.workspaceId, 'workspace unavailable')} / ${textValue(scope.projectId, 'project unavailable')}`)}
+          ${renderFact('Current Mission ID', textValue(missionId, 'none'))}
+          ${renderFact('Brain binding/profile IDs', textValue(worker.brain_binding_id, worker.brain_profile_id, brain?.id, 'none'))}
+          ${renderFact('Current Brain Run ID', textValue(brainRunId, 'none'))}
+          ${renderFact('Executor binding/type/id', textValue(worker.executor_binding_id, worker.executor_type, executor?.executor_type, executor?.id, 'none'))}
+          ${renderFact('Host binding/provider/id', textValue(worker.host_binding_id, hostSource.provider, hostSource.host_id, hostSource.id, 'none'))}
+          ${renderFact('Raw status/health', textValue(worker.operational_status, worker.state, worker.health_state, worker.executor_health, 'none'))}
+          ${renderFact('Latest activity timestamp', latest?.value || 'none')}
+          <div><span>Raw capabilities</span><pre class="result-json">${escapeHtml(JSON.stringify(worker.capabilities || {}, null, 2))}</pre></div>
+          <div><span>Raw permissions</span><pre class="result-json">${escapeHtml(JSON.stringify(worker.permissions || {}, null, 2))}</pre></div>
+        </div>
+      </details>
+    </article>
+  `;
+}
+
+function renderExecutorCard(executor) {
+  const status = deriveExecutorHumanStatus(executor);
+  const runId = textValue(executor.current_run_id, executor.run_id);
+  const run = matchingRun(runId);
+  const task = matchingTask(textValue(run?.task_id, executor.current_task_id, executor.task_id));
+  const hostName = textValue(executor.host_name, executor.host?.name, executor.host_id, 'Host not reported');
+  const latest = latestTrustedActivity([executor, run, task, executor.host]);
+  return `
+    <article class="executor-card">
+      <section class="architecture-section executor-primary" aria-label="Executor">
+        <div class="worker-card-top">
+          <div>
+            <span class="eyebrow">Executor</span>
+            <h3>${escapeHtml(textValue(executor.name, executor.id, 'Unnamed Executor'))}</h3>
+            <div class="architecture-subtitle">${escapeHtml(textValue(executor.executor_type, 'Executor type not reported'))}</div>
+          </div>
+          ${humanStateBadge(status)}
+        </div>
+        <div class="architecture-facts">
+          ${renderFact('Current Work', runId ? textValue(taskTitle(task), run?.progress_message, 'Execution in progress') : 'No current Run')}
+          ${renderFact('Compatible Workers', arrayValue(executor.worker_ids).join(', ') || 'Not reported')}
+          ${renderFact('Last activity', latest ? formatTrustedTime(latest.value) : 'No recent activity recorded')}
+        </div>
+        <div class="architecture-section-inline">
+          <span class="eyebrow">Capabilities</span>
+          ${renderTags(executor.capabilities, 'No capabilities reported')}
+        </div>
+      </section>
+      <section class="architecture-section host-block" aria-label="Host">
+        <span class="eyebrow">Host</span>
+        <h3>${escapeHtml(hostName)}</h3>
+        <p>Environment where Executor runs.</p>
+        <div class="architecture-facts">
+          ${renderFact('Machine / environment', textValue(executor.host_environment, executor.environment, executor.machine, executor.provider, 'Not reported'))}
+          ${renderFact('Availability', textValue(executor.host_state, executor.host_validation_state, executor.health_state, 'Not reported'))}
+          ${renderFact('Repository readiness', textValue(executor.repository_state, executor.repo_ready, executor.runtime_validation_state, 'Not reported'))}
+          ${renderFact('Last heartbeat', textValue(executor.last_heartbeat_at, executor.heartbeat_at, executor.heartbeat_age_seconds == null ? '' : `${executor.heartbeat_age_seconds}s ago`, 'Not reported'))}
+        </div>
+      </section>
+      <details class="advanced-details executor-technical-details">
+        <summary>Advanced / Technical Details</summary>
+        <div class="technical-grid">
+          ${renderFact('Executor ID', textValue(executor.id, executor.executor_id, 'none'))}
+          ${renderFact('Current Run ID', textValue(runId, 'none'))}
+          ${renderFact('Worker IDs', arrayValue(executor.worker_ids).join(', ') || 'none')}
+          ${renderFact('Runner version', textValue(executor.runner_version, 'unknown'))}
+          ${renderFact('Heartbeat age/timestamp', textValue(executor.heartbeat_age_seconds == null ? '' : `${executor.heartbeat_age_seconds}s`, executor.last_heartbeat_at, executor.heartbeat_at, 'none'))}
+          ${renderFact('Host identifiers', textValue(executor.host_id, executor.host_name, executor.host?.id, 'none'))}
+          <div><span>Raw runtime/health/binding state</span><pre class="result-json">${escapeHtml(JSON.stringify(executor, null, 2))}</pre></div>
+        </div>
+      </details>
+    </article>
+  `;
+}
+
 function renderOperationsHealth() {
   const data = state.dashboard || {};
   const brain = data.brain_adapters?.items?.find((item) => (item.worker_ids || []).includes('W01'));
@@ -365,19 +706,7 @@ function renderExecutors() {
   const target = $('#executorsList');
   if (!target) return;
   target.innerHTML = items.length
-    ? items.map((executor) => `
-      <div class="mission-item">
-        <div class="mission-main">
-          <h4>${escapeHtml(executor.name || executor.id)}</h4>
-          <div class="mission-meta">
-            Host ${escapeHtml(executor.host_name || '—')} · ${escapeHtml(executor.runner_status || 'IDLE')} ·
-            Run ${escapeHtml(executor.current_run_id || 'none')} · heartbeat ${escapeHtml(heartbeatLabel(executor))}
-          </div>
-          <div class="result-preview">${escapeHtml(executor.executor_type || 'EXECUTOR')} · ${escapeHtml(executor.runner_version || 'unknown')}</div>
-        </div>
-        ${stateBadge(executor.health_state)}
-      </div>
-    `).join('')
+    ? items.map(renderExecutorCard).join('')
     : '<div class="empty-state">No executors have registered yet.</div>';
 }
 
@@ -413,29 +742,7 @@ function renderDashboard() {
 function renderWorkers() {
   $('#workersFullList').innerHTML =
     state.workers.length > 0
-      ? state.workers.map((worker) => `
-          <article class="worker-card">
-            <div class="worker-card-top">
-              <div>
-                <span class="eyebrow">${escapeHtml(worker.code)}</span>
-                <h3>${escapeHtml(worker.name)}</h3>
-              </div>
-              ${stateBadge(worker.operational_status || worker.state)}
-            </div>
-            <p>
-              Brain configured: ${worker.brain_binding ? 'YES' : 'NO'}<br>
-              Brain health: ${escapeHtml(worker.brain_health || 'OFFLINE')}<br>
-              Executor configured: ${worker.executor_binding ? 'YES' : 'NO'}<br>
-              Executor health: ${escapeHtml(worker.executor_health || 'OFFLINE')}<br>
-              Host: ${escapeHtml(worker.host_binding?.provider || 'None')}<br>
-              Autonomy: ${escapeHtml(worker.autonomy_level ?? '—')}<br>
-              Permissions: ${escapeHtml(Object.entries(worker.permissions || {}).filter(([, enabled]) => enabled === true).map(([key]) => key).join(', ') || 'none')}<br>
-              Workspace: ${escapeHtml(worker.workspace_id)}<br>
-              Project: ${escapeHtml(worker.project_id)}<br>
-              Current mission: ${escapeHtml(worker.current_mission_id || 'None')}
-            </p>
-          </article>
-        `).join('')
+      ? state.workers.map(renderWorkerCard).join('')
       : '<div class="empty-state">No workers found.</div>';
 }
 
@@ -1320,6 +1627,15 @@ globalThis.mrapiMissionCenterHumanActionV1 = {
   currentHumanAction,
   trustedEvidenceStatus,
   recoveryActionLabel
+};
+
+globalThis.mrapiWorkersExecutorHostExperienceV1 = {
+  renderWorkerCard,
+  renderExecutorCard,
+  deriveWorkerHumanStatus,
+  deriveExecutorHumanStatus,
+  permissionLabel,
+  renderPermissions
 };
 
 

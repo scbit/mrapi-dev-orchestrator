@@ -208,6 +208,50 @@ button:focus-visible, a:focus-visible, select:focus-visible, textarea:focus-visi
 .worker-card-top { display:flex; justify-content:space-between; gap:12px; }
 .worker-card h3 { margin:3px 0; font-size:16px; }
 .worker-card p { margin:12px 0 0; color:var(--muted); font-size:12px; line-height:1.55; }
+.worker-architecture-card,
+.executor-card {
+  display:grid; gap:12px;
+}
+.executor-card {
+  border:1px solid var(--line); border-radius:12px; background:rgba(255,255,255,.02); padding:16px;
+}
+.architecture-grid {
+  display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px;
+}
+.architecture-section {
+  min-width:0; border:1px solid rgba(255,255,255,.08); border-radius:8px;
+  background:rgba(255,255,255,.018); padding:12px;
+}
+.architecture-section h3,
+.architecture-section h4 { margin:5px 0 6px; overflow-wrap:anywhere; }
+.architecture-section p,
+.neutral-copy { margin:7px 0 0; color:var(--muted); font-size:12px; line-height:1.45; }
+.architecture-subtitle { color:var(--muted); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+.architecture-facts {
+  display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 10px; margin-top:10px;
+}
+.architecture-facts div { min-width:0; border-top:1px solid rgba(255,255,255,.06); padding-top:8px; }
+.architecture-facts span,
+.permission-list span {
+  display:block; color:var(--muted); font-size:10px; font-weight:800; text-transform:uppercase; margin-bottom:4px;
+}
+.architecture-facts strong,
+.permission-list strong { display:block; font-size:12px; line-height:1.4; overflow-wrap:anywhere; }
+.compact-tags,
+.permission-list {
+  display:flex; flex-wrap:wrap; gap:7px; list-style:none; margin:10px 0 0; padding:0;
+}
+.compact-tags li {
+  max-width:100%; border:1px solid var(--line); border-radius:8px; padding:5px 8px;
+  color:#d7e5f8; background:rgba(255,255,255,.035); font-size:11px; overflow-wrap:anywhere;
+}
+.permission-list li {
+  min-width:140px; max-width:100%; border:1px solid var(--line); border-radius:8px; padding:7px 9px;
+  background:rgba(255,255,255,.025);
+}
+.architecture-section-inline { margin-top:12px; }
+.host-block { border-color:rgba(243,189,97,.20); }
+.executor-primary { border-color:rgba(106,167,255,.22); }
 
 .placeholder-card {
   min-height:260px; display:grid; place-items:center; border:1px dashed rgba(255,255,255,.12);
@@ -270,6 +314,8 @@ textarea:focus, select:focus { border-color:rgba(106,167,255,.6); box-shadow:0 0
   .content-grid { grid-template-columns:1fr; }
   .hero { align-items:flex-start; flex-direction:column; }
   .worker-cards { grid-template-columns:1fr; }
+  .architecture-grid { grid-template-columns:1fr; }
+  .architecture-facts { grid-template-columns:1fr; }
 }
 
 @media (max-width: 600px) {
