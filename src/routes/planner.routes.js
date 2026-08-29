@@ -62,6 +62,22 @@ function validateHumanActionReadyBody(body = {}) {
   }
 }
 
+function validatePlannerStartBody(body = {}) {
+  const unsupported = [
+    'milestone_id',
+    'milestoneId',
+    'next_milestone_id',
+    'nextMilestoneId',
+    'current_milestone_id',
+    'currentMilestoneId'
+  ].find((key) => Object.prototype.hasOwnProperty.call(body || {}, key));
+  if (unsupported) {
+    const error = new Error('PLANNER_START_BODY_UNSUPPORTED_FIELD');
+    error.status = 400;
+    throw error;
+  }
+}
+
 function createPlannerRouter({ db }) {
   const router = express.Router();
 
@@ -281,6 +297,7 @@ function createPlannerRouter({ db }) {
 
   router.post('/roadmaps/:roadmapId/start', async (req, res, next) => {
     try {
+      validatePlannerStartBody(req.body || {});
       const roadmapId = req.params.roadmapId;
       const roadmapSnap = await db.collection('roadmaps').doc(roadmapId).get();
       if (!roadmapSnap.exists || roadmapSnap.data().tenant_id !== req.tenantId) return res.status(404).json({ error: 'PLANNER_ROADMAP_NOT_FOUND' });

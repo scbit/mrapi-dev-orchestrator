@@ -892,6 +892,14 @@ function plannerPageHtml() {
       return friendlyLifecycle(proposal) === 'Running';
     }
 
+    function hasStartedMilestone(proposal) {
+      const milestones = Array.isArray(proposal?.milestones) ? proposal.milestones : [];
+      return milestones.some((milestone) => {
+        const raw = lifecycleState(milestone);
+        return Boolean(text(milestone?.mission_id).trim()) || !['', 'PROPOSED', 'PENDING'].includes(raw);
+      });
+    }
+
     function isReviewComplete(proposal) {
       if (!proposal || typeof proposal !== 'object') return false;
       const requiredTextFields = ['title', 'objective', 'summary'];
@@ -1542,7 +1550,8 @@ function plannerPageHtml() {
       const proposed = isProposed(proposal);
       const canApprove = proposed && !approved && !isTerminal(proposal);
       const canRequestChanges = canApprove;
-      const canStart = approved && !isTerminal(proposal) && !isRunning(proposal);
+      const autopilotStarted = hasStartedMilestone(proposal);
+      const canStart = approved && !isTerminal(proposal) && !isRunning(proposal) && !autopilotStarted;
       els.approve.classList.toggle('hidden', !canApprove);
       els.requestChanges.classList.toggle('hidden', !canRequestChanges);
       els.start.classList.toggle('hidden', !canStart);
@@ -1557,6 +1566,7 @@ function plannerPageHtml() {
       if (isRunning(proposal)) setStatus('Running - current milestone is in progress.', 'success');
       else if (proposed && !approved) setStatus('Waiting for approval - revisalo antes de aprobar.', '');
       else if (isRevisionPending(proposal)) setStatus('Cambios pedidos. W01 está revisando el roadmap con tu feedback.', 'success');
+      else if (approved && autopilotStarted) setStatus('Autopilot is managing roadmap continuation from the current persisted state.', 'success');
       else if (approved) setStatus('Roadmap aprobado. Start Autopilot ya está disponible.', 'success');
       else setStatus('Roadmap is ' + stateLabel(proposal) + '.', '');
     }

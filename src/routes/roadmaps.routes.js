@@ -1,9 +1,7 @@
 const crypto = require('crypto');
 const express = require('express');
 const { serializeFirestore } = require('../utils/firestore');
-const { normalizeRoadmapInput, nextMilestone, MILESTONE_STATES } = require('../services/roadmap');
-const { startNextRoadmapMilestone } = require('../services/autopilot');
-const { dispatchMission } = require('../services/orchestration');
+const { normalizeRoadmapInput, nextMilestone } = require('../services/roadmap');
 const { resolveRoadmapRuntime } = require('../services/milestoneRuntime');
 const { saveMilestoneResponse } = require('../services/milestoneResponse');
 const {
@@ -163,18 +161,11 @@ function createRoadmapsRouter({ repos, db }) {
 
   router.post('/:roadmapId/advance', async (req, res, next) => {
     try {
-      const started = await startNextRoadmapMilestone(db, req.tenantId, req.params.roadmapId, {
-        milestone_id: req.body?.milestone_id || null,
-        max_attempts: req.body?.max_attempts || 3
-      });
-      const brainRun = await dispatchMission(db, req.tenantId, started.mission.id);
-      res.status(201).json(serializeFirestore({
-        ok: true,
-        roadmap_id: started.roadmap.id,
-        milestone_id: started.milestone.id,
-        mission_id: started.mission.id,
-        brain_run_id: brainRun.id
-      }));
+      const roadmap = await repos.roadmaps.getById(req.params.roadmapId);
+      if (!roadmap || roadmap.tenant_id !== req.tenantId) {
+        return res.status(404).json({ error: 'ROADMAP_NOT_FOUND' });
+      }
+      res.status(409).json({ error: 'ROADMAP_LIFECYCLE_MANAGED_BY_AUTOPILOT' });
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });
       next(error);
@@ -298,30 +289,9 @@ function createRoadmapsRouter({ repos, db }) {
       if (!roadmap || roadmap.tenant_id !== req.tenantId) {
         return res.status(404).json({ error: 'ROADMAP_NOT_FOUND' });
       }
-      const targetState = String(req.body?.state || '').trim().toUpperCase();
-      if (!MILESTONE_STATES.has(targetState)) {
-        return res.status(400).json({ error: 'INVALID_MILESTONE_STATE' });
-      }
-      let found = false;
-      const milestones = (roadmap.milestones || []).map((item) => {
-        if (item.id !== req.params.milestoneId) return item;
-        found = true;
-        return {
-          ...item,
-          state: targetState,
-          updated_at: now(),
-          ...(targetState === 'COMPLETED' ? { completed_at: now() } : {})
-        };
-      });
+      const found = (roadmap.milestones || []).some((item) => item.id === req.params.milestoneId);
       if (!found) return res.status(404).json({ error: 'MILESTONE_NOT_FOUND' });
-
-      const completed = milestones.length > 0 && milestones.every((item) => ['COMPLETED', 'SKIPPED'].includes(item.state));
-      const updated = await repos.roadmaps.upsert(roadmap.id, {
-        milestones,
-        state: completed ? 'COMPLETED' : roadmap.state,
-        updated_at: now()
-      });
-      res.json(serializeFirestore({ ...updated, next_milestone: nextMilestone(updated) }));
+      res.status(409).json({ error: 'ROADMAP_MILESTONE_STATE_MANAGED_BY_AUTOPILOT' });
     } catch (error) {
       next(error);
     }

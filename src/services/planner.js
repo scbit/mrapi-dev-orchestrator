@@ -1086,6 +1086,38 @@ async function requestPlannerRoadmapChanges(db, tenantId, roadmapId, input = {})
 
 async function startPlannerRoadmap(db, tenantId, roadmapId, input = {}) {
   const { startNextRoadmapMilestone } = require('./autopilot');
+  const roadmapSnap = await db.collection('roadmaps').doc(roadmapId).get();
+  if (!roadmapSnap.exists || roadmapSnap.data().tenant_id !== tenantId) {
+    fail('ROADMAP_NOT_FOUND', 404);
+  }
+  const roadmap = { id: roadmapSnap.id, ...roadmapSnap.data() };
+  if (roadmap.state === 'COMPLETED') {
+    return { roadmap, milestone: null, mission: null, brain_run: null, already_complete: true, no_new_work: true };
+  }
+  const milestones = Array.isArray(roadmap.milestones) ? roadmap.milestones : [];
+  const startedMilestones = milestones
+    .filter((milestone) => {
+      const state = String(milestone.state || '').trim().toUpperCase();
+      return Boolean(milestone.mission_id) || !['', 'PROPOSED', 'PENDING'].includes(state);
+    })
+    .sort((a, b) => Number(b.order || 0) - Number(a.order || 0));
+  if (startedMilestones.length > 0) {
+    const activeStates = new Set(['PLANNING', 'RUNNING', 'VERIFYING', 'NEED_HUMAN_ACTION', 'BLOCKED', 'FAILED', 'RETRYABLE', 'WAITING_HUMAN']);
+    const milestone = startedMilestones.find((item) => activeStates.has(String(item.state || '').trim().toUpperCase())) || startedMilestones[0];
+    let mission = null;
+    let brainRun = null;
+    if (milestone.mission_id) {
+      const missionSnap = await db.collection('missions').doc(milestone.mission_id).get();
+      if (missionSnap.exists && missionSnap.data().tenant_id === tenantId) {
+        mission = { id: missionSnap.id, ...missionSnap.data() };
+        const runsSnap = await db.collection('runs').where('tenant_id', '==', tenantId).limit(200).get();
+        brainRun = runsSnap.docs
+          .map((doc) => ({ id: doc.id, ...doc.data() }))
+          .find((run) => run.mission_id === mission.id && run.run_type === 'BRAIN_RUN' && run.autopilot_phase === 'PROGRAM') || null;
+      }
+    }
+    return { roadmap, milestone, mission, brain_run: brainRun, reused: true, no_new_work: true };
+  }
   return startNextRoadmapMilestone(db, tenantId, roadmapId, {
     planner_handoff: true,
     dispatch_brain_run: true,
