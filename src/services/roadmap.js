@@ -48,20 +48,32 @@ function normalizeProjectContext(input = {}, existing = {}) {
 }
 
 function normalizeMilestones(items = []) {
+  // PRESERVE_PLANNER_MILESTONE_METADATA_V2
   if (!Array.isArray(items)) return [];
   return items.slice(0, 100).map((item, index) => {
-    const state = MILESTONE_STATES.has(item?.state) ? item.state : 'PENDING';
+    const source = item && typeof item === 'object' ? item : {};
+    const state = MILESTONE_STATES.has(source.state) ? source.state : 'PENDING';
+    const dependencies = Array.isArray(source.dependencies)
+      ? cleanStringArray(source.dependencies, 20)
+      : cleanStringArray(source.depends_on, 20);
+
     return {
-      id: cleanText(item?.id, 160) || `milestone_${index + 1}_${crypto.randomUUID().slice(0, 8)}`,
-      title: cleanText(item?.title, 300) || `Milestone ${index + 1}`,
-      description: cleanText(item?.description, 4000),
+      ...source,
+      id: cleanText(source.id, 160) || `milestone_${index + 1}_${crypto.randomUUID().slice(0, 8)}`,
+      title: cleanText(source.title, 300) || `Milestone ${index + 1}`,
+      objective: cleanText(source.objective ?? source.expected_outcome, 6000),
+      expected_outcome: cleanText(source.expected_outcome ?? source.objective, 6000),
+      description: cleanText(source.description, 8000),
+      executor_required: typeof source.executor_required === 'boolean' ? source.executor_required : source.executor_required,
       state,
-      priority: cleanText(item?.priority, 30) || 'NORMAL',
-      depends_on: cleanStringArray(item?.depends_on, 20),
-      success_criteria: cleanStringArray(item?.success_criteria, 30),
-      preferred_worker_id: cleanText(item?.preferred_worker_id, 100) || null,
-      mission_id: cleanText(item?.mission_id, 200) || null,
-      order: Number.isFinite(Number(item?.order)) ? Number(item.order) : index + 1
+      priority: cleanText(source.priority, 30) || 'NORMAL',
+      dependencies,
+      depends_on: dependencies,
+      risks: cleanStringArray(source.risks, 50),
+      success_criteria: cleanStringArray(source.success_criteria, 50),
+      preferred_worker_id: cleanText(source.preferred_worker_id, 100) || null,
+      mission_id: cleanText(source.mission_id, 200) || null,
+      order: Number.isFinite(Number(source.order)) ? Number(source.order) : index + 1
     };
   });
 }

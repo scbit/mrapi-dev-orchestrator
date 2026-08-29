@@ -1,9 +1,13 @@
-Descomprimir encima del repo y ejecutar:
+V2 robusto.
 
-node tools\apply-project-setup-name-fix.js
-node -c src\routes\project.ui.routes.js
+Ejecutar:
+node tools\apply-roadmap-metadata-repair-and-recent-goals-v2.js
 
-Debe terminar:
-PROJECT_SETUP_NAME_FIX_OK
+Luego:
+node -c src\services\roadmap.js
+node -c src\services\planner.js
+node -c src\routes\planner.routes.js
+node -c src\public\roadmap-page.js
+node --test test\roadmap-metadata-repair-and-recent-goals-v2.test.js
 
-Luego commit/push/deploy y volver a Crear Project.
+Después mandar git status antes de commit.

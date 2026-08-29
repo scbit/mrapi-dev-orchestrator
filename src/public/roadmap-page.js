@@ -30,7 +30,23 @@ async function loadRoadmaps() {
   const project = selectedProject();
   if (!project) return;
   const data = await api(`/api/roadmaps?project_id=${encodeURIComponent(project.id)}`);
-  roadmaps = data.items || [];
+  // RECENT_PLANNER_ROADMAPS_FIRST_V2
+  const ts = (item) => {
+    const raw = item?.updated_at || item?.created_at || 0;
+    if (typeof raw === 'string' || typeof raw === 'number') {
+      const parsed = new Date(raw).getTime();
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+    return Number(raw?._seconds || raw?.seconds || 0) * 1000;
+  };
+  roadmaps = (data.items || [])
+    .sort((a, b) => {
+      const ap = a.proposal_type === 'PLANNER_ROADMAP' ? 1 : 0;
+      const bp = b.proposal_type === 'PLANNER_ROADMAP' ? 1 : 0;
+      if (ap !== bp) return bp - ap;
+      return ts(b) - ts(a);
+    })
+    .slice(0, 20);
   $('#roadmapList').innerHTML = roadmaps.length ? roadmaps.map((item) => {
     const done = (item.milestones || []).filter((m) => m.state === 'COMPLETED').length;
     return `<div class="roadmap-item" data-id="${esc(item.id)}"><h3>${esc(item.title)}</h3><p>${esc(item.objective)}</p><div class="roadmap-meta">${esc(item.state)} · ${done}/${(item.milestones || []).length} milestones · ${esc(item.owner_worker_id || 'W01')}</div></div>`;

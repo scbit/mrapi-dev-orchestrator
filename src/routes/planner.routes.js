@@ -7,7 +7,8 @@ const {
   listRecentPlannerRequests,
   approvePlannerRoadmap,
   requestPlannerRoadmapChanges,
-  startPlannerRoadmap
+  startPlannerRoadmap,
+  repairPlannerRoadmapMetadata
 } = require('../services/planner');
 const { confirmHumanActionReady } = require('../services/autopilot');
 const { assertProjectRuntimeReady } = require('../services/projectRuntime');
@@ -289,6 +290,16 @@ function createPlannerRouter({ db }) {
     try {
       const revised = await requestPlannerRoadmapChanges(db, req.tenantId, req.params.roadmapId, req.body || {});
       res.status(revised.no_new_work ? 200 : 202).json(serializeFirestore(revised));
+    } catch (error) {
+      if (error.status) return res.status(error.status).json({ error: error.message });
+      next(error);
+    }
+  });
+
+  router.post('/roadmaps/:roadmapId/repair-metadata', async (req, res, next) => {
+    try {
+      const result = await repairPlannerRoadmapMetadata(db, req.tenantId, req.params.roadmapId);
+      res.json(serializeFirestore(result));
     } catch (error) {
       if (error.status) return res.status(error.status).json({ error: error.message });
       next(error);
