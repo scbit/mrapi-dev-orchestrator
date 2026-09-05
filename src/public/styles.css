@@ -226,6 +226,11 @@ button:focus-visible, a:focus-visible, select:focus-visible, textarea:focus-visi
 .architecture-section h4 { margin:5px 0 6px; overflow-wrap:anywhere; }
 .architecture-section p,
 .neutral-copy { margin:7px 0 0; color:var(--muted); font-size:12px; line-height:1.45; }
+.worker-section-heading { display:flex; justify-content:space-between; align-items:flex-start; gap:10px; }
+.worker-section-heading h4 { margin-top:5px; }
+.edit-brain-chat-button { white-space:nowrap; }
+.worker-config-note { color:#ffd38d; }
+#workerBrainFormMessage { color:#ffd38d; font-size:12px; line-height:1.4; }
 .architecture-subtitle { color:var(--muted); font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
 .architecture-facts {
   display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 10px; margin-top:10px;

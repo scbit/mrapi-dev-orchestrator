@@ -3,7 +3,8 @@ const CONFIGURATION_INCOMPLETE = 'CONFIGURATION_INCOMPLETE';
 const READY = 'READY';
 const SOURCE_PERSISTED = 'PERSISTED';
 const SOURCE_LEGACY_W01_FALLBACK = 'LEGACY_W01_FALLBACK';
-const SOURCE_NONE = 'NONE';
+const SOURCE_UNCONFIGURED = 'UNCONFIGURED';
+const SOURCE_NONE = SOURCE_UNCONFIGURED;
 
 const SECRET_FIELD_NAMES = new Set([
   'password',
@@ -190,15 +191,101 @@ function resolveWorkerBrainBinding(worker, legacyConfig = {}) {
   return incompleteResolution(SOURCE_NONE);
 }
 
+function redactSecretLikeFields(input) {
+  if (!input || typeof input !== 'object') return input;
+  if (Array.isArray(input)) return input.map(redactSecretLikeFields);
+
+  return Object.fromEntries(Object.entries(input)
+    .filter(([key]) => !SECRET_FIELD_NAMES.has(normalizedKeyName(key)))
+    .map(([key, value]) => [key, redactSecretLikeFields(value)]));
+}
+
+function brainRuntimeConfigForWorker(worker, legacyConfig = {}) {
+  const resolution = resolveWorkerBrainBinding(worker, legacyConfig);
+  const binding = resolution.binding;
+  const rawBinding = worker?.brain_chat_binding && typeof worker.brain_chat_binding === 'object' && !Array.isArray(worker.brain_chat_binding)
+    ? redactSecretLikeFields(worker.brain_chat_binding)
+    : null;
+  const persistedEditable = resolution.source === SOURCE_PERSISTED && Boolean(rawBinding || binding);
+
+  return {
+    provider: binding?.provider || firstPresent(rawBinding?.provider),
+    chat_binding: binding?.chat_binding || firstPresent(rawBinding?.chat_binding),
+    role: binding?.role || firstPresent(rawBinding?.role),
+    instructions: binding?.instructions || firstPresent(rawBinding?.instructions),
+    configuration_state: resolution.configuration_state,
+    source: resolution.source,
+    editable: persistedEditable,
+    provider_supported: PROVIDER_CHATGPT_WEB
+  };
+}
+
+function firstPresent(...values) {
+  for (const value of values) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') return value;
+  }
+  return null;
+}
+
+function explicitConfigurationStatus(worker) {
+  const values = [
+    worker?.configuration_status,
+    worker?.configuration_state,
+    worker?.worker_configuration_status,
+    worker?.worker_configuration_state,
+    worker?.state,
+    worker?.status
+  ];
+  return values.map((value) => String(value || '').trim().toUpperCase())
+    .find((value) => value === 'HUMAN_ACTION_REQUIRED') || null;
+}
+
+function runtimeStatusForWorker(worker) {
+  const values = [
+    worker?.runtime_status,
+    worker?.runner_status,
+    worker?.operational_status,
+    worker?.health_state,
+    worker?.state,
+    worker?.status
+  ].map((value) => String(value || '').trim().toUpperCase());
+
+  return values.find((value) => value === 'ONLINE' || value === 'OFFLINE') || 'UNKNOWN';
+}
+
+function workerOperationalPresentation(worker, legacyConfig = {}) {
+  const brainRuntimeConfig = brainRuntimeConfigForWorker(worker, legacyConfig);
+  const explicitStatus = explicitConfigurationStatus(worker);
+
+  return {
+    worker_id: firstPresent(worker?.id, worker?.worker_id, worker?.workerId),
+    worker_name: firstPresent(worker?.name, worker?.display_name, worker?.code, worker?.id),
+    role: firstPresent(worker?.role),
+    status: firstPresent(worker?.status, worker?.state, worker?.operational_status),
+    brain_runtime_config: brainRuntimeConfig,
+    executor: firstPresent(worker?.executor_id, worker?.executor?.id, worker?.executor_binding?.executor_id, worker?.executor_binding_id),
+    host: firstPresent(worker?.host_id, worker?.host_name, worker?.host?.id, worker?.host?.name, worker?.host_binding?.host_id),
+    current_mission: firstPresent(worker?.current_mission_id, worker?.current_mission?.id, worker?.active_mission_id, worker?.mission_id),
+    capabilities: worker?.capabilities ?? null,
+    permissions: worker?.permissions ?? null,
+    configuration_status: explicitStatus || brainRuntimeConfig.configuration_state,
+    runtime_status: runtimeStatusForWorker(worker)
+  };
+}
+
 module.exports = {
   PROVIDER_CHATGPT_WEB,
   CONFIGURATION_INCOMPLETE,
   READY,
   SOURCE_PERSISTED,
   SOURCE_LEGACY_W01_FALLBACK,
+  SOURCE_UNCONFIGURED,
   SOURCE_NONE,
   assertNoSecretBrainBindingFields,
   normalizeBrainChatBinding,
   brainBindingReadiness,
-  resolveWorkerBrainBinding
+  resolveWorkerBrainBinding,
+  redactSecretLikeFields,
+  brainRuntimeConfigForWorker,
+  workerOperationalPresentation
 };

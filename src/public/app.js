@@ -501,6 +501,35 @@ function renderPermissions(permissions) {
     : '<p class="neutral-copy">Not configured</p>';
 }
 
+function workerPresentation(worker) {
+  return worker.operational_presentation && typeof worker.operational_presentation === 'object'
+    ? worker.operational_presentation
+    : {};
+}
+
+function workerBrainRuntimeConfig(worker) {
+  return worker.brain_runtime_config && typeof worker.brain_runtime_config === 'object'
+    ? worker.brain_runtime_config
+    : {};
+}
+
+function workerConfigurationStatus(worker) {
+  return textValue(worker.configuration_status, workerPresentation(worker).configuration_status, workerBrainRuntimeConfig(worker).configuration_state, 'CONFIGURATION_INCOMPLETE');
+}
+
+function workerRuntimeStatus(worker) {
+  return textValue(workerPresentation(worker).runtime_status, worker.runtime_status, 'UNKNOWN');
+}
+
+function renderWorkerBrainSaveNotice(worker) {
+  const workerId = textValue(worker.id, worker.worker_id, worker.code);
+  const status = upperValue(workerConfigurationStatus(worker));
+  if (workerId === 'W02' && status === 'CONFIGURATION_INCOMPLETE') {
+    return '<p class="neutral-copy worker-config-note">W02 cannot run as a real Worker until trusted validation completes.</p>';
+  }
+  return '';
+}
+
 function renderWorkerCard(worker) {
   const missionId = currentMissionId(worker);
   const mission = missionForWorker(worker);
@@ -508,27 +537,64 @@ function renderWorkerCard(worker) {
   const executor = executorForWorker(worker);
   const host = trustedObject(worker, ['host_binding', 'host']);
   const hostSource = Object.keys(host).length ? host : executor || {};
+  const presentation = workerPresentation(worker);
+  const brainRuntime = workerBrainRuntimeConfig(worker);
+  const hasBrainRuntimeReadModel = Object.keys(brainRuntime).length > 0;
   const scope = scopeSummary(worker);
-  const status = deriveWorkerHumanStatus(worker);
-  const brainConfigured = worker.brain_binding || worker.brain || worker.brain_configuration ? 'Yes' : 'No';
+  const status = textValue(presentation.status, worker.status, worker.state, worker.operational_status, deriveWorkerHumanStatus(worker));
+  const configurationStatus = workerConfigurationStatus(worker);
+  const runtimeStatus = workerRuntimeStatus(worker);
+  const brainConfigured = hasBrainRuntimeReadModel
+    ? (brainRuntime.chat_binding ? 'Yes' : 'No')
+    : (worker.brain_binding || worker.brain || worker.brain_configuration || brain ? 'Yes' : 'No');
   const executorConfigured = worker.executor_binding || worker.executor || worker.executor_id || executor ? 'Yes' : 'No';
   const hostConfigured = worker.host_binding || worker.host || executor?.host_name || executor?.host_id ? 'Yes' : 'No';
   const latest = latestTrustedActivity([worker, mission, brain, executor, hostSource]);
   const brainRunId = textValue(worker.current_brain_run_id, brain?.current_brain_run_id, brain?.brain_run_id);
   const executorRunId = textValue(worker.current_run_id, executor?.current_run_id);
+  const workerId = textValue(presentation.worker_id, worker.id, worker.worker_id, worker.code);
+  const workerName = textValue(presentation.worker_name, worker.name, worker.display_name, worker.code, worker.id, 'Unnamed Worker');
+  const workerRole = textValue(presentation.role, worker.role, 'Role not configured');
+  const brainProvider = hasBrainRuntimeReadModel
+    ? textValue(brainRuntime.provider, 'Not configured')
+    : textValue(brain?.type, brain?.provider, worker.brain_type, 'Brain configuration');
+  const brainTitle = hasBrainRuntimeReadModel
+    ? brainProvider
+    : textValue(brain?.name, brainProvider);
+  const brainChatBinding = hasBrainRuntimeReadModel
+    ? textValue(brainRuntime.chat_binding, 'Not configured')
+    : textValue(worker.brain_binding_id, worker.brain_profile_id, brain?.id, 'Not configured');
+  const brainRole = hasBrainRuntimeReadModel
+    ? textValue(brainRuntime.role, 'Not configured')
+    : textValue(brain?.role, worker.brain_role, 'Not configured');
+  const brainInstructions = hasBrainRuntimeReadModel
+    ? textValue(brainRuntime.instructions, 'Not configured')
+    : textValue(brain?.instructions, worker.brain_instructions, 'Not configured');
+  const brainSource = textValue(brainRuntime.source, 'UNCONFIGURED');
+  const editDisabled = brainRuntime.provider && brainRuntime.provider !== 'CHATGPT_WEB';
 
   return `
     <article class="worker-card worker-architecture-card">
       <div class="worker-card-top">
         <section class="architecture-section worker-identity-section" aria-label="Worker identity">
           <span class="eyebrow">Worker identity</span>
-          <h3>${escapeHtml(textValue(worker.name, worker.display_name, worker.code, worker.id, 'Unnamed Worker'))}</h3>
-          <div class="architecture-subtitle">${escapeHtml(textValue(worker.role, 'Role not configured'))}</div>
+          <h3>${escapeHtml(workerName)}</h3>
+          <div class="architecture-subtitle">Worker ID ${escapeHtml(workerId || 'Not configured')}</div>
+          <div class="architecture-subtitle">Role ${escapeHtml(workerRole)}</div>
           <div class="architecture-subtitle">Worker ${escapeHtml(textValue(worker.code, worker.id, 'Not configured'))}</div>
         </section>
         ${humanStateBadge(status)}
       </div>
       <div class="architecture-grid">
+        <section class="architecture-section worker-configuration-section" aria-label="Configuration status">
+          <span class="eyebrow">Configuration</span>
+          <h4>${escapeHtml(configurationStatus)}</h4>
+          <div class="architecture-facts">
+            ${renderFact('Worker status', status)}
+            ${renderFact('Runtime status', runtimeStatus)}
+          </div>
+          ${renderWorkerBrainSaveNotice(worker)}
+        </section>
         <section class="architecture-section" aria-label="Current Mission">
           <span class="eyebrow">Current Mission</span>
           <h4>${escapeHtml(mission ? textValue(mission.objective, 'Mission objective not recorded') : (missionId ? 'Current Mission' : 'No active Mission'))}</h4>
@@ -541,13 +607,23 @@ function renderWorkerCard(worker) {
             ${renderFact('Project', scope.projectLabel)}
           </div>
         </section>
-        <section class="architecture-section" aria-label="Brain">
-          <span class="eyebrow">Brain</span>
-          <h4>${escapeHtml(textValue(brain?.name, brain?.provider, brain?.type, worker.brain_type, 'Brain configuration'))}</h4>
+        <section class="architecture-section brain-chat-section" aria-label="Brain">
+          <div class="worker-section-heading">
+            <div>
+              <span class="eyebrow">Brain / Chat</span>
+              <h4>${escapeHtml(brainTitle)}</h4>
+            </div>
+            <button type="button" class="text-button edit-brain-chat-button" data-edit-worker-brain="${escapeHtml(workerId)}" ${editDisabled ? 'disabled' : ''}>Edit Brain/Chat</button>
+          </div>
           <div class="architecture-facts">
             ${renderFact('Configured', brainConfigured)}
-            ${renderFact('Type / provider', textValue(brain?.type, brain?.provider, worker.brain_type, 'Not configured'))}
-            ${renderFact('Health / state', textValue(brain?.health_state, brain?.state, worker.brain_health, 'Not recorded'))}
+            ${renderFact('Provider', brainProvider)}
+            ${renderFact('Chat binding', brainChatBinding)}
+            ${renderFact('Role', brainRole)}
+            ${renderFact('Instructions', brainInstructions)}
+            ${hasBrainRuntimeReadModel ? '' : renderFact('Health / state', textValue(brain?.health_state, brain?.state, worker.brain_health, 'Not recorded'))}
+            ${renderFact('Binding source', brainSource)}
+            ${renderFact('Configuration state', configurationStatus)}
             ${renderFact('Current Brain Run', brainRunId ? 'Brain Run active' : 'No current Brain Run')}
           </div>
         </section>
@@ -575,11 +651,16 @@ function renderWorkerCard(worker) {
         </section>
         <section class="architecture-section" aria-label="Capabilities">
           <span class="eyebrow">Capabilities</span>
-          ${renderTags(worker.capabilities || executor?.capabilities, 'No capabilities reported')}
+          ${renderTags(presentation.capabilities ?? worker.capabilities ?? executor?.capabilities, 'No capabilities reported')}
         </section>
         <section class="architecture-section" aria-label="Permissions">
           <span class="eyebrow">Permissions</span>
-          ${renderPermissions(worker.permissions)}
+          ${renderPermissions(presentation.permissions ?? worker.permissions)}
+        </section>
+        <section class="architecture-section" aria-label="Runtime status">
+          <span class="eyebrow">Runtime</span>
+          <h4>${escapeHtml(runtimeStatus)}</h4>
+          <p>Runtime status is shown only from existing Worker/runtime fields.</p>
         </section>
         <section class="architecture-section" aria-label="Last activity">
           <span class="eyebrow">Last activity</span>
@@ -593,9 +674,11 @@ function renderWorkerCard(worker) {
           ${renderFact('Tenant / Workspace / Project IDs', `${textValue(worker.tenant_id, 'tenant unavailable')} / ${textValue(scope.workspaceId, 'workspace unavailable')} / ${textValue(scope.projectId, 'project unavailable')}`)}
           ${renderFact('Current Mission ID', textValue(missionId, 'none'))}
           ${renderFact('Brain binding/profile IDs', textValue(worker.brain_binding_id, worker.brain_profile_id, brain?.id, 'none'))}
+          ${renderFact('Brain provider/source', textValue(brainRuntime.provider, brainRuntime.source, brain?.provider, brain?.type, 'none'))}
           ${renderFact('Current Brain Run ID', textValue(brainRunId, 'none'))}
           ${renderFact('Executor binding/type/id', textValue(worker.executor_binding_id, worker.executor_type, executor?.executor_type, executor?.id, 'none'))}
           ${renderFact('Host binding/provider/id', textValue(worker.host_binding_id, hostSource.provider, hostSource.host_id, hostSource.id, 'none'))}
+          ${renderFact('Configuration / runtime status', `${textValue(configurationStatus, 'none')} / ${textValue(runtimeStatus, 'UNKNOWN')}`)}
           ${renderFact('Raw status/health', textValue(worker.operational_status, worker.state, worker.health_state, worker.executor_health, 'none'))}
           ${renderFact('Latest activity timestamp', latest?.value || 'none')}
           <div><span>Raw capabilities</span><pre class="result-json">${escapeHtml(JSON.stringify(worker.capabilities || {}, null, 2))}</pre></div>
@@ -744,6 +827,7 @@ function renderWorkers() {
     state.workers.length > 0
       ? state.workers.map(renderWorkerCard).join('')
       : '<div class="empty-state">No workers found.</div>';
+  bindWorkerBrainActions();
 }
 
 function renderMissions() {
@@ -1525,6 +1609,67 @@ function closeMissionModal() {
   $('#missionForm').reset();
 }
 
+function openWorkerBrainModal(workerId) {
+  const worker = state.workers.find((item) => textValue(item.id, item.worker_id, item.code) === workerId);
+  if (!worker) {
+    showToast('Worker not found in loaded data.', true);
+    return;
+  }
+
+  const brainRuntime = workerBrainRuntimeConfig(worker);
+  $('#workerBrainWorkerId').value = workerId;
+  $('#workerBrainProvider').value = 'CHATGPT_WEB';
+  $('#workerBrainChatBinding').value = brainRuntime.chat_binding || '';
+  $('#workerBrainRole').value = brainRuntime.role || '';
+  $('#workerBrainInstructions').value = brainRuntime.instructions || '';
+  $('#workerBrainFormMessage').textContent = '';
+  $('#workerBrainModalTitle').textContent = `Edit Brain/Chat binding: ${textValue(worker.name, worker.display_name, worker.code, worker.id, workerId)}`;
+  $('#workerBrainModal').hidden = false;
+  setTimeout(() => $('#workerBrainChatBinding').focus(), 0);
+}
+
+function closeWorkerBrainModal() {
+  $('#workerBrainModal').hidden = true;
+  $('#workerBrainForm').reset();
+  $('#workerBrainFormMessage').textContent = '';
+}
+
+function bindWorkerBrainActions() {
+  $$('.edit-brain-chat-button').forEach((button) => {
+    button.addEventListener('click', (event) => {
+      event.stopPropagation();
+      openWorkerBrainModal(button.dataset.editWorkerBrain);
+    });
+  });
+}
+
+async function submitWorkerBrainBinding(event) {
+  event.preventDefault();
+  const submit = $('#saveWorkerBrainButton');
+  submit.disabled = true;
+  $('#workerBrainFormMessage').textContent = '';
+
+  try {
+    const workerId = $('#workerBrainWorkerId').value;
+    await api(`/api/workers/${encodeURIComponent(workerId)}/brain-chat-binding`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        provider: $('#workerBrainProvider').value,
+        chat_binding: $('#workerBrainChatBinding').value,
+        role: $('#workerBrainRole').value,
+        instructions: $('#workerBrainInstructions').value
+      })
+    });
+    $('#workerBrainFormMessage').textContent = 'Configuración guardada. Falta validación trusted antes de habilitar este Worker. CONFIGURATION_INCOMPLETE';
+    showToast('Brain/Chat binding saved as CONFIGURATION_INCOMPLETE.');
+    await loadAll();
+  } catch (error) {
+    $('#workerBrainFormMessage').textContent = error.message;
+  } finally {
+    submit.disabled = false;
+  }
+}
+
 function showToast(message, error = false) {
   const toast = $('#toast');
   toast.textContent = message;
@@ -1592,6 +1737,9 @@ function bindEvents() {
   $('#closeMissionModal').addEventListener('click', closeMissionModal);
   $('#cancelMissionButton').addEventListener('click', closeMissionModal);
   $('#missionForm').addEventListener('submit', submitMission);
+  $('#closeWorkerBrainModal')?.addEventListener('click', closeWorkerBrainModal);
+  $('#cancelWorkerBrainButton')?.addEventListener('click', closeWorkerBrainModal);
+  $('#workerBrainForm')?.addEventListener('submit', submitWorkerBrainBinding);
   $('#missionWorkspace').addEventListener('change', () => refreshProjectOptions(''));
   $('#missionProject').addEventListener('change', refreshWorkerOptions);
   $('#globalWorkspaceSelect')?.addEventListener('change', () => {
@@ -1605,6 +1753,9 @@ function bindEvents() {
   $('#missionModal').addEventListener('click', (event) => {
     if (event.target === $('#missionModal')) closeMissionModal();
   });
+  $('#workerBrainModal')?.addEventListener('click', (event) => {
+    if (event.target === $('#workerBrainModal')) closeWorkerBrainModal();
+  });
 
   $('#closeMissionDetailModal').addEventListener('click', closeMissionDetail);
   $('#missionDetailModal').addEventListener('click', (event) => {
@@ -1614,6 +1765,7 @@ function bindEvents() {
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && !$('#missionModal').hidden) closeMissionModal();
     if (event.key === 'Escape' && !$('#missionDetailModal').hidden) closeMissionDetail();
+    if (event.key === 'Escape' && !$('#workerBrainModal')?.hidden) closeWorkerBrainModal();
   });
 }
 

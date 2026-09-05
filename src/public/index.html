@@ -144,6 +144,22 @@
     </div>
   </div>
 
+  <div class="modal-backdrop" id="workerBrainModal" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="workerBrainModalTitle">
+      <div class="modal-header"><div><span class="eyebrow">BRAIN / CHAT</span><h2 id="workerBrainModalTitle">Edit Brain/Chat binding</h2></div><button class="icon-button" id="closeWorkerBrainModal" aria-label="Close">x</button></div>
+      <form id="workerBrainForm">
+        <input type="hidden" id="workerBrainWorkerId">
+        <label class="field" for="workerBrainProvider"><span>Provider</span><select id="workerBrainProvider" required><option value="CHATGPT_WEB">ChatGPT Web / CHATGPT_WEB</option></select></label>
+        <label class="field" for="workerBrainChatBinding"><span>Chat binding</span><textarea id="workerBrainChatBinding" required rows="3" placeholder="https://chatgpt.com/c/..."></textarea></label>
+        <div class="form-grid">
+          <label class="field" for="workerBrainRole"><span>Role</span><textarea id="workerBrainRole" rows="2"></textarea></label>
+          <label class="field" for="workerBrainInstructions"><span>Instructions</span><textarea id="workerBrainInstructions" rows="2"></textarea></label>
+        </div>
+        <div class="modal-actions"><span id="workerBrainFormMessage"></span><div><button type="button" class="ghost-button" id="cancelWorkerBrainButton">Cancel</button><button type="submit" class="primary-button" id="saveWorkerBrainButton">Save binding</button></div></div>
+      </form>
+    </div>
+  </div>
+
   <div class="toast" id="toast" hidden></div>
   <script src="/app.js"></script>
   <script src="/artifact-ui.js"></script>
